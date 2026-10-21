@@ -16,15 +16,15 @@
  */
 package org.exoplatform.emailConnector.service.rules.sieve;
 
-import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.SUPPORTED_ELEMENT;
-import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.unsupported;
+import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT;
+import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.unsupported;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
-import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 
 /**
  * What a Sieve server can do, derived from the capabilities it advertised <b>after</b>
@@ -35,7 +35,10 @@ import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
  * The floor is RFC 5228 (address, header, size, {@code allof}/{@code anyof},
  * {@code stop}); everything above it is read per extension: {@code vacation}, with
  * {@code date} and {@code relational} for a date window; {@code fileinto} for a move;
- * {@code imap4flags} for a flag; {@code body} for a body condition. What Sieve cannot
+ * {@code imap4flags} for a flag; {@code copy} for a forward, eXo's own or a rule's, which
+ * is only ever {@code redirect :copy}. Whether the deployment lets eXo set a forward at
+ * all is not the server's to say: the forwarding service narrows these answers. A body condition is not offered in this phase, even
+ * where {@code body} is advertised: the rules generator writes none. What Sieve cannot
  * express at all (attachment tests without extensions) is answered unsupported; what
  * only eXo can do (its categories, notifications, agents) is not an element of this
  * record. Account-level facts — whether another script is active — are the probe's to
@@ -76,37 +79,40 @@ public final class SieveCapabilityDerivation {
    */
   public static ServerRuleCapabilities derive(ManageSieveCapabilities capabilities) {
     if (!capabilities.supportsSasl(ManageSieveClient.SASL_PLAIN)) {
-      return ServerRuleCapabilities.unsupported(NO_PLAIN, ServerRuleVocabularySource.DYNAMIC);
+      return ServerRuleCapabilities.unsupported(NO_PLAIN, VocabularySource.DYNAMIC);
     }
-    Map<String, ServerRuleElementSupport> elements = new LinkedHashMap<>();
-    ServerRuleElementSupport vacation = needs(capabilities, "vacation");
+    Map<String, ElementSupport> elements = new LinkedHashMap<>();
+    ElementSupport vacation = needs(capabilities, "vacation");
     elements.put(ServerRuleCapabilities.VACATION, vacation);
     elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW,
                  vacation.supported() ? both(needs(capabilities, "date"), needs(capabilities, "relational")) : vacation);
     elements.put(ServerRuleCapabilities.VACATION_HTML, unsupported(NOT_IN_PHASE_1));
     elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
-    elements.put(ServerRuleCapabilities.FORWARDING_WRITE, unsupported(NOT_IN_PHASE_1));
+    ElementSupport copy = needs(capabilities, SieveRulesSection.COPY_EXTENSION);
+    elements.put(ServerRuleCapabilities.FORWARDING_WRITE, copy);
     elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, unsupported(FOREIGN_OPAQUE));
     for (String core : new String[] { ServerRuleCapabilities.FROM, ServerRuleCapabilities.TO, ServerRuleCapabilities.CC,
         ServerRuleCapabilities.ANY_RECIPIENT, ServerRuleCapabilities.SUBJECT, ServerRuleCapabilities.HEADER,
         ServerRuleCapabilities.MESSAGE_SIZE, ServerRuleCapabilities.IS_LIST, ServerRuleCapabilities.IS_AUTOMATED }) {
       elements.put(core, SUPPORTED_ELEMENT);
     }
-    ServerRuleElementSupport body = needs(capabilities, "body");
-    elements.put(ServerRuleCapabilities.BODY, body);
-    elements.put(ServerRuleCapabilities.SUBJECT_OR_BODY, body);
+    // The generator writes no body test in this phase, whatever the server advertises:
+    // offering the condition would let the form save what the engine cannot publish.
+    elements.put(ServerRuleCapabilities.BODY, unsupported(NOT_IN_PHASE_1));
+    elements.put(ServerRuleCapabilities.SUBJECT_OR_BODY, unsupported(NOT_IN_PHASE_1));
     elements.put(ServerRuleCapabilities.HAS_ATTACHMENT, unsupported(NO_ATTACHMENT_TEST));
     elements.put(ServerRuleCapabilities.ATTACHMENT_NAME, unsupported(NO_ATTACHMENT_TEST));
     elements.put(ServerRuleCapabilities.ATTACHMENT_SIZE, unsupported(NO_ATTACHMENT_TEST));
-    ServerRuleElementSupport fileinto = needs(capabilities, "fileinto");
+    ElementSupport fileinto = needs(capabilities, "fileinto");
     elements.put(ServerRuleCapabilities.MOVE_TO_FOLDER, fileinto);
     elements.put(ServerRuleCapabilities.MARK_JUNK, fileinto);
     elements.put(ServerRuleCapabilities.DELETE, fileinto);
-    ServerRuleElementSupport flags = needs(capabilities, "imap4flags");
+    ElementSupport flags = needs(capabilities, "imap4flags");
     elements.put(ServerRuleCapabilities.MARK_READ, flags);
     elements.put(ServerRuleCapabilities.STAR, flags);
     elements.put(ServerRuleCapabilities.TAG, flags);
-    return new ServerRuleCapabilities(true, null, false, false, ServerRuleVocabularySource.DYNAMIC, elements);
+    elements.put(ServerRuleCapabilities.FORWARD, copy);
+    return new ServerRuleCapabilities(true, null, false, false, VocabularySource.DYNAMIC, elements);
   }
 
   /**
@@ -116,7 +122,7 @@ public final class SieveCapabilityDerivation {
    * @param extension the extension
    * @return supported when advertised, else unsupported naming the extension
    */
-  private static ServerRuleElementSupport needs(ManageSieveCapabilities capabilities, String extension) {
+  private static ElementSupport needs(ManageSieveCapabilities capabilities, String extension) {
     return capabilities.hasExtension(extension) ? SUPPORTED_ELEMENT : unsupported(MISSING_EXTENSION + extension);
   }
 
@@ -127,7 +133,7 @@ public final class SieveCapabilityDerivation {
    * @param second the second answer
    * @return supported when both are
    */
-  private static ServerRuleElementSupport both(ServerRuleElementSupport first, ServerRuleElementSupport second) {
+  private static ElementSupport both(ElementSupport first, ElementSupport second) {
     return first.supported() ? second : first;
   }
 }

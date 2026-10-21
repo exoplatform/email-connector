@@ -20,6 +20,8 @@ import EmailConnectorAdminList from './components/main/EmailConnectorAdminList.v
 import EmailConnectorAdminSyncSettings from './components/main/EmailConnectorAdminSyncSettings.vue';
 import EmailConnectorAdminManagedMode from './components/main/EmailConnectorAdminManagedMode.vue';
 import EmailConnectorAdminDrawer from './components/drawer/EmailConnectorAdminDrawer.vue';
+import EmailConnectorAdminForwardingSection from './components/drawer/EmailConnectorAdminForwardingSection.vue';
+import EmailConnectorAdminEnginesSection from './components/drawer/EmailConnectorAdminEnginesSection.vue';
 import EmailConnectorAdminSyncSettingsDrawer from './components/drawer/EmailConnectorAdminSyncSettingsDrawer.vue';
 import EmailConnectorAdminSyncTieringRows from './components/drawer/EmailConnectorAdminSyncTieringRows.vue';
 import EmailConnectorAdminImageInput from './components/drawer/EmailConnectorAdminImageInput.vue';
@@ -33,6 +35,8 @@ const components = {
   'email-connector-admin-sync-settings': EmailConnectorAdminSyncSettings,
   'email-connector-admin-managed-mode': EmailConnectorAdminManagedMode,
   'email-connector-admin-drawer': EmailConnectorAdminDrawer,
+  'email-connector-admin-forwarding-section': EmailConnectorAdminForwardingSection,
+  'email-connector-admin-engines-section': EmailConnectorAdminEnginesSection,
   'email-connector-admin-sync-settings-drawer': EmailConnectorAdminSyncSettingsDrawer,
   'email-connector-admin-sync-tiering-rows': EmailConnectorAdminSyncTieringRows,
   'email-connector-admin-image-input': EmailConnectorAdminImageInput

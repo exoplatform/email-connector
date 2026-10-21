@@ -18,13 +18,17 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -32,6 +36,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -48,11 +53,13 @@ import org.springframework.util.CollectionUtils;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
@@ -60,16 +67,22 @@ import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.OwnerCopy;
+import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.rest.model.ReadReceiptRequest;
 import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -77,14 +90,28 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 @RestController
 @RequestMapping("/email-box")
 @Tag(name = "/email-connector/rest/email-box", description = "Manages Email Box")
 public class EmailBoxRest {
 
+  /**
+   * The prefix every folder refusal code carries, {@code emailConnector.folder.tooMany}
+   * and {@code emailConnector.folder.name.duplicate} alike: each one is a message code
+   * the add-on's own code raises, never an engine's text.
+   */
+  static final String               FOLDER_CODE_PREFIX = "emailConnector.folder.";
+
   // The largest page of the "Scheduled" view: the per-user limit's default.
   private static final int          MAX_SCHEDULED_PAGE = 100;
+
+  // What a downloaded message is served as: its own RFC 822 media type (EXO-90842).
+  private static final String       EML_CONTENT_TYPE   = "message/rfc822";
+
+  // Keeps a browser from sniffing the sender's bytes into anything but a download.
+  private static final String       NO_SNIFF_HEADER    = "X-Content-Type-Options";
 
   @Autowired
   private EmailBoxService           emailBoxService;
@@ -95,6 +122,21 @@ public class EmailBoxRest {
   @Autowired
   private ReadReceiptService        readReceiptService;
 
+  @Autowired
+  private EmailSecurityService      emailSecurityService;
+
+  /**
+   * Gets user emails. Gets the user's emails for a folder (INBOX by default, or SENT /
+   * ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch, or CUSTOM:&lt;id&gt;
+   * for one of the user's own mirrored folders), optionally restricted to the starred
+   * ones.
+   *
+   * @param request the caller's request, for the acting user
+   * @param folder folder to list: INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK or
+   * CUSTOM:&lt;id&gt;
+   * @param starred when true, only the starred emails (IMAP \Flagged) are returned
+   * @return the email box
+   */
   @GetMapping()
   @Secured("users")
   @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch, or CUSTOM:<id> for one of the user's own mirrored folders), optionally restricted to the starred ones")
@@ -124,7 +166,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -143,7 +185,7 @@ public class EmailBoxRest {
   @Operation(summary = "Lists the user's mail folders", method = "GET",
              description = "The built-in folders this mailbox has and every custom folder the user's mailbox holds, with its mirror opt-in; with refresh=true the mailbox's folder list is walked first")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public MailFolderList getFolders(HttpServletRequest request,
                                    @Parameter(description = "Whether to walk the mailbox's folder list before answering")
                                    @RequestParam(value = "refresh", required = false, defaultValue = "false")
@@ -151,7 +193,7 @@ public class EmailBoxRest {
     try {
       return emailBoxService.getFolders(request.getRemoteUser(), refresh);
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
@@ -191,34 +233,43 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
   /**
-   * Creates one of the user's own folders on the mail server.
+   * Creates one of the user's own folders on the mail server, at the top level or inside
+   * one of their folders.
    *
    * @param request the caller
    * @param name the folder name, as typed
+   * @param parentId the registry id of the caller's own folder to create it in, null for
+   *          the top level
    * @return the folder as registered
    */
   @PostMapping("/folders")
   @Secured("users")
   @Operation(summary = "Creates one of the user's own folders", method = "POST",
-             description = "Creates a top-level folder on the mail server and registers it. Auto-mirrors it unless the cap (emailConnector.folder.tooMany) is already reached, in which case the folder is created but left unmirrored. Answers 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.createFailed when the server refuses")
+             description = "Creates a folder on the mail server, at the top level or inside one of the caller's own folders, and registers it. Auto-mirrors it unless the cap (emailConnector.folder.tooMany) is already reached, in which case the folder is created but left unmirrored. Answers 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.path.tooLong for a full name past 500 characters, 400 emailConnector.folder.unknown / emailConnector.folder.parent.invalid for a parent that is not one of the caller's folders or cannot hold one, 403 for a parent of a mailbox shared with the caller, 400 emailConnector.folder.createFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public MailFolderView createFolder(HttpServletRequest request,
                                      @Parameter(description = "The folder name, as typed", required = true)
                                      @RequestParam("name")
-                                     String name) {
+                                     String name,
+                                     @Parameter(description = "The registry id of the caller's own folder to create it in; the top level when absent")
+                                     @RequestParam(name = "parentId", required = false)
+                                     Long parentId) {
     try {
-      return emailBoxService.createCustomFolder(request.getRemoteUser(), name);
+      return emailBoxService.createCustomFolder(request.getRemoteUser(), name, parentId);
+    } catch (MailboxRightMissingException e) {
+      // A folder of a mailbox shared with the caller is its owner's to organise.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -235,7 +286,7 @@ public class EmailBoxRest {
   @PatchMapping("/folders/{id}/name")
   @Secured("users")
   @Operation(summary = "Renames one of the user's own folders", method = "PATCH",
-             description = "Renames the folder on the mail server and updates the registry row in place, so its mirrored messages keep their place. Only the folder's own name changes, never its parent. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.renameFailed when the server refuses")
+             description = "Renames the folder on the mail server and updates the registry row in place, so its mirrored messages keep their place. Only the folder's own name changes, never its parent; the folders inside it follow. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.path.tooLong for a full name past 500 characters (its own or a folder's inside it), 400 emailConnector.folder.subFolderBuiltIn when a folder inside it is the mailbox's Sent, Archive, Drafts, Trash or Spam, 400 emailConnector.folder.renameFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -260,24 +311,67 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
   /**
-   * Deletes one of the user's own folders, on the server and in the registry.
-   * Irreversible, and refused while the folder still holds mail.
+   * Moves one of the user's own folders inside another of their folders, or to the top
+   * level, optionally under a new name, on the server and in the registry.
    *
    * @param request the caller
    * @param id the folder's registry id
+   * @param parentId the registry id of the folder to move it into, null for the top level
+   * @param name the name it takes there, null to keep its own
+   * @return the folder as it now stands
+   */
+  @PatchMapping("/folders/{id}/parent")
+  @Secured("users")
+  @Operation(summary = "Moves one of the user's own folders", method = "PATCH",
+             description = "Moves the folder, and the folders inside it, inside another of the caller's own folders or to the top level when parentId is absent, optionally renaming it in the same step. The registry rows are updated in place, so the mirrored messages keep their place. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.parent.invalid for a parent that cannot hold it (the folder itself, a folder inside it, a folder no longer found), 400 emailConnector.folder.name.* for an invalid or already used name, 400 emailConnector.folder.path.tooLong for a full name past 500 characters (its own or a folder's inside it), 400 emailConnector.folder.subFolderBuiltIn when a folder inside it is the mailbox's Sent, Archive, Drafts, Trash or Spam, 403 for a folder of a mailbox shared with the caller, 400 emailConnector.folder.renameFailed when the server refuses")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
+  public MailFolderView moveFolder(HttpServletRequest request,
+                                   @Parameter(description = "The folder's registry id", required = true)
+                                   @PathVariable("id")
+                                   long id,
+                                   @Parameter(description = "The registry id of the folder to move it into; the top level when absent")
+                                   @RequestParam(name = "parentId", required = false)
+                                   Long parentId,
+                                   @Parameter(description = "The name it takes there, as typed; its own name when absent")
+                                   @RequestParam(name = "name", required = false)
+                                   String name) {
+    try {
+      return emailBoxService.moveCustomFolder(request.getRemoteUser(), id, parentId, name);
+    } catch (MailboxRightMissingException e) {
+      // A folder of a mailbox shared with the caller is its owner's to organise.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // As for a rename: the share itself is gone, 410.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Deletes one of the user's own folders, and the folders inside it when asked, on the
+   * server and in the registry. Irreversible, and refused while any of them holds mail.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @param subFolders whether the folders inside it are deleted too
    * @return 200 once the folder and its mirror are gone
    */
   @DeleteMapping("/folders/{id}")
   @Secured("users")
   @Operation(summary = "Deletes one of the user's own folders", method = "DELETE",
-             description = "Deletes the folder on the mail server, permanently, and drops its mirror. Refused with 400 emailConnector.folder.notEmpty while the server still lists mail in it -- empty it first. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
+             description = "Deletes the folder on the mail server, permanently, with the folders inside it when subFolders=true, and drops their mirror. Refused with 400 emailConnector.folder.notEmpty / emailConnector.folder.subFolderNotEmpty while the server still lists mail in it or in one of its sub-folders -- empty them first -- with 400 emailConnector.folder.hasSubFolders when it has sub-folders and subFolders is not true, and with 400 emailConnector.folder.subFolderBuiltIn when a folder inside it is the mailbox's Sent, Archive, Drafts, Trash or Spam. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -285,9 +379,12 @@ public class EmailBoxRest {
   public ResponseEntity<String> deleteFolder(HttpServletRequest request,
                                              @Parameter(description = "The folder's registry id", required = true)
                                              @PathVariable("id")
-                                             long id) {
+                                             long id,
+                                             @Parameter(description = "Whether the folders inside it are deleted too")
+                                             @RequestParam(name = "subFolders", required = false, defaultValue = "false")
+                                             boolean subFolders) {
     try {
-      emailBoxService.deleteCustomFolder(request.getRemoteUser(), id);
+      emailBoxService.deleteCustomFolder(request.getRemoteUser(), id, subFolders);
       return ResponseEntity.ok().build();
     } catch (MailboxRightMissingException e) {
       // The caller asked for something the mail server does not let them do in a mailbox
@@ -300,7 +397,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -339,7 +436,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -390,7 +487,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -444,12 +541,18 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
+  /**
+   * Synchronizes email box.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as ResponseEntity&lt;String&gt;
+   */
   @PostMapping("/synchronization")
   @Secured("users")
   @Operation(summary = "Synchronizes email box", method = "POST", description = "This will synchronize email box")
@@ -463,36 +566,51 @@ public class EmailBoxRest {
       emailBoxService.synchronize(request.getRemoteUser());
       return ResponseEntity.ok().build();
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Resets and re-synchronizes the email box. Clears the locally-cached emails and runs a
+   * full re-synchronization from the server.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as ResponseEntity&lt;String&gt;
+   */
   @PostMapping("/reset")
   @Secured("users")
   @Operation(summary = "Resets and re-synchronizes the email box", method = "POST",
              description = "Clears the locally-cached emails and runs a full re-synchronization from the server")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "409", description = "A synchronization is already in progress"), })
   public ResponseEntity<String> resetUserEmailBox(HttpServletRequest request) {
     try {
       emailBoxService.resetAndResynchronize(request.getRemoteUser());
       return ResponseEntity.ok().build();
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     }
   }
 
+  /**
+   * Gets a favorited email by its technical id. Resolves one entry of the global
+   * Favorites drawer.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailId technical id of the favorited email
+   * @return the answer, as ResponseEntity&lt;Email&gt;
+   */
   @GetMapping("/favorites/{emailId}")
   @Secured("users")
   @Operation(summary = "Gets a favorited email by its technical id", method = "GET",
              description = "Resolves one entry of the global Favorites drawer. Favorites are stored against the email's technical id, unlike the rest of this API which addresses messages by their IMAP UID, so this is the one read that takes that id. Answers 404 for an email that is not the caller's, so a favorite id never reveals whether it exists.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public ResponseEntity<Email> getFavoriteEmailById(HttpServletRequest request,
                                                     @Parameter(description = "Technical id of the favorited email", required = true)
@@ -504,6 +622,7 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), false);
       return ResponseEntity.ok().cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       // Somebody else's mail is reported as missing rather than forbidden: the
@@ -513,12 +632,19 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Removes a favorited email from the favorites, clearing its star and its copies' stars.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailId technical id of the favorited email
+   * @return the UIDs unstarred by folder and the number of copies whose update failed
+   */
   @DeleteMapping("/favorites/{emailId}")
   @Secured("users")
   @Operation(summary = "Removes a favorited email from the favorites", method = "DELETE",
              description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam, All Mail and Drafts left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the UIDs unstarred by folder ('unstarred', the favorite's own folder last) and the number of copies whose update failed ('failedUpdates').")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public FavoriteRemoval removeFavoriteEmail(HttpServletRequest request,
                                              @Parameter(description = "Technical id of the favorited email", required = true)
@@ -537,19 +663,31 @@ public class EmailBoxRest {
     try {
       return emailBoxService.unstarFavorite(favorite, request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Searches the locally cached mail. Filters the messages this add-on already holds
+   * locally, over their subject, sender and body: the caller's own mail, and the caller's
+   * copy of each mailbox shared with them whose search toggle is on -- never its owner's
+   * Trash or Spam, and not under the favorites filter.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query text searched over subject, sender and body
+   * @param favorites when true, only the messages the user favorited are returned
+   * @param limit how many hits to return, newest first
+   * @return the email search result page
+   */
   @GetMapping("/search/cached")
   @Secured("users")
   @Operation(summary = "Searches the locally cached mail", method = "GET",
-             description = "Filters the messages this add-on already holds locally, over their subject, sender and body. Answers immediately, without touching the mail server, which is what the platform's unified search needs: it queries every connector at once and shows the page when the slowest answers. Use /search to reach the whole mailbox.")
+             description = "Filters the messages this add-on already holds locally, over their subject, sender and body: the caller's own mail, and the caller's copy of each mailbox shared with them whose search toggle is on -- never its owner's Trash or Spam, and not under the favorites filter. A hit of a shared mailbox carries delegationId and ownerFullName; the caller's own hits carry neither. Answers immediately, without touching the mail server, which is what the platform's unified search needs: it queries every connector at once and shows the page when the slowest answers. Use /search to reach the whole mailbox.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: no search text"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public EmailSearchResultPage searchCachedEmails(HttpServletRequest request,
                                                   @Parameter(description = "Text searched over subject, sender and body", required = true)
                                                   @RequestParam("q")
@@ -571,13 +709,36 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Searches the mailbox on the server. Runs an IMAP SEARCH over the remote folder (INBOX
+   * by default), so it finds mail anywhere in the mailbox, not just the locally-cached
+   * window.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query free text matched against subject or sender
+   * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only — how a person is pinned
+   * in the SENT folder, where the sender is always the user
+   * @param unread restrict to unread messages
+   * @param favorites when true, only the messages carrying the IMAP \Flagged flag match
+   * @param sinceDays restrict to messages received in the last N days
+   * @param words text matched against the subject or the body
+   * @param after restrict to messages received on that day or later, as yyyy-MM-dd
+   * @param before restrict to messages received before that day, as yyyy-MM-dd
+   * @param attachment restrict to messages carrying an attachment
+   * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
+   * folder of a mailbox shared with the caller
+   * @param limit maximum number of hits to return (newest first)
+   * @return the email search result page
+   */
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread or sinceDays) is required.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after or before) is required; all of them are combined. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder or no search criterion"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
   public EmailSearchResultPage searchEmails(HttpServletRequest request,
                                             @Parameter(description = "Free text matched against subject or sender")
@@ -598,16 +759,36 @@ public class EmailBoxRest {
                                             @Parameter(description = "Restrict to messages received in the last N days")
                                             @RequestParam(value = "sinceDays", required = false)
                                             Integer sinceDays,
-                                            @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE")
+                                            @Parameter(description = "Text matched against the subject or the body")
+                                            @RequestParam(value = "words", required = false)
+                                            String words,
+                                            @Parameter(description = "Restrict to messages received on that day or later, as yyyy-MM-dd")
+                                            @RequestParam(value = "after", required = false)
+                                            String after,
+                                            @Parameter(description = "Restrict to messages received before that day, that day excluded, as yyyy-MM-dd")
+                                            @RequestParam(value = "before", required = false)
+                                            String before,
+                                            @Parameter(description = "Restrict to messages carrying an attachment")
+                                            @RequestParam(value = "attachment", required = false, defaultValue = "false")
+                                            boolean attachment,
+                                            @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
                                             @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                             String folder,
                                             @Parameter(description = "Maximum number of hits to return (newest first)")
                                             @RequestParam(value = "limit", required = false, defaultValue = "20")
                                             int limit) {
     try {
-      return emailBoxService.searchEmails(request.getRemoteUser(), query, from, to, unread, favorites, sinceDays, folder, limit);
+      EmailSearchCriteria criteria = searchCriteria(query, from, to, words, after, before);
+      criteria.setUnreadOnly(unread);
+      criteria.setFavoritesOnly(favorites);
+      criteria.setAttachmentsOnly(attachment);
+      criteria.setSinceDays(sinceDays);
+      return emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
+    } catch (DelegationRevokedException e) {
+      // The shared mailbox searched is gone, which the drawer answers by leaving it.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -615,13 +796,149 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Searches one folder in the caller's copy kept in eXo, with every criterion of the
+   * advanced search (EXO-90838): what the mail drawer's advanced search reads first,
+   * before -- and unless -- the user asks the mail server.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query free text matched against subject or sender
+   * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only
+   * @param unread restrict to unread messages
+   * @param favorites restrict to starred messages
+   * @param sinceDays restrict to messages received in the last N days
+   * @param words text matched against the subject or the body
+   * @param after restrict to messages received on that day or later, as yyyy-MM-dd
+   * @param before restrict to messages received before that day, as yyyy-MM-dd
+   * @param attachment restrict to messages eXo holds an attachment for
+   * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
+   * folder of a mailbox shared with the caller
+   * @param limit maximum number of hits to return (newest first)
+   * @return the email search result page
+   */
+  @GetMapping("/search/local")
+  @Secured("users")
+  @Operation(summary = "Searches one folder in the copy of the mailbox kept in eXo", method = "GET",
+             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"), })
+  public EmailSearchResultPage searchCachedFolder(HttpServletRequest request,
+                                                  @Parameter(description = "Free text matched against subject or sender")
+                                                  @RequestParam(value = "query", required = false)
+                                                  String query,
+                                                  @Parameter(description = "Text matched against the sender only")
+                                                  @RequestParam(value = "from", required = false)
+                                                  String from,
+                                                  @Parameter(description = "Text matched against the To or Cc recipients only")
+                                                  @RequestParam(value = "to", required = false)
+                                                  String to,
+                                                  @Parameter(description = "Restrict to unread messages")
+                                                  @RequestParam(value = "unread", required = false, defaultValue = "false")
+                                                  boolean unread,
+                                                  @Parameter(description = "Restrict to starred messages")
+                                                  @RequestParam(value = "favorites", required = false, defaultValue = "false")
+                                                  boolean favorites,
+                                                  @Parameter(description = "Restrict to messages received in the last N days")
+                                                  @RequestParam(value = "sinceDays", required = false)
+                                                  Integer sinceDays,
+                                                  @Parameter(description = "Text matched against the subject or the body")
+                                                  @RequestParam(value = "words", required = false)
+                                                  String words,
+                                                  @Parameter(description = "Restrict to messages received on that day or later, as yyyy-MM-dd")
+                                                  @RequestParam(value = "after", required = false)
+                                                  String after,
+                                                  @Parameter(description = "Restrict to messages received before that day, that day excluded, as yyyy-MM-dd")
+                                                  @RequestParam(value = "before", required = false)
+                                                  String before,
+                                                  @Parameter(description = "Restrict to messages eXo holds an attachment for")
+                                                  @RequestParam(value = "attachment", required = false, defaultValue = "false")
+                                                  boolean attachment,
+                                                  @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
+                                                  @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                  String folder,
+                                                  @Parameter(description = "Maximum number of hits to return (newest first)")
+                                                  @RequestParam(value = "limit", required = false, defaultValue = "20")
+                                                  int limit) {
+    try {
+      EmailSearchCriteria criteria = searchCriteria(query, from, to, words, after, before);
+      criteria.setUnreadOnly(unread);
+      criteria.setFavoritesOnly(favorites);
+      criteria.setAttachmentsOnly(attachment);
+      criteria.setSinceDays(sinceDays);
+      return emailBoxService.searchCachedFolder(request.getRemoteUser(), criteria, folder, limit);
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The text criteria and days of a search as the advanced search sends them (EXO-90838).
+   * A day that is not yyyy-MM-dd is marked, not refused here: the service refuses it once
+   * the caller's access is checked, so a refusal answers before a malformed parameter.
+   *
+   * @param query free text matched against subject or sender
+   * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only
+   * @param words text matched against the subject or the body
+   * @param after the first day, as sent
+   * @param before the day excluded, as sent
+   * @return the criteria, the flags and the age window left to the caller
+   */
+  private static EmailSearchCriteria searchCriteria(String query, String from, String to, String words, String after, String before) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setWords(words);
+    criteria.setAfter(parseSearchDay(after));
+    criteria.setBefore(parseSearchDay(before));
+    criteria.setInvalidDay(StringUtils.isNotBlank(after) && criteria.getAfter() == null
+        || StringUtils.isNotBlank(before) && criteria.getBefore() == null);
+    return criteria;
+  }
+
+  /**
+   * Reads a search day as the advanced search sends it (EXO-90838).
+   *
+   * @param day the day as yyyy-MM-dd, may be blank
+   * @return the day, or null when none was sent or the text is not a day
+   */
+  private static LocalDate parseSearchDay(String day) {
+    if (StringUtils.isBlank(day)) {
+      return null;
+    }
+    try {
+      return LocalDate.parse(day.trim());
+    } catch (DateTimeParseException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Fetches a searched message into the local cache. Opens a search hit that lives
+   * outside the locally-cached window: fetches that one message from the server on
+   * demand, caches it through the regular pipeline (threading and categories work
+   * unchanged) and returns it in full.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId the message's IMAP UID in the folder
+   * @param folder folder the search hit came from: INBOX, SENT or ARCHIVE
+   * @return the answer, as ResponseEntity&lt;Email&gt;
+   */
   @PostMapping("/search/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Fetches a searched message into the local cache", method = "POST",
              description = "Opens a search hit that lives outside the locally-cached window: fetches that one message from the server on demand, caches it through the regular pipeline (threading and categories work unchanged) and returns it in full. Already-cached messages are returned without touching the server. Returns 409 while a synchronization is running; retry in a few seconds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "The message no longer exists on the server"),
       @ApiResponse(responseCode = "409", description = "A synchronization is running; retry shortly"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached"), })
@@ -638,9 +955,10 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), false);
       return ResponseEntity.ok(email);
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -664,13 +982,16 @@ public class EmailBoxRest {
    *          -- the first mail of a list, the next one after an action, the one the
    *          arrow keys stopped on -- and signals the opening through
    *          {@link #broadcastOpenEmail} once the user has stayed on it (EXO-90414).
+   * @param remoteContent whether the resources the message would fetch from the
+   *          internet are loaded although the caller holds them back: true once the
+   *          caller asked for them from the reader's banner (EXO-90841)
    * @param ifNoneMatch the eTag the caller already holds
    * @return the message, or 304 when the caller's copy is current
    */
   @GetMapping("/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Gets remote email by id", method = "GET",
-      description = "This will get remote email by id. With broadcast=false the read does not count as the user opening the message (no open-email event).")
+      description = "This will get remote email by id. With broadcast=false the read does not count as the user opening the message (no open-email event). The HTML body is cleaned for display; the resources it would fetch from the internet are taken out (content.remoteContentBlocked) unless remoteContent=true, the caller switched blocking off or trusts the sender. content.securityWarnings lists why the message looks suspicious.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -686,11 +1007,22 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Whether this read counts as the user opening the message (open-email event); true when omitted")
                                                   @RequestParam(value = "broadcast", required = false, defaultValue = "true")
                                                   boolean broadcast,
+                                                  @Parameter(description = "Whether the images and other resources the message would fetch from the internet are loaded although the caller blocks them: true once the caller asked for them; false when omitted")
+                                                  @RequestParam(value = "remoteContent", required = false, defaultValue = "false")
+                                                  boolean remoteContent,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
       // UIDs are per-folder, so the folder is part of the message identity / eTag.
-      String eTag = "\"" + Objects.hash(mailRemoteId, folder, request.getRemoteUser()) + "\"";
+      // And so is what the reader may fetch from the internet: a copy served with its
+      // remote content held back must not be confirmed once the caller asked for it,
+      // trusted its sender or switched blocking off (EXO-90841).
+      String eTag = "\"" + Objects.hash(mailRemoteId,
+                                        folder,
+                                        request.getRemoteUser(),
+                                        remoteContent,
+                                        emailSecurityService.settingsFingerprint(request.getRemoteUser()))
+          + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         if (broadcast) {
           emailBoxService.broadcastOpenEmail(request.getRemoteUser());
@@ -708,19 +1040,130 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), remoteContent);
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Gets the source of an email. The message's header block and RFC 822 source as text,
+   * for the "Show original" view (EXO-90842), cut at
+   * {@code EmailBoxService#RAW_SOURCE_SHOWN_MAX_BYTES} with a {@code truncated} flag.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param folder the folder the message is listed in; INBOX when omitted
+   * @return the source, 404 when the caller has no such message in that folder
+   */
+  @GetMapping("/{mailRemoteId}/source")
+  @Secured("users")
+  @Operation(summary = "Gets the source of an email", method = "GET",
+      description = "Returns the message's header block and RFC 822 source as text, as the mail server holds it, cut at a fixed size "
+          + "(truncated=true then; the whole message is the .eml download). Only a message the caller has in that folder of their own "
+          + "mailbox, or of a mailbox shared with them where they hold the read right on that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not read their mailbox, or lacks the read right on that shared folder"),
+      @ApiResponse(responseCode = "404", description = "The caller has no such message in that folder"),
+      @ApiResponse(responseCode = "410", description = "The mailbox share that folder belongs to has ended"),
+      @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
+  public ResponseEntity<RawEmailSource> getRawEmailSource(HttpServletRequest request,
+                                                          @Parameter(description = "Email id: the IMAP UID in its folder", required = true)
+                                                          @PathVariable("mailRemoteId")
+                                                          long mailRemoteId,
+                                                          @Parameter(description = "The folder the message is listed in; INBOX when omitted")
+                                                          @RequestParam(value = "folder", required = false, defaultValue = MailFolder.INBOX)
+                                                          String folder) {
+    try {
+      RawEmailSource source = emailBoxService.getRawEmailSource(mailRemoteId, request.getRemoteUser(), folder);
+      if (source == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().cacheControl(CacheControl.noStore().cachePrivate()).body(source);
+    } catch (MailboxRightMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Downloads an email as .eml. Streams the message's RFC 822 source, as the mail server
+   * holds it, as {@code message/rfc822} under a file name made from its subject
+   * (EXO-90842). Nothing is written to the response before the caller's access is
+   * checked and the message found, so a refusal or an absence keeps its own status.
+   *
+   * @param request the caller's request, for the acting user
+   * @param response where the source is streamed
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param folder the folder the message is listed in; INBOX when omitted
+   */
+  @GetMapping("/{mailRemoteId}/eml")
+  @Secured("users")
+  @Operation(summary = "Downloads an email as .eml", method = "GET",
+      description = "Streams the message's RFC 822 source as message/rfc822, as an attachment named after its subject. Only a message "
+          + "the caller has in that folder of their own mailbox, or of a mailbox shared with them where they hold the read right on that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not read their mailbox, or lacks the read right on that shared folder"),
+      @ApiResponse(responseCode = "404", description = "The caller has no such message in that folder"),
+      @ApiResponse(responseCode = "410", description = "The mailbox share that folder belongs to has ended"),
+      @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
+  public void downloadRawEmail(HttpServletRequest request,
+                               HttpServletResponse response,
+                               @Parameter(description = "Email id: the IMAP UID in its folder", required = true)
+                               @PathVariable("mailRemoteId")
+                               long mailRemoteId,
+                               @Parameter(description = "The folder the message is listed in; INBOX when omitted")
+                               @RequestParam(value = "folder", required = false, defaultValue = MailFolder.INBOX)
+                               String folder) {
+    try {
+      boolean found = emailBoxService.writeRawEmail(mailRemoteId, request.getRemoteUser(), folder, (subject, size) -> {
+        response.setContentType(EML_CONTENT_TYPE);
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+                           ContentDisposition.attachment()
+                                             .filename(EmailConnectorUtils.emlFileName(subject), StandardCharsets.UTF_8)
+                                             .build()
+                                             .toString());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, CacheControl.noStore().cachePrivate().getHeaderValue());
+        response.setHeader(NO_SNIFF_HEADER, "nosniff");
+        return response.getOutputStream();
+      });
+      if (!found) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+    } catch (MailboxRightMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Gets a conversation across folders. This will get all cached messages of a
+   * conversation (INBOX, SENT, ARCHIVE, and the user's folders) by thread id.
+   *
+   * @param request the caller's request, for the acting user
+   * @param threadId conversation thread id
+   * @param folder the folder the conversation is read from; TRASH or JUNK includes that
+   * folder's copies, anything else changes nothing
+   * @return the answer, as List&lt;Email&gt;
+   */
   @GetMapping("/thread/{threadId}")
   @Secured("users")
   @Operation(summary = "Gets a conversation across folders", method = "GET", description = "This will get all cached messages of a conversation (INBOX, SENT, ARCHIVE, and the user's folders) by thread id. Trash and Junk copies are left out, except those of the folder the reader was opened from (folder=TRASH or folder=JUNK).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public List<Email> getThread(HttpServletRequest request,
                                @Parameter(description = "Conversation thread id", required = true)
                                @PathVariable("threadId")
@@ -731,17 +1174,28 @@ public class EmailBoxRest {
     try {
       List<Email> thread = emailBoxService.getThread(threadId, request.getRemoteUser(), folder);
       readReceiptService.decorate(thread, request.getRemoteUser());
+      emailSecurityService.decorate(thread, request.getRemoteUser(), false);
       return thread;
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
+  /**
+   * Completes a conversation from the archive. Fetches a conversation's archived messages
+   * (Gmail All Mail) on demand and returns the whole thread.
+   *
+   * @param request the caller's request, for the acting user
+   * @param threadId conversation thread id
+   * @param folder the folder the conversation is read from; TRASH or JUNK includes that
+   * folder's copies, anything else changes nothing
+   * @return the answer, as List&lt;Email&gt;
+   */
   @GetMapping("/thread/{threadId}/complete")
   @Secured("users")
   @Operation(summary = "Completes a conversation from the archive", method = "GET", description = "Fetches a conversation's archived messages (Gmail All Mail) on demand and returns the whole thread. Slower than /thread/{threadId} as it may hit IMAP; call it in the background after rendering the cached thread.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public List<Email> completeThread(HttpServletRequest request,
                                     @Parameter(description = "Conversation thread id", required = true)
                                     @PathVariable("threadId")
@@ -752,18 +1206,28 @@ public class EmailBoxRest {
     try {
       List<Email> thread = emailBoxService.completeThread(threadId, request.getRemoteUser(), folder);
       readReceiptService.decorate(thread, request.getRemoteUser());
+      emailSecurityService.decorate(thread, request.getRemoteUser(), false);
       return thread;
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
+  /**
+   * Gets a conversation's stored summary. Returns the summary stored for a conversation,
+   * with a 'stale' flag saying whether the conversation has gained a message since it was
+   * written.
+   *
+   * @param request the caller's request, for the acting user
+   * @param threadId conversation thread id
+   * @return the thread ai summary
+   */
   @GetMapping("/thread/{threadId}/ai-summary")
   @Secured("users")
   @Operation(summary = "Gets a conversation's stored summary", method = "GET",
              description = "Returns the summary stored for a conversation, with a 'stale' flag saying whether the conversation has gained a message since it was written. 404 when no summary has been stored: this add-on does not produce them, so a deployment with no producer installed answers 404 for every conversation, which is the expected silence rather than an error.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "No summary stored for this conversation") })
   public ThreadAiSummary getThreadAiSummary(HttpServletRequest request,
                                             @Parameter(description = "Conversation thread id", required = true)
@@ -776,16 +1240,24 @@ public class EmailBoxRest {
       }
       return summary;
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
+  /**
+   * Asks for a conversation to be summarised. Broadcasts a request to summarise the
+   * conversation and returns immediately.
+   *
+   * @param request the caller's request, for the acting user
+   * @param threadId conversation thread id
+   * @return the answer, as ResponseEntity&lt;String&gt;
+   */
   @PostMapping("/thread/{threadId}/ai-summary/refresh")
   @Secured("users")
   @Operation(summary = "Asks for a conversation to be summarised", method = "POST",
              description = "Broadcasts a request to summarise the conversation and returns immediately. 202 and not 200 on purpose: the request has been accepted, and nothing here can promise a summary will be written — the producer lives elsewhere, and a deployment without one is supported. Poll the GET endpoint for the result.")
   @ApiResponses(value = { @ApiResponse(responseCode = "202", description = "Request accepted"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public ResponseEntity<String> refreshThreadAiSummary(HttpServletRequest request,
                                                        @Parameter(description = "Conversation thread id", required = true)
                                                        @PathVariable("threadId")
@@ -794,7 +1266,7 @@ public class EmailBoxRest {
       emailBoxService.requestThreadAiSummary(threadId, request.getRemoteUser());
       return ResponseEntity.accepted().build();
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
@@ -812,15 +1284,20 @@ public class EmailBoxRest {
   @Operation(summary = "Broadcasts an email opening", method = "POST",
       description = "Counts one opening of a message by the current user (open-email event), for a message the reader read with broadcast=false")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public void broadcastOpenEmail(HttpServletRequest request) {
     try {
       emailBoxService.broadcastOpenEmail(request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
+  /**
+   * Broadcasts access webmail.
+   *
+   * @param request the caller's request, for the acting user
+   */
   @PostMapping("/webmail/broadcast")
   @Secured("users")
   @Operation(summary = "Broadcasts access webmail", method = "POST", description = "This will broadcast access webmail")
@@ -833,7 +1310,7 @@ public class EmailBoxRest {
     try {
       emailBoxService.broadcastAccessWebmail(request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -887,7 +1364,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -940,7 +1417,7 @@ public class EmailBoxRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -954,6 +1431,8 @@ public class EmailBoxRest {
    * @param folder the folder those UIDs are numbered in; INBOX when omitted. The
    *          caller must send the ROW's own folder, not the folder it is listing —
    *          they differ in search results, in favorites and in the reader.
+   * @param conversation whether the ids name whole conversations: their other messages,
+   *          in every folder, are deleted too; false when omitted
    * @return {@code failedDeletions}: how many could not be deleted
    */
   @DeleteMapping()
@@ -995,7 +1474,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
       // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
@@ -1047,7 +1526,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
       // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
@@ -1103,7 +1582,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
       // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
@@ -1154,7 +1633,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1169,15 +1648,15 @@ public class EmailBoxRest {
    * rather than a target parameter on the delete, for the reason the Trash restore
    * gives: opposite fates for the same rows must not be one typo apart.
    * <p>
-   * Status mapping follows this controller, not the org contract: an
-   * {@code IllegalAccessException} ("no connected mailbox") is answered 401 here as it
-   * is by every sibling endpoint, so that one controller keeps one contract for the
-   * clients that read it. Moving the whole file to 403 is a change of its own.
+   * Status mapping follows the org contract: an {@code IllegalAccessException} ("no
+   * connected mailbox") is a refusal, answered 403.
    *
    * @param request the caller's request, for the acting user
    * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to report as spam
    * @param folder the folder those UIDs are numbered in; INBOX when omitted. The
    *          caller must send the ROW's own folder, as for the delete
+   * @param conversation whether the ids name whole conversations: their other messages,
+   *          in every folder, are marked too; false when omitted
    * @return {@code failedJunkMoves}: how many could not be marked as spam
    */
   @PostMapping("/junk")
@@ -1218,7 +1697,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
       // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
@@ -1274,7 +1753,7 @@ public class EmailBoxRest {
       // back to the caller's own mailbox rather than re-offering the action.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
       // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
@@ -1284,19 +1763,34 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Lists the categories used on the user's emails. Returns the categories currently
+   * applied to the user's emails, resolved to their localized name.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as List&lt;EmailCategory&gt;
+   */
   @GetMapping("/categories")
   @Secured("users")
   @Operation(summary = "Lists the categories used on the user's emails", method = "GET", description = "Returns the categories currently applied to the user's emails, resolved to their localized name")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public List<EmailCategory> getEmailCategories(HttpServletRequest request) {
     try {
       return emailBoxService.getEmailCategories(request.getRemoteUser(), request.getLocale());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
+  /**
+   * Lists the assignable email categories. Returns the add-on's own email categories a
+   * user can assign (Important / Invitation / Notification / To review), whether or not
+   * already used.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as List&lt;EmailCategory&gt;
+   */
   @GetMapping("/categories/available")
   @Secured("users")
   @Operation(summary = "Lists the assignable email categories", method = "GET", description = "Returns the add-on's own email categories a user can assign (Important / Invitation / Notification / To review), whether or not already used")
@@ -1321,7 +1815,7 @@ public class EmailBoxRest {
   @Operation(summary = "Tags emails with a category", method = "POST", description = "Links the given emails (IMAP UIDs numbered within the folder parameter, INBOX when omitted) to an existing category; use it to categorize a whole conversation by passing its message ids. Answers 400 emailConnector.category.notFound for an unknown category and 400 emailConnector.folder.notBrowsable for a folder that is not a listable one")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unknown category, or a folder that is not a listable one"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public Map<String, Integer> linkEmailsToCategory(HttpServletRequest request,
                                                    @Parameter(description = "Category id", required = true)
                                                    @PathVariable("categoryId")
@@ -1338,7 +1832,7 @@ public class EmailBoxRest {
       response.put("linked", linked);
       return response;
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -1360,7 +1854,7 @@ public class EmailBoxRest {
   @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (IMAP UIDs numbered within the folder parameter, INBOX when omitted) from a category. Answers 400 emailConnector.folder.notBrowsable for a folder that is not a listable one")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A folder that is not a listable one"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
   public Map<String, Integer> unlinkEmailsFromCategory(HttpServletRequest request,
                                                        @Parameter(description = "Category id", required = true)
                                                        @PathVariable("categoryId")
@@ -1377,7 +1871,7 @@ public class EmailBoxRest {
       response.put("unlinked", unlinked);
       return response;
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -1398,7 +1892,7 @@ public class EmailBoxRest {
              description = "The reader's answer to a message that asks to be notified when it is read (RFC 8098): SEND transmits a read receipt ('displayed', never 'denied') to the requested address, as the caller, over their own mail connector, with no copy in Sent; IGNORE sends nothing. Either answer is final for the message: it is recorded once per caller and Message-ID in the answer store, which outlives the cached copies (a message the sync re-creates after a move, an archive or a reset is not offered again, even on a mailbox that stores no keywords such as Exchange), on every cached copy of it, and, where the mailbox stores keywords, as $MDNSent on the server so the caller's other clients do not ask again. A message that came with no Message-ID keeps its answer on its cached copies only. Call it only when a person has the message on screen: the banner's buttons (automatic false), or, when the message's readReceiptPrompt is AUTO, its display (automatic true, which the receipt reports as sent automatically). An automatic SEND is refused with emailConnector.readReceipt.askFirst unless the request is to be answered automatically right now -- the reader then shows the banner. Everything is checked again here, whatever readReceiptPrompt said: a message of Sent, Drafts, Junk or Trash, the caller's own mail, or a request naming no address is refused, and SEND is refused under the NEVER policy. A message is addressed by its technical id, as the favorites read does.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Answered"),
       @ApiResponse(responseCode = "400", description = "The message asks for no receipt (emailConnector.readReceipt.notRequested), cannot be answered (emailConnector.readReceipt.notAllowed), or no valid action was given (emailConnector.readReceipt.invalidAction), or an automatic SEND for a request that must now be asked about (emailConnector.readReceipt.askFirst)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation: the caller's mailbox connector is not usable"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation: the caller's mailbox connector is not usable"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's"),
       @ApiResponse(responseCode = "409", description = "Already answered, here or in another client (emailConnector.readReceipt.alreadyHandled)"),
       @ApiResponse(responseCode = "500", description = "The receipt could not be sent and the request stays pending (emailConnector.readReceipt.sendFailed), or the mail server failed after it may have been accepted and it is not sent again (emailConnector.readReceipt.unconfirmed)"), })
@@ -1422,7 +1916,7 @@ public class EmailBoxRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1431,20 +1925,22 @@ public class EmailBoxRest {
   /**
    * Sends a composed mail, from the caller's own account; from a mailbox shared with the
    * caller when {@code delegationId} names it, in which case a copy is also filed in its
-   * owner's Sent folder (EXO-90551).
+   * owner's Sent folder (EXO-90551); and in that owner's name when {@code sendMode} asks
+   * for it and the owner consented (EXO-90583).
    *
    * @param request the caller's request, for the acting user
    * @param email the composed mail
    * @param delegationId the share the mail is sent from, or null
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name, or null
    * @return {@code ownerCopy}: FILED, FAILED or SKIPPED when a share is named; empty
    *         otherwise
    */
   @PostMapping("/send")
   @Secured("users")
-  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address). With delegationId, the mail is sent from a mailbox shared with the caller: it still goes out from the caller's account, and a copy is also filed in the owner's Sent folder; the answer says what became of that copy (ownerCopy: FILED, FAILED or SKIPPED). A copy that could not be filed never makes the send fail.")
+  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address). With delegationId, the mail is sent from a mailbox shared with the caller: it still goes out from the caller's account, and a copy is also filed in the owner's Sent folder; the answer says what became of that copy (ownerCopy: FILED, FAILED or SKIPPED). A copy that could not be filed never makes the send fail. With sendMode (ON_BEHALF or AS, beside delegationId), the mail goes out in the owner's name, as the owner allowed: ON_BEHALF shows the owner as the author and the caller as the sender, AS shows only the owner; the read-receipt request is then ignored, and the owner's copy carries X-Exo-Sent-By. NONE or no sendMode sends in the caller's own name.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "400", description = "Bad Request; for sendMode: emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported, or .refusedByServer when the owner's mail server refuses a mail in the owner's name (nothing was sent)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden; emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the shape"),
       @ApiResponse(responseCode = "404", description = "Not found, or no such share of the caller"),
       @ApiResponse(responseCode = "409", description = "Conflict"),
       @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"), })
@@ -1454,12 +1950,15 @@ public class EmailBoxRest {
                                        Email email,
                                        @Parameter(description = "The share the mail is sent from, when it is sent from a mailbox shared with the caller")
                                        @RequestParam(value = "delegationId", required = false)
-                                       Long delegationId) {
+                                       Long delegationId,
+                                       @Parameter(description = "ON_BEHALF or AS to send in the owner's name of the share delegationId names (EXO-90583); NONE or nothing for the caller's own")
+                                       @RequestParam(value = "sendMode", required = false)
+                                       String sendMode) {
     try {
       if (email == null || email.getTo() == null || email.getTo().isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId);
+      OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId, sendMode);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
@@ -1469,20 +1968,37 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (DelegationRevokedException e) {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (SendModeUnavailableException e) {
+      // A shape asked for that cannot be used, or the owner's server refused it: the
+      // code, never the server's words (EXO-90583).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (SendModeMissingException e) {
+      // A refusal, 403, with the code naming the shape the consent does not cover, so
+      // the composer can fall back to the caller's own name and say why.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Saves a draft. Saves the composed draft locally, and — when 'push' is set and the
+   * account has a Drafts folder — appends it to the mail server's Drafts folder as well.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draft the composed draft
+   * @param push when true, also upload the draft to the mail server's Drafts folder
+   * @return the email
+   */
   @PostMapping("/drafts")
   @Secured("users")
   @Operation(summary = "Saves a draft", method = "POST",
-             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt.")
+             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt. sendDelegationId, on a draft's FIRST save only, names the mailbox shared with the caller the draft is written in: it must be one of the caller's own shares (400 emailConnector.drafts.save.mailboxNotFound otherwise, nothing saved), and is then recorded on the draft for good -- later saves never move it, and the draft is sent through that share whatever mailbox the composer shows later; a share that has ended is recorded all the same, so the words are kept, and every send of the draft refuses it. Every answer carries the draft's sendDelegationId, null for the caller's own mailbox (-1 for a draft re-read from the server whose shared mailbox could not be confirmed: a mailbox no longer shared, never the caller's own). sendMode (NONE, ON_BEHALF or AS) is the name the draft is to go out in, saved with every revision; blank keeps the stored one; it is not checked against the owner's consent until the draft is sent or scheduled. On a draft of the caller's own mailbox only NONE is accepted (400 emailConnector.sendMode.noMailbox otherwise); an unknown value is 400 emailConnector.sendMode.invalid; nothing is saved then. Every answer carries the draft's sendMode, null when it never said.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "400", description = "Bad Request, a first save naming a share that is not the caller's (emailConnector.drafts.save.mailboxNotFound), or a sendMode that cannot be saved (emailConnector.sendMode.invalid, .noMailbox)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded)"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"), })
   public Email saveDraft(HttpServletRequest request,
@@ -1507,29 +2023,33 @@ public class EmailBoxRest {
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
   /**
-   * Sends the composer's draft; from a mailbox shared with the caller when
-   * {@code delegationId} names it, filing a copy in its owner's Sent (EXO-90551).
+   * Sends the composer's draft, from the mailbox the draft was written in: through its
+   * share, filing a copy in its owner's Sent (EXO-90551), when it was written in a
+   * mailbox shared with the caller (EXO-90595). A {@code delegationId} that is not the
+   * draft's is refused.
    *
    * @param request the caller's request, for the acting user
    * @param draftLocalId the draft's local id
    * @param draft the draft as the composer is showing it
-   * @param delegationId the share the draft is sent from, or null
+   * @param delegationId the share the composer believes the draft belongs to, or null
+   * @param sendMode the name a draft that records none goes out in (EXO-90583,
+   *          EXO-90584); refused when the draft records another, or null
    * @return {@code ownerCopy} when a share is named; empty otherwise
    */
   @PostMapping("/drafts/{draftLocalId}/send")
   @Secured("users")
   @Operation(summary = "Sends a draft", method = "POST",
-             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder.")
+             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder. The mail goes from the mailbox the draft was written in (its sendDelegationId): a draft of a mailbox shared with the caller is sent through that share and a copy filed in its owner's Sent (ownerCopy in the answer), whatever mailbox the composer shows now. delegationId, when given, must be the draft's own; any other value is refused with 400 emailConnector.drafts.send.mailboxMismatch before anything is saved or sent. The draft goes out in the name it records (its sendMode: NONE, ON_BEHALF or AS -- the body's sendMode, saved onto the draft with its text first, else the stored one), in the owner's name of the draft's share as the owner allowed (see POST /send); it is checked before anything is saved or sent, and a refusal by the owner's mail server leaves the draft as it was. The sendMode query parameter is read only for a draft that records no name, and one naming another shape than the draft's is refused with 400 emailConnector.sendMode.mismatch before anything is saved or sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "No local id, or a send of this draft is already in flight"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "400", description = "No local id, a send of this draft is already in flight, delegationId is not the draft's mailbox (emailConnector.drafts.send.mailboxMismatch), or sendMode cannot be used (emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported, .refusedByServer) or is not the draft's (emailConnector.sendMode.mismatch)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation; emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the shape"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
       @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"),
@@ -1541,9 +2061,12 @@ public class EmailBoxRest {
                                        @Parameter(description = "The draft as the composer is showing it", required = true)
                                        @RequestBody
                                        Email draft,
-                                       @Parameter(description = "The share the draft is sent from, when it was written in a mailbox shared with the caller (EXO-90551)")
+                                       @Parameter(description = "The share the composer believes the draft belongs to; must be the draft's own (EXO-90595)")
                                        @RequestParam(value = "delegationId", required = false)
-                                       Long delegationId) {
+                                       Long delegationId,
+                                       @Parameter(description = "Deprecated: the draft's sendMode, in the body or as stored, is the name it goes out in (EXO-90584). Read only for a draft that records no name (saved before the name was stored): ON_BEHALF or AS to send it in the owner's name of the draft's share, NONE for the caller's own; refused (emailConnector.sendMode.mismatch) when it is not the name the draft records", deprecated = true)
+                                       @RequestParam(value = "sendMode", required = false)
+                                       String sendMode) {
     try {
       if (draft == null || CollectionUtils.isEmpty(draft.getTo())) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
@@ -1551,7 +2074,7 @@ public class EmailBoxRest {
       // The path is what names the draft; a body claiming a different id would be two
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
-      OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
+      OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId, sendMode);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
@@ -1561,8 +2084,10 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (SendModeMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalArgumentException e) {
@@ -1572,12 +2097,49 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * The mailbox shared with the caller that a draft of theirs belongs to (EXO-90595).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @return the mailbox, or 204 for a draft of the caller's own mailbox
+   */
+  @GetMapping("/drafts/{draftLocalId}/mailbox")
+  @Secured("users")
+  @Operation(summary = "The mailbox a draft belongs to", method = "GET",
+             description = "The mailbox shared with the caller that the draft was written in, as the server knows it: delegationId, ownerFullName, ownerMailbox, and shared -- false once that mailbox is no longer shared with the caller, in which case the draft cannot be sent (it is never sent from the caller's own mailbox instead). 204 for a draft of the caller's own mailbox, 404 for a draft the caller does not have.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "204", description = "A draft of the caller's own mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "No draft under that local id"), })
+  public ResponseEntity<DraftMailbox> getDraftMailbox(HttpServletRequest request,
+                                                      @Parameter(description = "The draft's local id", required = true)
+                                                      @PathVariable("draftLocalId")
+                                                      String draftLocalId) {
+    try {
+      DraftMailbox mailbox = emailBoxService.getDraftMailbox(draftLocalId, request.getRemoteUser());
+      return mailbox == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(mailbox);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    }
+  }
+
+  /**
+   * Discards a draft. Removes the draft: the copy on the mail server first, then the
+   * local row.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @return the answer, as ResponseEntity&lt;String&gt;
+   */
   @DeleteMapping("/drafts/{draftLocalId}")
   @Secured("users")
   @Operation(summary = "Discards a draft", method = "DELETE",
              description = "Removes the draft: the copy on the mail server first, then the local row. Answers 404 for an id the caller has no draft under, so a draft id never reveals whether it exists, and 500 when the server copy could not be removed — in which case the local row is deliberately kept, so the two never disagree about whether the draft still exists.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled and being sent (emailConnector.scheduled.sending)"),
       @ApiResponse(responseCode = "500", description = "The copy on the mail server could not be removed"), })
@@ -1593,7 +2155,7 @@ public class EmailBoxRest {
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1610,12 +2172,13 @@ public class EmailBoxRest {
   @PostMapping("/drafts/{draftLocalId}/schedule")
   @Secured("users")
   @Operation(summary = "Schedules a draft to be sent at a date", method = "POST",
-             description = "Saves the text the composer shows onto the draft, then freezes it: the draft is removed from the mail server's Drafts folder (so no other client can send it), locked against edits, listed under Scheduled instead of Drafts, and sent as the caller at scheduledDate (epoch milliseconds, UTC), by whichever node gets to it first and only once. timeZone is the zone the date was chosen in, for display. The date must be at least one minute and at most one year ahead of the server's clock. Answers 400 with a message code (emailConnector.scheduled.date.tooSoon, .date.tooFar, .timeZone.invalid, .limitReached, .recipientsMandatory, emailConnector.drafts.send.attachmentGone), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is scheduled then).")
+             description = "Saves the text the composer shows onto the draft, then freezes it: the draft is removed from the mail server's Drafts folder (so no other client can send it), locked against edits, listed under Scheduled instead of Drafts, and sent as the caller at scheduledDate (epoch milliseconds, UTC), by whichever node gets to it first and only once. timeZone is the zone the date was chosen in, for display. The date must be at least one minute and at most one year ahead of the server's clock. Answers 400 with a message code (emailConnector.scheduled.date.tooSoon, .date.tooFar, .timeZone.invalid, .limitReached, .recipientsMandatory, emailConnector.drafts.send.attachmentGone), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is scheduled then). A draft written in a mailbox shared with the caller is sent through that share at its date, checked again then: 410 now when that mailbox is no longer shared with the caller (emailConnector.delegation.revoked). A draft in the owner's name (its sendMode, or the one the body carries) is checked against her consent now and again at its date, when a consent withdrawn or narrowed since fails the send for good and it never goes out in the caller's name instead: 403 now with emailConnector.sendMode.missing.ON_BEHALF|AS, 400 with emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported or .refusedByServer.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation; emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the draft's name"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Already scheduled, or being sent"),
+      @ApiResponse(responseCode = "410", description = "The draft's mailbox is no longer shared with the caller"),
       @ApiResponse(responseCode = "500", description = "The draft's copy on the mail server could not be removed"), })
   public ScheduledEmail scheduleDraft(HttpServletRequest request,
                                       @Parameter(description = "The draft's local id", required = true)
@@ -1635,16 +2198,102 @@ public class EmailBoxRest {
                                                 scheduleRequest.getScheduledDate(),
                                                 scheduleRequest.getTimeZone(),
                                                 request.getRemoteUser());
+    } catch (SendModeMissingException e) {
+      // In the owner's name, and her consent does not cover it (EXO-90584): the code, so
+      // the composer can say which shape and fall back to the user's own name.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Sends a draft with an Undo (EXO-90837): held for the caller's Undo wait, then sent.
+   *
+   * @param request the caller, the only owner a draft is looked up for
+   * @param draftLocalId the draft's local id
+   * @param draft the draft as the composer shows it
+   * @return the held mail: its handle, when it goes, how long the Undo is offered
+   */
+  @PostMapping("/drafts/{draftLocalId}/send-undoable")
+  @Secured("users")
+  @Operation(summary = "Sends a draft with an Undo", method = "POST",
+             description = "Saves the text the composer shows onto the draft and freezes it as a scheduling does (its copy in the mail server's Drafts folder removed, the draft locked), then holds it for the caller's Undo wait (GET /user-email-setting/undo-send) before it is sent as the caller, from the mailbox and in the name the draft records, by whichever node gets to it first and only once -- a closed tab or a restarted node does not stop it. A held mail is not listed under Scheduled. POST /drafts/{draftLocalId}/undo-send takes it back while it has not started to go. Answers draftLocalId, sendDate (epoch ms, the server's clock) and delaySeconds; 400 with a message code (emailConnector.undoSend.off when the caller turned the Undo off -- send with POST /drafts/{draftLocalId}/send instead -- emailConnector.scheduled.recipientsMandatory, emailConnector.scheduled.attachmentsNotStored, emailConnector.drafts.send.attachmentGone, emailConnector.sendMode.*), 403 for a mailbox the caller may not use (emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the draft's name), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 410 when its mailbox is no longer shared with the caller, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is held then).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Held for its Undo"),
+      @ApiResponse(responseCode = "400", description = "Bad Request, or the Undo is off (emailConnector.undoSend.off)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Already scheduled, or being sent"),
+      @ApiResponse(responseCode = "410", description = "The draft's mailbox is no longer shared with the caller"),
+      @ApiResponse(responseCode = "500", description = "The draft's copy on the mail server could not be removed"), })
+  public UndoableSend sendDraftUndoable(HttpServletRequest request,
+                                        @Parameter(description = "The draft's local id", required = true)
+                                        @PathVariable("draftLocalId")
+                                        String draftLocalId,
+                                        @Parameter(description = "The draft as the composer shows it", required = true)
+                                        @RequestBody
+                                        Email draft) {
+    if (draft == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    try {
+      // The path names the draft, as it does for the send and the schedule.
+      draft.setDraftLocalId(draftLocalId);
+      return emailScheduledSendService.sendUndoable(draft, request.getRemoteUser());
+    } catch (SendModeMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Takes back a mail sent with an Undo (EXO-90837), answering its draft.
+   *
+   * @param request the caller, the only owner a held mail is looked up for
+   * @param draftLocalId the draft's local id
+   * @return the draft as it was frozen, for the composer to reopen
+   */
+  @PostMapping("/drafts/{draftLocalId}/undo-send")
+  @Secured("users")
+  @Operation(summary = "Takes back a mail sent with an Undo", method = "POST",
+             description = "Takes back a mail sent with POST /drafts/{draftLocalId}/send-undoable, while it has not started to go: it is not sent, and goes back to Drafts as it was frozen -- recipients, subject, body, files, threading, mailbox and name -- as a draft that lives only here until its next save pushes it to the mail server again. Answers that draft. 404 for a mail the caller has no such draft or held mail under (one sent and cleaned up included), 409 when it is being sent or was sent (emailConnector.scheduled.sending), or may have been (emailConnector.scheduled.uncertain).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Taken back"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
+  public Email undoSend(HttpServletRequest request,
+                        @Parameter(description = "The draft's local id", required = true)
+                        @PathVariable("draftLocalId")
+                        String draftLocalId) {
+    try {
+      return emailScheduledSendService.undoSend(draftLocalId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     }
   }
 
@@ -1659,9 +2308,9 @@ public class EmailBoxRest {
   @GetMapping("/scheduled")
   @Secured("users")
   @Operation(summary = "Lists the caller's scheduled mails", method = "GET",
-             description = "The caller's mails scheduled to be sent, soonest first: recipients, subject, a one-line snippet, the instant (epoch ms), the zone it was chosen in, the status (SCHEDULED, SENDING, FAILED, UNCERTAIN) and, when not sent, the reason code. A mail that was sent is no longer listed: it is in Sent.")
+             description = "The caller's mails scheduled to be sent, soonest first: recipients, subject, a one-line snippet, the instant (epoch ms), the zone it was chosen in, the status (SCHEDULED, SENDING, FAILED, UNCERTAIN) and, when not sent, the reason code (MAILBOX_UNSHARED: written in a mailbox no longer shared with the caller, never sent from the caller's own instead; SEND_MODE_WITHDRAWN, SEND_MODE_UNAVAILABLE, SEND_MODE_REFUSED: to go out in that mailbox owner's name, which her consent no longer covers, cannot be used any more, or her mail server refused -- never sent in the caller's own name instead). mailbox names the mailbox shared with the caller the mail was written in and goes from -- delegationId, ownerFullName, ownerMailbox, and shared, false once it no longer is -- and is absent for the caller's own; sendMode, beside it, is the name the mail goes out in from that mailbox (NONE, ON_BEHALF or AS; null when it never recorded one). A mail that was sent is no longer listed: it is in Sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public List<ScheduledEmail> getScheduledEmails(HttpServletRequest request,
                                                  @Parameter(description = "The first row, a multiple of limit")
                                                  @RequestParam(value = "offset", required = false, defaultValue = "0")
@@ -1674,7 +2323,7 @@ public class EmailBoxRest {
                                                           Math.max(0, offset),
                                                           Math.max(1, Math.min(limit, MAX_SCHEDULED_PAGE)));
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
@@ -1708,7 +2357,7 @@ public class EmailBoxRest {
              description = "Gives a scheduled mail, or one that failed, a new date (epoch ms) and zone, with the same bounds as scheduling. Answers 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending) or its sending could not be confirmed (emailConnector.scheduled.uncertain).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
   public ScheduledEmail rescheduleEmail(HttpServletRequest request,
@@ -1727,7 +2376,7 @@ public class EmailBoxRest {
                                                   scheduleRequest.getTimeZone(),
                                                   request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (ScheduledSendConflictException e) {
@@ -1749,10 +2398,10 @@ public class EmailBoxRest {
   @PutMapping("/scheduled/{draftLocalId}/content")
   @Secured("users")
   @Operation(summary = "Updates a scheduled mail's content in place", method = "PUT",
-             description = "Replaces the subject, body, recipients and files of a scheduled (or failed) mail, and its date when scheduledDate is given, in one transaction: the mail stays scheduled, is never sent half-edited, and a dispatcher about to send it waits for the update and sends the new content. New files come as uploads in draft.attachments; removedAttachmentIds are stored files to take off it. Answers 400 with a message code (emailConnector.scheduled.recipientsMandatory, .date.tooSoon, .date.tooFar, .timeZone.invalid, emailConnector.mailBox.newEmail.attach.maxSize.error, emailConnector.drafts.attach.uploadGone, emailConnector.drafts.attach.unknown, emailConnector.drafts.send.attachmentGone), 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending) or its sending could not be confirmed (emailConnector.scheduled.uncertain); nothing is changed then.")
+             description = "Replaces the subject, body, recipients and files of a scheduled (or failed) mail, and its date when scheduledDate is given, in one transaction: the mail stays scheduled, is never sent half-edited, and a dispatcher about to send it waits for the update and sends the new content. New files come as uploads in draft.attachments; removedAttachmentIds are stored files to take off it. Answers 400 with a message code (emailConnector.scheduled.recipientsMandatory, .date.tooSoon, .date.tooFar, .timeZone.invalid, emailConnector.mailBox.newEmail.attach.maxSize.error, emailConnector.drafts.attach.uploadGone, emailConnector.drafts.attach.unknown, emailConnector.drafts.send.attachmentGone), 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending) or its sending could not be confirmed (emailConnector.scheduled.uncertain); nothing is changed then. draft.sendMode, when given, changes the name the mail goes out in (NONE, ON_BEHALF or AS), and the name it is left in is checked against the shared mailbox owner's consent: 403 emailConnector.sendMode.missing.ON_BEHALF|AS, 400 emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported or .refusedByServer, 410 when the mailbox is no longer shared; nothing is changed then.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
   public ScheduledEmail updateScheduledEmailContent(HttpServletRequest request,
@@ -1772,10 +2421,15 @@ public class EmailBoxRest {
                                                      scheduleRequest.getScheduledDate(),
                                                      scheduleRequest.getTimeZone(),
                                                      request.getRemoteUser());
+    } catch (SendModeMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The mail is in the owner's name and her mailbox is no longer shared (EXO-90584).
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalArgumentException e) {
@@ -1795,7 +2449,7 @@ public class EmailBoxRest {
   @Operation(summary = "Cancels a scheduled mail", method = "DELETE",
              description = "Removes the schedule: the mail goes back to Drafts with its content, attachments and threading, as a draft that lives only here until its next save pushes it to the mail server again. Answers 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending).")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Cancelled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Being sent, or sent"), })
   public ResponseEntity<Void> cancelScheduledEmail(HttpServletRequest request,
@@ -1806,7 +2460,7 @@ public class EmailBoxRest {
       emailScheduledSendService.cancel(draftLocalId, request.getRemoteUser());
       return ResponseEntity.noContent().build();
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (ScheduledSendConflictException e) {
@@ -1826,7 +2480,7 @@ public class EmailBoxRest {
   @Operation(summary = "Sends a scheduled mail now", method = "POST",
              description = "Sends a scheduled mail at once, or retries one that failed or whose sending could not be confirmed (the caller decides: a retry of an uncertain mail may deliver it twice). It takes the same claim as the dispatcher, so of the two racing only one sends. Answers the mail as it now stands -- status SENT when it went out, else its status and reason code -- 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Being sent, or sent"), })
   public ScheduledEmail sendScheduledEmailNow(HttpServletRequest request,
@@ -1836,7 +2490,7 @@ public class EmailBoxRest {
     try {
       return emailScheduledSendService.sendNow(draftLocalId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (ScheduledSendConflictException e) {
@@ -1844,13 +2498,23 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Attaches an uploaded file to a draft. Copies a commons upload into the platform's
+   * file store and records it on the draft, so the file survives the browser session, the
+   * tab and a server restart - which a temporary upload does not.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param attachment the attachment
+   * @return the email
+   */
   @PostMapping("/drafts/{draftLocalId}/attachments")
   @Secured("users")
   @Operation(summary = "Attaches an uploaded file to a draft", method = "POST",
              description = "Copies a commons upload into the platform's file store and records it on the draft, so the file survives the browser session, the tab and a server restart - which a temporary upload does not. Answers the draft as it now stands, attachments included, with its revision stepped: attaching is an edit, and a draft that did not notice one would accept a file and never send it. Answers 404 for an id the caller has no draft under, and 400 when the upload is gone or the draft would go over the size a message may carry. The draft is not pushed to the mail server by this call - the next save does that, carrying the file with it; a draft whose files cannot all be read is never pushed at all, since a copy up there without them would look complete and would not be.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "The upload is gone, or the draft would be too large to send"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Email addDraftAttachment(HttpServletRequest request,
                                   @Parameter(description = "The draft's local id", required = true)
@@ -1867,7 +2531,7 @@ public class EmailBoxRest {
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -1875,13 +2539,24 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Carries a forwarded message's files onto the draft that forwards it. Copies the files
+   * of the message being forwarded into the platform's file store and records them on the
+   * draft, so a forward arrives carrying what the original carried.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param mailRemoteId the mail remote id
+   * @param folder the folder that message is listed in; blank means INBOX
+   * @return the forwarded attachments
+   */
   @PostMapping("/drafts/{draftLocalId}/attachments/forwarded")
   @Secured("users")
   @Operation(summary = "Carries a forwarded message's files onto the draft that forwards it", method = "POST",
              description = "Copies the files of the message being forwarded into the platform's file store and records them on the draft, so a forward arrives carrying what the original carried. The caller names the message, never its parts: which files are taken is read from the cached rows of a message that is the caller's own, in the folder they name. Answers the draft as it now stands - attachments included, revision stepped, since attaching is an edit - together with the names of the files that were NOT attached, because they would take the draft over the size a message may carry or because they could not be read. Nothing fails for one file: the rest are still attached, and the answer is what the forward will and will not carry. Answers 404 for an id the caller has no draft under, and for a message they have none of in that folder.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "No draft was named"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public ForwardedAttachments addForwardedAttachments(HttpServletRequest request,
                                                       @Parameter(description = "The draft's local id", required = true)
@@ -1906,7 +2581,7 @@ public class EmailBoxRest {
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -1914,12 +2589,21 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Removes a file from a draft. Removes the attachment row and records its stored file
+   * as unreferenced, for a later sweep to free.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param attachmentId the attachment's own id
+   * @return the email
+   */
   @DeleteMapping("/drafts/{draftLocalId}/attachments/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Removes a file from a draft", method = "DELETE",
              description = "Removes the attachment row and records its stored file as unreferenced, for a later sweep to free. Answers the draft as it now stands, with its revision stepped for the same reason attaching steps it. Answers 404 both for a draft the caller does not have and for an attachment that is not on it, so neither id can be probed for existence.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Email removeDraftAttachment(HttpServletRequest request,
                                      @Parameter(description = "The draft's local id", required = true)
@@ -1937,18 +2621,27 @@ public class EmailBoxRest {
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Downloads a file attached to a draft. Reads the bytes back from the platform's file
+   * store.
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param attachmentId the attachment's own id
+   * @return the answer, as ResponseEntity&lt;byte[]&gt;
+   */
   @GetMapping("/drafts/{draftLocalId}/attachments/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Downloads a file attached to a draft", method = "GET",
              description = "Reads the bytes back from the platform's file store. Deliberately a separate address from /attachments/{mailRemoteId}/{attachmentId}, which cannot reach a draft's file at all: that one addresses a message by its IMAP UID, and an unpushed draft has none - its MAIL_REMOTE_ID is null, which is the column that lookup joins on.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public ResponseEntity<byte[]> getDraftAttachment(HttpServletRequest request,
                                                    @Parameter(description = "The draft's local id", required = true)
@@ -1975,12 +2668,22 @@ public class EmailBoxRest {
                                    "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
                            .body(attachment.getData());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 
+  /**
+   * Gets attachment by mail remote id and attachment id.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId email id
+   * @param attachmentId attachment id
+   * @param folder the folder
+   * @param ifNoneMatch the if none match
+   * @return the answer, as ResponseEntity&lt;byte[]&gt;
+   */
   @GetMapping("/attachments/{mailRemoteId}/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET",
@@ -2028,9 +2731,42 @@ public class EmailBoxRest {
                                    "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
                            .body(data);
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
+  }
+
+  /**
+   * Puts a folder refusal's message code in the body the browser reads.
+   * <p>
+   * The folder endpoints refuse with {@code ResponseStatusException(BAD_REQUEST, code)},
+   * and Spring Boot's default error body does not carry the reason on this platform -- it
+   * holds {@code timestamp}, {@code status}, {@code error} and {@code path} only -- so
+   * without this the Folders drawer cannot tell the cap
+   * ({@code emailConnector.folder.tooMany}) from any other failure (EXO-90849). The body
+   * is the shape {@code EmailConnectorRest#onRefusal} answers with: the status, and the
+   * code under {@code message}, which is what the JS services read.
+   * <p>
+   * Only a 400 whose reason is a folder code ({@link #FOLDER_CODE_PREFIX}) is answered
+   * here. Every other refusal of this controller is rethrown untouched, and Spring's
+   * {@code ResponseStatusExceptionResolver} answers it as it answers a controller with no
+   * handler of its own: a 403, 404, 409, 410 or 500 carries exactly what it carried, and
+   * no reason that could hold an engine's text reaches a body.
+   *
+   * @param refusal the refusal a controller method threw
+   * @return the same status, with the folder code in the body
+   */
+  @ExceptionHandler(ResponseStatusException.class)
+  public ResponseEntity<Map<String, Object>> onFolderRefusal(ResponseStatusException refusal) {
+    String reason = refusal.getReason();
+    if (refusal.getStatusCode().value() != HttpStatus.BAD_REQUEST.value() || reason == null
+        || !reason.startsWith(FOLDER_CODE_PREFIX)) {
+      throw refusal;
+    }
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", refusal.getStatusCode().value());
+    body.put("message", reason);
+    return ResponseEntity.status(refusal.getStatusCode()).body(body);
   }
 }

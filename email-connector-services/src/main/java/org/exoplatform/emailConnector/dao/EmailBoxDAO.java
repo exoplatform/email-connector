@@ -190,6 +190,73 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * The owner's cached copies of some messages, by their Message-IDs, outside the given
+   * folders, as the light rows a list of mails shows: what the mailbox's "Suggestions"
+   * view lists (EXO-90851). No body, no attachment. Never called with an empty list of
+   * Message-IDs -- an empty {@code IN} is not valid SQL everywhere --; the mailbox's
+   * pending cap on suggestions bounds it.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs, not empty
+   * @param excludedFolders the folders left out, not empty
+   * @return rows of {@code [id, folder, mailHeaderId, mailRemoteId, subject, sender,
+   *         receivedDate, read, starred]}, newest first
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.subject, email.sender, email.receivedDate,"
+      + " email.read, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds"
+      + " AND email.folder NOT IN :excludedFolders AND email.draftLocalId IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
+  List<Object[]> findListedByUserIdAndMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  Collection<String> mailHeaderIds, @Param("excludedFolders")
+  Collection<String> excludedFolders);
+
+  /**
+   * Some folders of the cached mailbox WITHOUT their attachments, for the search over
+   * cached mail: the folders of the mailboxes shared with the user that the unified
+   * search reads (EXO-90554). Never called with an empty list -- an empty {@code IN}
+   * is not valid SQL everywhere.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the {@code CUSTOM:<id>} keys to read
+   * @return their cached messages, newest first, attachments not fetched
+   */
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder IN :folders ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdAndFoldersForSearch(@Param("userId")
+  String userId, @Param("folders")
+  Collection<String> folders);
+
+  /**
+   * One page of a mailbox's cached messages whose subject or sender contains a
+   * keyword, for the editors' "/mail" link picker.
+   * <p>
+   * A projection, not the entity: the picker shows a subject and nothing else, so
+   * neither the body nor the attachments are read. The sender column stores
+   * {@code name,address}, so one {@code LIKE} on it matches the name and the
+   * address alike. Both sides are lowered, the pattern by the caller, so the match
+   * is case-insensitive on every database whatever its collation. The escape
+   * character is {@code !}, not a backslash, which MySQL would read as the escape
+   * of the SQL string literal itself.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param excludedFolders the folders never offered (drafts, trash, junk)
+   * @param pattern the lower-cased {@code %keyword%} pattern, its {@code %},
+   *          {@code _} and {@code !} escaped with {@code !}
+   * @param offset how many matches to skip
+   * @param limit how many matches at most
+   * @return rows of {@code [id, subject, sender, receivedDate]}, newest first
+   */
+  @Query("SELECT email.id, email.subject, email.sender, email.receivedDate FROM EmailBoxEntity email"
+      + " WHERE email.userId = :userId AND email.folder NOT IN :excludedFolders"
+      + " AND (LOWER(email.subject) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) LIKE :pattern ESCAPE '!')"
+      + " ORDER BY email.receivedDate DESC, email.id DESC LIMIT :limit OFFSET :offset")
+  List<Object[]> findLinkCandidatesByUserId(@Param("userId")
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders, @Param("pattern")
+  String pattern, @Param("offset")
+  int offset, @Param("limit")
+  int limit);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
@@ -879,18 +946,19 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> threadIds);
 
   /**
-   * Of the given IMAP UIDs, the ones already cached in a folder — one IN query
-   * for the whole search result list, so decorating hits with their "already
-   * openable locally" flag costs a single statement rather than one lookup per
-   * hit (the same per-row discipline the sync reconcile follows).
+   * Of the given IMAP UIDs, the cached ones in a folder of one user, each with its
+   * row's local id -- the (UID, id) pairs a search result list is decorated with, so a
+   * hit found on the mail server names its mail by the key the agent tools take
+   * (EXO-90555), in one IN statement for the whole page.
+   * Scoped by owner and folder: a UID numbers a message within one folder only.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the candidate IMAP UIDs
-   * @return the subset of {@code mailRemoteIds} present in the local cache
+   * @return {UID, id} pairs of the cached ones
    */
-  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
-  List<Long> findCachedMailRemoteIds(@Param("userId")
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Object[]> findCachedIdsByMailRemoteIds(@Param("userId")
   String userId, @Param("folder")
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds);

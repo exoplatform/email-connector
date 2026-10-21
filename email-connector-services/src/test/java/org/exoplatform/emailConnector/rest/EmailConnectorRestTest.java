@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
@@ -69,9 +70,13 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.EngineInUseException;
+import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
+import org.exoplatform.emailConnector.service.EmailConnectorEngineService;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
 import org.exoplatform.emailConnector.service.EmailManagedDisconnectionService;
 import org.exoplatform.emailConnector.service.EmailManagedModeService;
@@ -121,6 +126,9 @@ public class EmailConnectorRestTest {
 
   @MockitoBean
   private EmailManagedDisconnectionService emailManagedDisconnectionService;
+
+  @MockitoBean
+  private EmailConnectorEngineService emailConnectorEngineService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -515,7 +523,7 @@ public class EmailConnectorRestTest {
   /**
    * EXO-90551 -- the administration switch of the copy into a shared mailbox owner's
    * Sent: read and written by an administrator, the value reaching the service, and a
-   * refusal of the service is a 401.
+   * refusal of the service is a 403.
    */
   @Test
   void sharedMailboxSentCopySwitch() throws Exception {
@@ -527,7 +535,7 @@ public class EmailConnectorRestTest {
     verify(emailConnectorService).saveSharedMailboxSentCopyEnabled(true, ADMIN_USER);
     doThrow(new IllegalAccessException("not an administrator")).when(emailConnectorService).saveSharedMailboxSentCopyEnabled(false, ADMIN_USER);
     mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/shared-mailbox-sent-copy?enabled=false").with(testAdminUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   @Test
@@ -557,6 +565,88 @@ public class EmailConnectorRestTest {
     mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/connection-requirements").with(user(SIMPLE_USER).password(TEST_PASSWORD)
                                                                                            .authorities(new SimpleGrantedAuthority("guests"))))
            .andExpect(status().isForbidden());
+  }
+
+  /**
+   * The engines are an administrator's to read: answered as the service answers them,
+   * forbidden to a user, not found for a connector that does not exist (EXO-90793).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theEnginesAreReadByAnAdministratorOnly() throws Exception {
+    ConnectorEngines engines = new ConnectorEngines();
+    engines.setRulesEngine("sieve");
+    engines.setRulesEngines(List.of("none", "sieve"));
+    engines.setAuthProviderMissing(true);
+    when(emailConnectorEngineService.getEngines(1L, ADMIN_USER)).thenReturn(engines);
+    when(emailConnectorEngineService.getEngines(2L, ADMIN_USER)).thenThrow(new ObjectNotFoundException("emailConnector.engines.connectorNotFound"));
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/engines").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.rulesEngine").value("sieve"))
+           .andExpect(jsonPath("$.rulesEngines[1]").value("sieve"))
+           .andExpect(jsonPath("$.authProviderMissing").value(true));
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/2/engines").with(testAdminUser())).andExpect(status().isNotFound());
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/engines").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  /**
+   * The engines are an administrator's to set: the body reaches the service, an engine
+   * that is not installed is a 400 carrying its code, a refusal a 403, a missing
+   * connector a 404 (EXO-90793).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theEnginesAreSetByAnAdministratorOnly() throws Exception {
+    when(emailConnectorEngineService.saveEngines(eq(1L), any(), eq(ADMIN_USER))).thenReturn(new ConnectorEngines());
+    when(emailConnectorEngineService.saveEngines(eq(3L), any(), eq(ADMIN_USER))).thenThrow(new IllegalArgumentException("emailConnector.engines.unknown"));
+    when(emailConnectorEngineService.saveEngines(eq(4L), any(), eq(ADMIN_USER))).thenThrow(new IllegalAccessException("refused"));
+    when(emailConnectorEngineService.saveEngines(eq(5L), any(), eq(ADMIN_USER))).thenThrow(new ObjectNotFoundException("emailConnector.engines.connectorNotFound"));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/1/engines").with(testAdminUser())
+                                                            .content("{\"rulesEngine\":\"sieve\",\"aclEngine\":null}")
+                                                            .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    org.mockito.ArgumentCaptor<ConnectorEngines> body = org.mockito.ArgumentCaptor.forClass(ConnectorEngines.class);
+    verify(emailConnectorEngineService).saveEngines(eq(1L), body.capture(), eq(ADMIN_USER));
+    assertEquals("sieve", body.getValue().getRulesEngine());
+    assertNull(body.getValue().getAclEngine());
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/3/engines").with(testAdminUser()).content("{}").contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.engines.unknown"));
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/4/engines").with(testAdminUser()).content("{}").contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/5/engines").with(testAdminUser()).content("{}").contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/1/engines").with(testSimpleUser()).content("{}").contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+  }
+
+  /**
+   * A switch refused while the current engine is in use is a 409 carrying its code
+   * and what is in use, so that the screen can say what to remove first (EXO-90793).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anEngineSwitchInUseIsAConflictWithTheCounts() throws Exception {
+    when(emailConnectorEngineService.saveEngines(eq(6L), any(), eq(ADMIN_USER))).thenThrow(new EngineInUseException(EngineInUseException.RULES_IN_USE,
+                                                                                                                   2,
+                                                                                                                   1,
+                                                                                                                   3,
+                                                                                                                   0));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/6/engines").with(testAdminUser())
+                                                            .content("{\"rulesEngine\":\"sieve\"}")
+                                                            .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(EngineInUseException.RULES_IN_USE))
+           .andExpect(jsonPath("$.replies").value(2))
+           .andExpect(jsonPath("$.forwards").value(1))
+           .andExpect(jsonPath("$.rules").value(3))
+           .andExpect(jsonPath("$.shares").value(0));
   }
 
   private RequestPostProcessor testAdminUser() {

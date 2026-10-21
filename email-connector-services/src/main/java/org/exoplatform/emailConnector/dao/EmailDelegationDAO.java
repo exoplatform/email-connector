@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 
@@ -96,6 +97,23 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   @Query("SELECT d FROM EmailDelegationEntity d WHERE d.ownerId = :ownerId ORDER BY d.updatedDate DESC, d.id DESC")
   List<EmailDelegationEntity> findByOwnerId(@Param("ownerId")
   String ownerId);
+
+  /**
+   * How many rows of a connector are in one of the given states and were made from eXo
+   * (or predate the origin, which reads as eXo's): the shares whose access eXo wrote on
+   * the server.
+   *
+   * @param connectorId the connector
+   * @param statuses the states, spelled by the caller
+   * @param origin EXO, spelled by the caller
+   * @return the count
+   */
+  @Query("SELECT COUNT(d) FROM EmailDelegationEntity d WHERE d.connectorId = :connectorId AND d.status IN :statuses"
+      + " AND (d.origin IS NULL OR d.origin = :origin)")
+  long countByConnectorIdAndStatusInAndOrigin(@Param("connectorId")
+  Long connectorId, @Param("statuses")
+  Collection<String> statuses, @Param("origin")
+  String origin);
 
   /**
    * How many rows of a grantee are in one state -- what the per-grantee cap is checked
@@ -185,6 +203,25 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date updated);
 
   /**
+   * The grantee's search toggle, and nothing else of the row (EXO-90554) -- the same
+   * narrow write as {@link #updatePreferences}, for the same reason.
+   *
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param searchIncluded whether the unified search returns this shared mailbox
+   * @param updated the update stamp
+   * @return the rows updated: one, or zero when no such row belongs to that grantee
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.searchIncluded = :searchIncluded, d.updatedDate = :updated WHERE d.id = :id AND d.granteeId = :granteeId")
+  int updateSearchIncluded(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("searchIncluded")
+  boolean searchIncluded, @Param("updated")
+  Date updated);
+
+  /**
    * What an owner's change of access wrote on the server, and nothing else of the row
    * : the preset, the letters, the server's own words, the identifier
    * written and the check stamp. The status, the dates and the grantee's toggles stay as
@@ -249,6 +286,122 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date checked, @Param("updated")
   Date updated, @Param("ended")
   List<String> ended);
+
+  /**
+   * An owner's per-folder change (EXO-90556), and nothing else of the row: the role
+   * folders the share covers, the owner's folder of each, the per-folder exceptions, and
+   * the update stamp -- under the same guards as the other owner writes, that owner's
+   * row and not a share that ended meanwhile.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param grantedRoles the role folders the share covers, as stored
+   * @param ownerRoleFolders the owner's folder per role, as stored
+   * @param folderAccess the per-folder exceptions, as stored
+   * @param updated the update stamp
+   * @param ended the statuses of a share no longer on the server
+   * @return the rows updated: one, or zero when the row is not that owner's or ended
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.grantedRoles = :grantedRoles, d.ownerRoleFolders = :ownerRoleFolders, d.folderAccess = :folderAccess, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :ended")
+  int updateFolderGrants(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("grantedRoles")
+  String grantedRoles, @Param("ownerRoleFolders")
+  String ownerRoleFolders, @Param("folderAccess")
+  String folderAccess, @Param("updated")
+  Date updated, @Param("ended")
+  List<String> ended);
+
+  /**
+   * The owner's consent to the grantee writing mail in the owner's name (EXO-90582), and
+   * nothing else of the row: the mode, when it was set, and the server's last refusal
+   * cleared -- a consent set again is a fresh one. Only that owner's row, and only a
+   * share on offer or in use ({@code live}): a declined, available, revoked or gone share
+   * never carries a consent, stricter than the other owner writes, which merely skip an
+   * ended share.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param sendMode the consent as stored, null for none
+   * @param sendModeDate when it was set, null with no consent
+   * @param updated the update stamp
+   * @param live the statuses a consent may be written on
+   * @return the rows updated: one, or zero when the row is not that owner's or not live
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = :sendMode, d.sendModeDate = :sendModeDate, d.sendRefusedDate = NULL,"
+      + " d.sendRefusedMode = NULL, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status IN :live")
+  int updateSendMode(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("sendMode")
+  String sendMode, @Param("sendModeDate")
+  Date sendModeDate, @Param("updated")
+  Date updated, @Param("live")
+  List<String> live);
+
+  /**
+   * Takes the owner's consent to writing in her name off a share that is no longer on
+   * offer or in use (EXO-90582): run after the write that ended it, so a consent written
+   * while that write was on its way -- the status still live then -- goes too, and one
+   * asked after it finds the share ended. A row that is live again (re-invited, accepted)
+   * is left alone, and so is a row with nothing to take off.
+   *
+   * @param id the row id
+   * @param live the statuses a consent may stay on
+   * @return the rows updated: one, or zero when the row is live, carries no consent, or
+   *         is unknown
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = NULL, d.sendModeDate = NULL, d.sendRefusedDate = NULL,"
+      + " d.sendRefusedMode = NULL WHERE d.id = :id AND d.status NOT IN :live"
+      + " AND (d.sendMode IS NOT NULL OR d.sendModeDate IS NOT NULL OR d.sendRefusedDate IS NOT NULL"
+      + " OR d.sendRefusedMode IS NOT NULL)")
+  int clearSendMode(@Param("id")
+  long id, @Param("live")
+  List<String> live);
+
+  /**
+   * Records that the owner's mail server refused a mail the grantee sent in the owner's
+   * name (EXO-90583), and the shape it was sent in (EXO-90626), and nothing else of the
+   * row: the refusal's date and shape and the update stamp. Only that grantee's row, only
+   * a share in use or on offer, and only while it still carries the consent the mail was
+   * sent under ({@code sendModeDate}): a consent withdrawn or set again since is left as
+   * the owner made it.
+   * <p>
+   * A later refusal never narrows what stands refused: a refusal already standing on
+   * behalf (which blocks both shapes), or one recorded before shapes were (null, read the
+   * same), is kept when a later refusal is as the owner -- two mails refused in turn, in
+   * either order, leave the narrower shape refused. The shape is assigned before the
+   * date on purpose: MySQL evaluates a SET list left to right, each assignment seeing the
+   * ones before it, so the CASE must read the date as it stood.
+   *
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param consentDate when the consent the mail was sent under was set
+   * @param mode the shape the refused mail was sent in, {@code ON_BEHALF} or {@code AS}
+   * @param refused when the server refused it
+   * @param live the statuses a consent may live on
+   * @return the rows updated: one, or zero when the row is not that grantee's, not live,
+   *         or no longer carries that consent
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendRefusedMode = CASE WHEN d.sendRefusedDate IS NOT NULL"
+      + " AND (d.sendRefusedMode IS NULL OR d.sendRefusedMode = 'ON_BEHALF') THEN d.sendRefusedMode ELSE :mode END,"
+      + " d.sendRefusedDate = :refused, d.updatedDate = :refused"
+      + " WHERE d.id = :id AND d.granteeId = :granteeId AND d.status IN :live"
+      + " AND d.sendMode IS NOT NULL AND d.sendModeDate = :consentDate")
+  int markSendRefused(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("consentDate")
+  Date consentDate, @Param("mode")
+  String mode, @Param("refused")
+  Date refused, @Param("live")
+  List<String> live);
 
   /**
    * A grantee's accept, and nothing else of the row (EXO-90548): the

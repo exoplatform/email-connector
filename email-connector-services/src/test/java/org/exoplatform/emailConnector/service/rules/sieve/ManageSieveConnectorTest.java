@@ -38,9 +38,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
-import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -122,7 +124,7 @@ class ManageSieveConnectorTest {
                                                                                                     .thenReturn(authenticator("stale"));
     when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.AUTHENTICATION, e.getKind());
+    assertEquals(Kind.AUTHENTICATION, e.getKind());
     assertEquals(1, server.getAuthentications());
     verify(resolver).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
   }
@@ -146,6 +148,51 @@ class ManageSieveConnectorTest {
   }
 
   /**
+   * Through the caller's session, the conversation authenticates with the material the
+   * session resolves on the IMAP channel -- the same wiring the delegation service builds
+   * -- and a produced credential the server refused is invalidated once and re-resolved
+   * through the session.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheSessionPathUsesTheSessionMaterialAndTheRefusalRule() throws Exception {
+    when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
+                                                                                                    .thenReturn(authenticator("stale-session"),
+                                                                                                                authenticator(FakeManageSieveServer.PASSWORD));
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    MailboxAclSession session = new MailboxAclSession(preset,
+                                                      USERNAME,
+                                                      FakeManageSieveServer.LOGIN,
+                                                      null,
+                                                      null,
+                                                      () -> MailboxAclSession.passwordAuthentication(resolver.authenticator(CONNECTOR_ID,
+                                                                                                                            PROVIDER,
+                                                                                                                            USERNAME,
+                                                                                                                            ConnectorCredentialsChannel.IMAP)));
+    ManageSieveClient client = connector.open(session);
+    client.logout();
+    assertEquals(2, server.getAuthentications());
+    verify(resolver, times(1)).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
+  }
+
+  /**
+   * A session without mail material opens nothing: its resolver's absence is reported,
+   * never a connection with empty credentials.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testASessionWithoutMailMaterialOpensNothing() throws Exception {
+    MailboxAclSession noResolver = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null);
+    assertThrows(MailboxAclException.class, () -> connector.open(noResolver));
+    MailboxAclSession nothing = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null, () -> null);
+    assertEquals(Kind.NO_CREDENTIALS, assertThrows(ManageSieveException.class, () -> connector.open(nothing)).getKind());
+    assertEquals(0, server.getAuthentications());
+    verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
+  }
+
+  /**
    * No material at all is its own failure: no connection is opened, and the provider is
    * not told that material was refused, since the server never saw any.
    *
@@ -155,7 +202,7 @@ class ManageSieveConnectorTest {
   void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP)).thenReturn(null);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.NO_CREDENTIALS, e.getKind());
+    assertEquals(Kind.NO_CREDENTIALS, e.getKind());
     assertEquals(List.of(), server.getCommands());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
   }
@@ -172,7 +219,7 @@ class ManageSieveConnectorTest {
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     server.refuse("AUTHENTICATE", "NO (TRYLATER) \"Backend busy\"");
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    assertEquals(Kind.UNAVAILABLE, e.getKind());
     assertEquals("TRYLATER", e.getResponseCode());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
     assertEquals(1, server.getCommands("AUTHENTICATE").size());

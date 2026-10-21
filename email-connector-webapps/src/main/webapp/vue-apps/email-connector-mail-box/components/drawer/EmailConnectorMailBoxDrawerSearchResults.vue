@@ -21,6 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          platform's indicator — rather than a thinner bar of this list's own. -->
     <div
       v-if="statusLine"
+      aria-live="polite"
       class="px-4 pt-2 pb-1 caption text-light-color">
       {{ statusLine }}
     </div>
@@ -35,9 +36,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @open="$emit('open-result', result)" />
     </template>
     <div
-      v-else-if="!serverSearching"
+      v-else-if="!serverSearching && !localSearching"
       class="px-4 py-8 text-center text-light-color">
       {{ $t('emailConnector.mailBox.search.noResults') }}
+    </div>
+    <!-- The server arm of an advanced search, asked by the user (EXO-90838): after the
+         last hit, or alone when eXo's copy held none and the server has not been asked
+         yet. -->
+    <div
+      v-if="offerServerSearch"
+      class="px-4 py-2 text-center">
+      <v-btn
+        class="text-none"
+        color="primary"
+        small
+        text
+        @click="$emit('search-server')">
+        {{ $t('emailConnector.mailBox.search.local.server') }}
+      </v-btn>
     </div>
   </div>
 </template>
@@ -75,26 +91,58 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether the search ran in a mailbox shared with the user (EXO-90590): it reads the
+    // copy of that mailbox kept in eXo, not its owner's whole mailbox, and says so.
+    sharedMailbox: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the mail server can be asked for an advanced search that read eXo's copy
+    // only (EXO-90838): its button then follows the hits.
+    offerServerSearch: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether eXo's copy is being read for an advanced search.
+    localSearching: {
+      type: Boolean,
+      default: false,
+    },
+    // How many server matches were examined for an attachment, when not all; 0 else.
+    scanned: {
+      type: Number,
+      default: 0,
+    },
   },
   computed: {
     hasResults() {
       return this.results.length > 0;
     },
-    // One quiet caption above the results: searching, failed, or truncated.
+    /**
+     * One quiet caption above the results: searching, failed, or truncated -- and, in a
+     * shared mailbox, what was searched (EXO-90590): the recent mail kept in eXo, where
+     * the user's own mailbox is searched on the mail server, so the same term can find
+     * less there.
+     *
+     * @returns {String} the caption, or null for none
+     */
     statusLine() {
       if (this.serverSearching) {
-        return this.$t('emailConnector.mailBox.search.searching');
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.searching' : 'emailConnector.mailBox.search.searching');
       }
       if (this.serverError) {
-        return this.$t('emailConnector.mailBox.search.error');
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.error' : 'emailConnector.mailBox.search.error');
+      }
+      if (this.scanned) {
+        return this.$t('emailConnector.mailBox.search.attachmentScanned', { 0: this.scanned });
       }
       if (this.totalMatches > this.results.length) {
-        return this.$t('emailConnector.mailBox.search.showingOf', {
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.showingOf' : 'emailConnector.mailBox.search.showingOf', {
           0: this.results.length,
           1: this.totalMatches,
         });
       }
-      return null;
+      return this.sharedMailbox ? this.$t('emailConnector.mailBox.search.shared.recentOnly') : null;
     },
   },
   methods: {

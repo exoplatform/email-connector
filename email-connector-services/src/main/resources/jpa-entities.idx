@@ -11,3 +11,6 @@ org.exoplatform.emailConnector.entity.EmailSyncStateEntity
 org.exoplatform.emailConnector.entity.EmailScheduledSendEntity
 org.exoplatform.emailConnector.entity.EmailReadReceiptAnswerEntity
 org.exoplatform.emailConnector.entity.EmailDelegationEntity
+org.exoplatform.emailConnector.entity.EmailFilterEntity
+org.exoplatform.emailConnector.entity.EmailFilterMatchEntity
+org.exoplatform.emailConnector.entity.EmailFilterProposalEntity

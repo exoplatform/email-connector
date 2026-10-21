@@ -51,6 +51,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         text>
         {{ scheduledEditBanner }}
       </v-alert>
+      <!-- A draft of a mailbox no longer shared with the user (EXO-90595): it cannot be
+           sent from there, and the server never sends it from the user's own instead. -->
+      <v-alert
+        v-if="mailboxUnshared"
+        class="mx-4 mt-3 mb-0 shared-mailbox-unshared-banner"
+        type="warning"
+        dense
+        text>
+        {{ mailboxUnsharedText }}
+      </v-alert>
       <email-connector-new-email-shared-mailbox-notice
         v-if="sharedMailbox"
         :entry="sharedMailbox"
@@ -58,7 +68,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :sent-copy="!!sharedMailbox.sentCopy"
         :copy-owner="ownerCopied"
         :owner-is-recipient="ownerInTo"
-        @update:copy-owner="setOwnerCopied" />
+        :send-modes="identityModes"
+        :send-mode="sendMode"
+        @update:copy-owner="setOwnerCopied"
+        @update:send-mode="setIdentity" />
+      <!-- The owner's mail server refused a mail in their name (EXO-90583): nothing went
+           out, the mail is still here, and one click sends it in the user's own name. -->
+      <v-alert
+        v-if="sendModeRefused"
+        class="mx-4 mt-2 mb-0 send-mode-refused-banner"
+        type="warning"
+        dense
+        text>
+        <div class="d-flex align-center flex-wrap">
+          <span class="me-2">{{ $t('emailConnector.mailBox.newEmail.drawer.send.sendModeRefused', { 0: sharedMailboxOwnerName }) }}</span>
+          <v-btn
+            :disabled="loading"
+            class="btn send-as-self-button"
+            small
+            @click="sendAsSelf">
+            {{ $t('emailConnector.mailBox.newEmail.drawer.send.sendAsSelf') }}
+          </v-btn>
+        </div>
+      </v-alert>
       <email-connector-recipient-field
         ref="toField"
         v-model="to"
@@ -142,8 +174,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :draft-local-id="draftSession.localId" />
       <!-- The read receipt this mail asks for (EXO-90435), said where the user sees it
            before sending, and removable right here as well as from More options. -->
+      <!-- Never in the owner's name (EXO-90583): the receipt would come back to them. -->
       <div
-        v-if="readReceiptRequested"
+        v-if="readReceiptRequested && !inOwnersName"
         class="mx-4 mt-2 read-receipt-chip-row">
         <v-chip
           :aria-label="$t('emailConnector.mailBox.readReceipt.request.chip')"
@@ -177,12 +210,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           text>
           {{ $t('emailConnector.mailBox.newEmail.drawer.discard.label') }}
         </v-btn>
-        <span v-if="draftStatusLabel && !scheduledEdit" class="text-caption text-sub-title ms-2">{{ draftStatusLabel }}</span>
+        <!-- One short line whatever the footer's width; the mailbox copy is an icon, not more words. -->
+        <div
+          v-if="draftStatusLabel && !scheduledEdit"
+          class="d-flex align-center flex-shrink-1 overflow-hidden ms-2">
+          <span class="text-caption text-sub-title text-no-wrap text-truncate">{{ draftStatusLabel }}</span>
+          <v-tooltip v-if="draftSyncedToMailbox" top>
+            <template #activator="{ on, attrs }">
+              <v-icon
+                :aria-label="$t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServerHint')"
+                size="14"
+                class="text-sub-title flex-shrink-0 ms-1"
+                role="img"
+                v-bind="attrs"
+                v-on="on">
+                fas fa-cloud
+              </v-icon>
+            </template>
+            <span>{{ $t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServerHint') }}</span>
+          </v-tooltip>
+        </div>
         <v-spacer />
         <!-- More options (⋮), before Send (EXO-90435, PO option A): what the mail asks
              of its recipients rather than when it goes -- today, a read receipt, a
              checkable entry whose state the chip above the footer repeats. -->
+        <!-- Its one option, the read receipt, is not asked in the owner's name (EXO-90583). -->
         <v-menu
+          v-if="!inOwnersName"
           v-model="moreOptionsMenu"
           :close-on-content-click="false"
           offset-y
@@ -275,6 +329,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                       {{ $t('emailConnector.mailBox.scheduled.action.sendNow') }}
                     </v-list-item-title>
                   </v-list-item>
+                  <!-- In the owner's name too (EXO-90584): the draft records the name, and
+                       the send checks the owner's consent again when it goes out. -->
                   <v-list-item
                     :aria-label="scheduleActionLabel"
                     class="px-2 schedule-send-action"
@@ -282,9 +338,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                     <v-list-item-icon class="me-2 my-auto">
                       <v-icon size="16">fas fa-clock</v-icon>
                     </v-list-item-icon>
-                    <v-list-item-title>
-                      {{ scheduleActionLabel }}
-                    </v-list-item-title>
+                    <v-list-item-content>
+                      <v-list-item-title>
+                        {{ scheduleActionLabel }}
+                      </v-list-item-title>
+                    </v-list-item-content>
                   </v-list-item>
                 </v-list>
               </v-menu>
@@ -305,7 +363,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personName } from '../../js/EmailRecipientDisplay.js';
-import { escapeHtml, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { escapeHtml, forwardedOriginalBody, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { keepEmptyLines } from '../../js/EmailComposedBody.js';
 
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
 
@@ -325,6 +384,13 @@ const LOCAL_SAVE_DEBOUNCE_MS = 1000;
 // arithmetic that makes two minutes reasonable for a page of text makes it
 // unreasonable for a page of text plus 20 MB.
 const SERVER_PUSH_IDLE_MS = 2 * 60 * 1000;
+
+// Undo send (EXO-90837): the snackbar shows half a second after it is asked for and must
+// be gone before the server's timer sends the mail, so it is offered this much less than
+// the wait; and the mailbox is told the mail went this much after the wait, the time the
+// server's timer and its send take.
+const UNDO_SNACKBAR_MARGIN_MS = 1000;
+const UNDO_SENT_ANNOUNCE_MS = 3000;
 
 /**
  * A fresh record for the draft one composer session is writing: nothing saved yet,
@@ -371,6 +437,29 @@ export default {
       // whether the composer answers a message there, for the band's wording.
       sharedMailbox: null,
       sharedMailboxReply: false,
+      // The name the mail goes out in (EXO-90583): NONE -- the user's own -- or, when the
+      // owner of the mail's shared mailbox allowed it, ON_BEHALF or AS. The mail's, not
+      // the view's: a switch of mailbox while composing leaves it as it is.
+      sendMode: 'NONE',
+      // Whether the owner's mail server refused this mail in their name: the banner and
+      // its "Send as yourself" stay until the user sends again or changes the name. The
+      // mail is then back in the user's own name on screen, since the owner's can no
+      // longer be used.
+      sendModeRefused: false,
+      // The name the stored draft records (EXO-90584), as it was opened: what a scheduled
+      // mail being edited goes out in unless its Update says otherwise.
+      recordedSendMode: null,
+      // Whether the stored draft opened is a scheduled mail being edited (EXO-90584).
+      resumingScheduled: false,
+      // The mailbox the mail belongs to (EXO-90595): the share's delegation id, or null
+      // for the user's own. Set when the composer opens -- from the switcher for a new
+      // mail, from the draft itself for a resumed one -- and never from the switcher
+      // afterwards: a draft's first save records it on the server, and every send names
+      // it. sharedMailbox above is its switcher entry, null once it is no longer shared.
+      mailboxDelegationId: null,
+      // What the server says of that mailbox for a resumed draft ({ownerFullName,
+      // shared, ...}), null until it answered or for the user's own mailbox.
+      draftMailbox: null,
       // What is typed into each field but not yet a chip. Send stays reachable
       // while To holds something, so clicking Send can blur the field into
       // committing it. After that blur, anything still pending is text the field
@@ -398,6 +487,9 @@ export default {
       // (EXO-90434).
       scheduleMenu: false,
       scheduleMode: false,
+      // Set for the one pass of sendEmail that must not offer the Undo again (EXO-90837):
+      // the user turned it off, or the Undo send path is handing over to the immediate one.
+      undoSendChecked: false,
       scheduling: false,
       // The scheduled mail on screen, when the composer edits one (EXO-90434, Outlook's
       // way): it stays scheduled while the composer is open, nothing is saved until
@@ -494,8 +586,62 @@ export default {
     readReceiptRequested() {
       this.onComposeChanged();
     },
+    // So is the name it goes out in (EXO-90584): the draft records it with every save.
+    sendMode() {
+      this.onComposeChanged();
+    },
   },
   computed: {
+    /**
+     * The shapes the user may write in the owner's name in, for the mail's own shared
+     * mailbox only (EXO-90583) -- never another share's. A scheduled mail being edited
+     * offers them too: it goes out in the name it records (EXO-90584).
+     *
+     * @returns {Array} ON_BEHALF and AS, as allowed now; empty otherwise
+     */
+    identityModes() {
+      if (!this.sharedMailbox || this.sharedMailbox.delegationId !== this.mailboxDelegationId) {
+        return [];
+      }
+      return this.sharedMailbox.sendModes || [];
+    },
+    /**
+     * Whether the mail goes out in the owner's name (EXO-90583).
+     *
+     * @returns {Boolean} true on behalf of the owner, or as them
+     */
+    inOwnersName() {
+      return this.sendMode !== 'NONE';
+    },
+    /**
+     * The shared mailbox owner's name, for the sentences about writing in it.
+     *
+     * @returns {String} the name, or their address
+     */
+    sharedMailboxOwnerName() {
+      return this.sharedMailbox?.ownerFullName || this.sharedMailbox?.ownerMailbox || '';
+    },
+    /**
+     * Whether the mail belongs to a shared mailbox the switcher no longer offers: a
+     * resumed draft, or a scheduled mail being edited, whose share has ended (EXO-90595).
+     *
+     * @returns {Boolean} true when the mail's mailbox is no longer shared with the user
+     */
+    mailboxUnshared() {
+      return !!this.mailboxDelegationId && this.draftMailbox?.shared === false;
+    },
+    /**
+     * The warning of a mail whose mailbox is no longer shared, naming its owner when the
+     * server could.
+     *
+     * @returns {String} the warning
+     */
+    mailboxUnsharedText() {
+      const owner = this.draftMailbox?.ownerFullName || this.draftMailbox?.ownerMailbox;
+      return owner
+        ? this.$t('emailConnector.mailBox.sharedMailbox.composer.unsharedOwner', { 0: owner })
+        : this.$t('emailConnector.mailBox.sharedMailbox.composer.unshared');
+    },
     /**
      * Whether the shared mailbox's owner is among the copied (or direct) recipients --
      * what the band's "Copy the owner" box shows, read off the chips so that removing
@@ -585,6 +731,9 @@ export default {
         return false;
       }
       return (this.savedSignature !== null && this.composeSignature() !== this.savedSignature)
+        // A name other than the one the mail records, the band's own fallback included
+        // (EXO-90584): it goes out in the recorded one until the Update.
+        || this.draftSendMode() !== this.recordedSendMode
         || this.scheduledEdit.removedIds.length > 0
         || this.attachments.some(attachment => attachment.uploadId || attachment.uploading);
     },
@@ -621,6 +770,18 @@ export default {
         return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServer');
       }
       return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedLocally');
+    },
+    /**
+     * Whether the draft's last save reached the user's mailbox, shown as a
+     * cloud icon beside the draft status rather than a longer label.
+     * False while a save is in flight, since the status then says "Saving".
+     *
+     * @returns {boolean} true when the draft is synced to the mailbox
+     */
+    draftSyncedToMailbox() {
+      return this.draftSession.pending === 0
+        && !!this.draftSession.localId
+        && this.draftSession.state === 'SYNCED';
     }
   },
   methods: {
@@ -667,7 +828,7 @@ export default {
         this.email.subject = prefill.subject;
       }
       if (email) {
-        this.seedAnsweredBody(email, forward, signature);
+        this.seedAnsweredBody(await this.withRemoteContent(email), forward, signature);
       } else {
         this.seedNewMailBody(prefill, signature);
       }
@@ -682,6 +843,24 @@ export default {
           this.carryForwardedFiles(email);
         }
       });
+    },
+    /**
+     * The message being answered with the images it fetches from the internet, when the
+     * reader held them back (EXO-90841): answering or forwarding quotes the message as
+     * its sender wrote it, so the recipient does not get a copy stripped of its images.
+     * Read again without counting as an opening; on failure the message is quoted as
+     * the reader showed it.
+     *
+     * @param {object} email - the message being replied to or forwarded
+     * @returns {Promise<object>} the message, its body with remote content when it had any held back
+     */
+    withRemoteContent(email) {
+      if (!email?.content?.remoteContentBlocked || !email.mailRemoteId) {
+        return Promise.resolve(email);
+      }
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(email.mailRemoteId, email.folder, { broadcast: false, remoteContent: true })
+        .then(read => (read?.content ? { ...email, content: { ...email.content, body: read.content.body } } : email))
+        .catch(() => email);
     },
     /**
      * The body a new mail opens with: an empty line for the words, then the signature
@@ -1271,10 +1450,12 @@ export default {
      * a draft and editing a scheduled mail share.
      *
      * @param {object} draft - the stored draft
+     * @param {boolean} scheduled - whether it is a scheduled mail about to be edited
      * @returns {void}
      */
-    openOnDraft(draft) {
+    openOnDraft(draft, scheduled) {
       this.scheduledEdit = null;
+      this.resumingScheduled = !!scheduled;
       // The files the draft was stored with, as chips the user can see and remove.
       this.attachments = this.storedAttachmentChips(draft);
       this.resetDraftTracking();
@@ -1296,6 +1477,7 @@ export default {
       this.draftSession.localId = draft.draftLocalId;
       this.draftSession.revision = draft.draftRevision || 0;
       this.draftSession.state = draft.draftState;
+      this.seedDraftMailbox(draft);
       this.newEmailDrawer = true;
       this.$nextTick(() => this.measureEditorMaxHeight());
       this.$nextTick(() => {
@@ -1319,11 +1501,13 @@ export default {
       return this.$t('emailConnector.mailBox.newEmail.drawer.title');
     },
     /**
-     * Notes the shared mailbox the composer is opened from, and copies its owner by
-     * default (delegation plan 7.8): the mail goes out as the user, through their own
-     * mail server, and lands in their own Sent, so without the copy the owner has no
-     * trace that their mail was answered. Notes too whether the composer answers a
-     * message (a reply) or starts one (a new mail or a forward), for the band's wording.
+     * Notes the shared mailbox the composer is opened from, whether the composer answers
+     * a message there (a reply) or starts one (a new mail or a forward), and the name the
+     * mail starts in (EXO-90583, PO decision Q-4): a reply starts in the owner's name, in
+     * the more transparent shape they allow, when they allow one; anything else starts
+     * in the user's own. The mail always goes out through the user's own mail server.
+     * The owner is copied by default only when they would otherwise have no copy in
+     * their Sent (Q-3, Q-6), and in their name with that copy filed the box is hidden.
      * Nothing in the user's own mailbox.
      *
      * @param {object} email - the message being answered, null for a new mail
@@ -1332,12 +1516,175 @@ export default {
      */
     seedSharedMailbox(email, forward) {
       this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
+      this.mailboxDelegationId = this.sharedMailbox?.delegationId || null;
       this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
+      // PO decision Q-4 (EXO-90583): a reply from the shared mailbox starts in the owner's
+      // name when they allow it, in the more transparent shape they allow -- on their
+      // behalf whenever that is usable (Q-1); a new mail or a forward starts in the
+      // user's own. Always changeable in the band.
+      const modes = this.identityModes;
+      this.setIdentity(this.sharedMailboxReply && modes.length ? modes[0] : 'NONE');
+    },
+    /**
+     * The name the mail goes out in (EXO-90583), and what follows from it: the
+     * "Copy the owner" box -- ticked when the owner would otherwise have no copy, as
+     * PO decisions Q-3 (the user's own name) and Q-6 (the owner's) both say; in the
+     * owner's name with their copy filed the box is hidden and the owner not copied.
+     * Re-applied on each change of name, as it is when the composer opens. A refusal
+     * shown for the previous name is dropped.
+     *
+     * @param {String} mode - NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    setIdentity(mode) {
+      this.sendMode = mode === 'ON_BEHALF' || mode === 'AS' ? mode : 'NONE';
+      this.sendModeRefused = false;
       if (this.sharedMailbox) {
-        // PO decision Q-3 (EXO-90551): off when the copy into the owner's Sent will be
-        // filed -- the owner then finds the mail there -- on otherwise; always visible.
         this.setOwnerCopied(!this.sharedMailbox.sentCopy);
       }
+    },
+    /**
+     * Sends the mail on screen in the user's own name, after the owner's mail server
+     * refused it in theirs (EXO-90583): the same mail, one click.
+     *
+     * @returns {void}
+     */
+    sendAsSelf() {
+      this.sendModeRefused = false;
+      this.sendEmail();
+    },
+    /**
+     * Reads the switcher's entries again after the server said the owner's name can no
+     * longer be used as it was, so the band offers only what is left (EXO-90583).
+     *
+     * @returns {void}
+     */
+    reloadSharedMailbox() {
+      const delegationId = this.mailboxDelegationId;
+      const session = this.draftSession;
+      this.$emailConnectorMailBoxService.loadSharedMailboxes()
+        .then(() => {
+          if (session === this.draftSession && delegationId === this.mailboxDelegationId) {
+            this.sharedMailbox = this.sharedMailboxEntry(delegationId) || this.sharedMailbox;
+          }
+        })
+        .catch(() => null);
+    },
+    /**
+     * Takes the mailbox a stored draft belongs to from the draft itself (EXO-90595),
+     * never from the switcher: a draft written in a shared mailbox stays that mailbox's
+     * whatever mailbox the drawer shows now, and one of the user's own stays theirs.
+     * Whether that mailbox is still shared is the server's word, asked here, not the
+     * switcher's entries, which may not be loaded yet: shared, its band is the share's
+     * switcher entry (the entries re-read when they do not hold it yet); no longer
+     * shared, the warning says the draft cannot be sent from there. The Cc the draft was
+     * saved with is left as it is.
+     *
+     * @param {object} draft - the stored draft
+     * @returns {void}
+     */
+    seedDraftMailbox(draft) {
+      const delegationId = draft?.sendDelegationId || null;
+      this.mailboxDelegationId = delegationId;
+      this.draftMailbox = null;
+      this.sharedMailbox = this.sharedMailboxEntry(delegationId);
+      this.sharedMailboxReply = !!draft?.inReplyTo;
+      // The name the draft was left in (EXO-90584), never the default of a new mail: one
+      // saved in the user's name comes back in theirs, one in the owner's in hers -- the
+      // Cc the draft was saved with is left as it is. A draft that never said, or one of
+      // the user's own mailbox, is in the user's own name.
+      this.sendMode = delegationId && (draft?.sendMode === 'ON_BEHALF' || draft?.sendMode === 'AS') ? draft.sendMode : 'NONE';
+      this.recordedSendMode = delegationId ? this.sendMode : null;
+      this.sendModeRefused = false;
+      this.reconcileDraftIdentity();
+      if (!delegationId || !draft.draftLocalId) {
+        return;
+      }
+      const session = this.draftSession;
+      this.$emailConnectorMailBoxService.getDraftMailbox(draft.draftLocalId)
+        .then(mailbox => {
+          if (session !== this.draftSession) {
+            return;
+          }
+          this.draftMailbox = mailbox;
+          if (mailbox?.shared === false) {
+            // An entry the switcher loaded before the share ended is not the truth.
+            this.sharedMailbox = null;
+            return;
+          }
+          if (mailbox?.shared && !this.sharedMailbox) {
+            return this.$emailConnectorMailBoxService.loadSharedMailboxes().then(() => {
+              if (session === this.draftSession) {
+                this.sharedMailbox = this.sharedMailboxEntry(delegationId);
+                this.reconcileDraftIdentity();
+              }
+            });
+          }
+        })
+        .catch(() => null);
+    },
+    /**
+     * A resumed draft in the owner's name that the band no longer offers (EXO-90584):
+     * consent withdrawn or narrowed, switched off, refused by her mail server. It comes
+     * back in the user's own name, and says so -- it is never sent in hers on the old
+     * word. A scheduled mail being edited still records her name until its Update: the
+     * change is a pending edit (see scheduledChanged), and the sentence says the mail is
+     * not sent otherwise. Nothing is decided while the band's entry is not known yet: the
+     * server checks the consent at the send anyway.
+     *
+     * @returns {void}
+     */
+    reconcileDraftIdentity() {
+      if (!this.inOwnersName || !this.sharedMailbox || this.identityModes.includes(this.sendMode)) {
+        return;
+      }
+      this.sendMode = 'NONE';
+      const key = this.scheduledEdit || this.resumingScheduled
+        ? 'emailConnector.mailBox.newEmail.drawer.scheduled.sendModeUnavailable'
+        : 'emailConnector.mailBox.newEmail.drawer.draft.sendModeUnavailable';
+      this.$root.$emit('alert-message', this.$t(key, { 0: this.sharedMailboxOwnerName }), 'warning');
+    },
+    /**
+     * The name the mail goes out in, as a draft save or a send of a draft carries it
+     * (EXO-90584): the band's choice for a mail of a shared mailbox, nothing for the
+     * user's own mailbox, which has no owner to write in the name of.
+     *
+     * @returns {String} NONE, ON_BEHALF or AS; null for the user's own mailbox
+     */
+    draftSendMode() {
+      return this.mailboxDelegationId ? this.sendMode : null;
+    },
+    /**
+     * The server refused the name a schedule or a scheduled mail's edit was in
+     * (EXO-90584): consent withdrawn or narrowed, switched off, not declared, refused by
+     * the owner's mail server. Back to the user's own name, said, and nothing scheduled
+     * or changed until the user tries again.
+     *
+     * @param {Object} error the refusal
+     * @returns {Boolean} true when it was such a refusal, and handled
+     */
+    onScheduleIdentityRefused(error) {
+      if (!this.inOwnersName || !error?.code?.startsWith?.('emailConnector.sendMode.')) {
+        return false;
+      }
+      const owner = this.sharedMailboxOwnerName;
+      this.setIdentity('NONE');
+      this.reloadSharedMailbox();
+      this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.schedule.sendModeUnavailable', { 0: owner }), 'warning');
+      return true;
+    },
+    /**
+     * The switcher's entry of a share, as it has it now.
+     *
+     * @param {Number} delegationId - the share, may be null
+     * @returns {object} the entry, or null
+     */
+    sharedMailboxEntry(delegationId) {
+      if (!delegationId) {
+        return null;
+      }
+      const entries = this.$emailConnectorMailBoxService.sharedMailboxState().entries || [];
+      return entries.find(entry => entry.delegationId === delegationId) || null;
     },
     /**
      * Copies the shared mailbox's owner, or stops copying them: a Cc chip added or
@@ -1415,7 +1762,9 @@ export default {
       if (email.cc?.length) {
         bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
       }
-      bodyParts.push('<br><br><br>', email.content.body || '');
+      // The message itself, made ready for the HTML editor: a plain-text original
+      // keeps its line breaks (forwardedOriginalBody), as a reply's quote already does.
+      bodyParts.push('<br><br><br>', forwardedOriginalBody(email.content?.body, email.content?.html));
       return bodyParts.join('\n');
     },
     /**
@@ -1516,6 +1865,12 @@ export default {
       this.bcc = [];
       this.sharedMailbox = null;
       this.sharedMailboxReply = false;
+      this.sendMode = 'NONE';
+      this.sendModeRefused = false;
+      this.recordedSendMode = null;
+      this.resumingScheduled = false;
+      this.mailboxDelegationId = null;
+      this.draftMailbox = null;
       // Reset with its siblings: the content template is v-if'd, so the field is
       // destroyed here and rebuilt with term '' -- an initial value, which the
       // watcher does not report. Left behind, a stale pending term would render
@@ -1603,7 +1958,9 @@ export default {
     snapshotDraft() {
       return {
         subject: this.email.subject,
-        body: this.email.content.body,
+        // With its empty lines made visible (keepEmptyLines): the row is what a resumed
+        // draft, a scheduled send and the Sent copy are built from.
+        body: keepEmptyLines(this.email.content.body),
         // Names as well as addresses, unlike the send payload. A draft is read back
         // into these very fields when it is resumed, so what is not stored is what the
         // user sees disappear from a chip they typed. The send API has no use for them
@@ -1619,6 +1976,10 @@ export default {
         // Every save carries the choice: the server reads a missing value as "no", and
         // a draft saved without it would be sent without the receipt asked for.
         readReceiptRequested: this.readReceiptRequested,
+        // The mailbox the draft belongs to, recorded by its first save (EXO-90595).
+        mailboxDelegationId: this.mailboxDelegationId,
+        // The name it goes out in, recorded by every save (EXO-90584).
+        sendMode: this.draftSendMode(),
         hasContent: this.hasContent,
         signature: this.composeSignature(),
       };
@@ -1907,13 +2268,24 @@ export default {
           cc: snapshot.cc,
           bcc: snapshot.bcc,
           readReceiptRequested: !!snapshot.readReceiptRequested,
+          // On a FIRST save only, as the parent's id: the server records the mailbox then,
+          // once it resolves as one of the user's own shares, and never moves it after.
+          sendDelegationId: session.localId ? null : snapshot.mailboxDelegationId || null,
+          // The name it goes out in, with every save: the user may change it until it is
+          // sent, and the draft remembers the last one (EXO-90584).
+          sendMode: snapshot.sendMode,
         };
         // Captured before the request: the answer is judged against what this session
         // believed a moment ago, and the assignment below is what replaces it.
         const previousState = session.state;
         return this.$emailConnectorMailBoxService.saveDraft(payload, push)
           .then(saved => this.applySavedDraft(session, saved, previousState, push, push && !closing));
-      }).catch(() => {
+      }).catch(error => {
+        // A first save naming a mailbox that is not the user's (EXO-90595) is said: no
+        // later change can make it land.
+        if (error?.code === 'emailConnector.drafts.save.mailboxNotFound') {
+          this.$root.$emit('alert-message', this.$t(error.code), 'error');
+        }
         // Let the next change try again rather than pretending this one landed.
         if (session === this.draftSession) {
           this.savedSignature = null;
@@ -2051,6 +2423,7 @@ export default {
         this.toAddresses(this.cc),
         this.toAddresses(this.bcc),
         !!this.readReceiptRequested,
+        this.draftSendMode(),
       ]);
     },
     /**
@@ -2139,7 +2512,11 @@ export default {
           mimeType: attachment.mimeType,
           size: attachment.size,
         }));
-      this.email.content.body = this.formatEmailBody(this.email.content.body);
+      if (!this.undoSendChecked && this.undoSendable()) {
+        this.sendWithUndo();
+        return;
+      }
+      this.undoSendChecked = false;
       this.loading = true;
       // Nothing may push a draft of a message that is about to be sent: the close
       // handler below would otherwise upload one, and showing someone a draft of a
@@ -2153,18 +2530,36 @@ export default {
       // the save, the send and the two removals have to happen in one order, on the
       // server, where a failure between them can be reasoned about.
       // From a shared mailbox, the share is named so that its owner's Sent gets a copy
-      // too (EXO-90551); the answer says whether it did.
-      const delegationId = this.sharedMailbox?.delegationId;
-      const owner = this.sharedMailbox?.ownerFullName;
+      // too (EXO-90551); the answer says whether it did. The mail's own mailbox, never
+      // the switcher's: for a draft, the server checks it is the draft's (EXO-90595).
+      const delegationId = this.mailboxDelegationId;
+      const owner = this.sharedMailboxOwnerName;
+      // In the owner's name when the band says so (EXO-90583); the server checks it
+      // against the owner's consent, on the mail's own share.
+      const sendMode = delegationId && this.inOwnersName ? this.sendMode : null;
+      this.sendModeRefused = false;
+      // A draft goes out in the name it records, saved onto it with the text just before
+      // the send (EXO-90584): the name travels in the draft, and no query parameter can
+      // then disagree with it.
+      this.email.sendMode = this.draftSendMode();
+      // The body goes out formatted in the payload alone, never written back into the
+      // composer's field: that field's watcher runs after the cancel above and would
+      // start a save of a mail being sent, which on a never-saved mail leaves a draft
+      // of it behind. A failed send also keeps on screen what the user typed.
+      const outgoing = { ...this.email, content: { ...this.email.content, body: this.formatEmailBody(this.email.content.body) } };
       const send = this.draftSession.localId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId)
-        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId);
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, outgoing, delegationId, null)
+        : this.$emailConnectorMailBoxService.sendEmail(outgoing, delegationId, sendMode);
       // What the notice promised when the composer opened (Q-3): a copy in the owner's
-      // Sent. Anything short of it having been filed is said.
+      // Sent. Anything short of it having been filed is said -- louder for a mail in the
+      // owner's name, of which they then have no copy at all.
       const ownerCopyPromised = !!this.sharedMailbox?.sentCopy;
       send.then(result => {
         if (result?.ownerCopy === 'FAILED' || ownerCopyPromised && result?.ownerCopy !== 'FILED') {
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed', { 0: owner }), 'warning');
+          const key = sendMode
+            ? 'emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed.inOwnersName'
+            : 'emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed';
+          this.$root.$emit('alert-message', this.$t(key, { 0: owner }), 'warning');
         } else {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
         }
@@ -2180,15 +2575,181 @@ export default {
         this.$root.$emit('refresh-email-box');
         this.close();
       }).catch(error => {
-        // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
-        // cannot help -- say so rather than "try again". Whether to offer a send from
-        // the user's own mailbox instead is a PO call, not made here.
-        if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner }), 'error');
+        // The owner's mail server refused the mail in their name (EXO-90583): nothing went
+        // out, the mail stays, and the banner offers to send it in the user's own name --
+        // never done without the user's click.
+        if (sendMode && error?.code === 'emailConnector.sendMode.refusedByServer') {
+          // The owner's name is no longer offered (the refusal is recorded): the band
+          // says the mail now goes as the user, and the banner says why. Nothing is sent
+          // until the user sends again.
+          this.setIdentity('NONE');
+          this.sendModeRefused = true;
+          this.reloadSharedMailbox();
+        } else if (sendMode && error?.code?.startsWith?.('emailConnector.sendMode.')) {
+          // The owner's name can no longer be used as it was -- consent withdrawn or
+          // narrowed, switched off, not declared: back to the user's own, said, and not
+          // sent until the user sends again.
+          this.setIdentity('NONE');
+          this.reloadSharedMailbox();
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sendModeUnavailable', { 0: owner }), 'warning');
+        } else if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
+          // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
+          // cannot help -- say so rather than "try again". Whether to offer a send from
+          // the user's own mailbox instead is a PO call, not made here.
+          this.$root.$emit('alert-message', owner
+            ? this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner })
+            : this.$t('emailConnector.mailBox.sharedMailbox.composer.unshared'), 'error');
+        } else if (error?.code === 'emailConnector.drafts.send.mailboxMismatch') {
+          this.$root.$emit('alert-message', this.$t(error.code), 'error');
         } else {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
         }
       }).finally(() => this.loading = false);
+    },
+    /**
+     * Whether what the composer holds can go through an Undo send (EXO-90837): the
+     * server sends it later from its stored draft, so every file must already be on it.
+     * A file still held as an upload -- one whose storing failed -- goes through the
+     * immediate send instead, which carries it.
+     *
+     * @returns {boolean} true when nothing on screen would be left behind
+     */
+    undoSendable() {
+      return !this.storingImages
+        && !this.attachments.some(attachment => attachment.uploading || (attachment.uploadId && !attachment.stored));
+    },
+    /**
+     * Sends what the composer holds with an Undo (EXO-90837), when the user did not turn
+     * it off: the draft is created when there is none yet and the saves in flight are
+     * waited for -- the schedule's own path -- then the server holds it for the user's
+     * wait and sends it, whatever becomes of this tab. The composer closes at once, and
+     * the snackbar offers the Undo for the wait. With the Undo off, the immediate send
+     * runs, as before.
+     *
+     * @returns {Promise<void>} resolved once held, sent, or refused
+     */
+    async sendWithUndo() {
+      const session = this.draftSession;
+      this.loading = true;
+      this.cancelDraftTimers();
+      let delay = 0;
+      try {
+        delay = (await this.$emailConnectorCommonService.getUndoSendSettings())?.delaySeconds || 0;
+      } catch (e) {
+        delay = 0;
+      }
+      if (session !== this.draftSession) {
+        this.loading = false;
+        return;
+      }
+      if (delay <= 0) {
+        this.sendImmediately();
+        return;
+      }
+      try {
+        await (session.localId ? session.queue : this.forceDraft(session));
+        if (!session.localId || session !== this.draftSession) {
+          throw new Error('No draft to send');
+        }
+        const held = await this.$emailConnectorMailBoxService.sendDraftUndoable(session.localId, this.outgoingDraft());
+        this.offerUndoSend(held);
+        // Forgotten before the close, so the close finds nothing to save back.
+        this.emptyComposer();
+        this.$root.$emit('refresh-email-box');
+        this.close();
+        this.loading = false;
+      } catch (error) {
+        if (error?.code === 'emailConnector.undoSend.off') {
+          // Turned off in another tab since: sent at once, as the user now wants.
+          this.sendImmediately();
+          return;
+        }
+        this.loading = false;
+        if (!this.onScheduleIdentityRefused(error)) {
+          this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
+            'emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+        }
+      }
+    },
+    /**
+     * The send as it was before the Undo (EXO-90837): what Send does with the Undo off,
+     * or for a mail with a file not stored on its draft.
+     *
+     * @returns {void}
+     */
+    sendImmediately() {
+      this.loading = false;
+      this.undoSendChecked = true;
+      this.sendEmail(this.email);
+    },
+    /**
+     * The snackbar of a mail sent with an Undo (EXO-90837): "Sending..." with Undo, for
+     * the wait the server answered, which it starts once the draft is frozen, just
+     * before it answers. The Undo is single-shot and closes the snackbar on
+     * its click, as the move's does. Once the wait is over and nobody took the mail
+     * back, the mailbox is told it went, so it watches Sent for its copy.
+     *
+     * @param {Object} held {draftLocalId, delaySeconds}, as the server answered
+     * @returns {void}
+     */
+    offerUndoSend(held) {
+      const delayMs = Math.max(0, (held?.delaySeconds || 0) * 1000);
+      let undone = false;
+      const announce = setTimeout(() => {
+        if (!undone) {
+          this.$root.$emit('email-sent');
+          this.$root.$emit('refresh-email-box');
+        }
+      }, delayMs + UNDO_SENT_ANNOUNCE_MS);
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'success',
+        alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.sending'),
+        alertLinkText: this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.undo'),
+        alertTimeout: Math.max(UNDO_SNACKBAR_MARGIN_MS, delayMs - UNDO_SNACKBAR_MARGIN_MS),
+        alertLinkCallback: () => {
+          if (undone) {
+            return Promise.resolve(null);
+          }
+          undone = true;
+          clearTimeout(announce);
+          document.dispatchEvent(new CustomEvent('close-alert-message'));
+          return this.undoSend(held.draftLocalId);
+        },
+      }}));
+    },
+    /**
+     * Takes a mail sent with an Undo back (EXO-90837) and reopens it in the composer as
+     * it was frozen: recipients, subject, body, files, the mailbox and the name it was
+     * to go out in. A mail being written meanwhile is saved as a draft first, as closing
+     * the composer would. Too late -- the mail is going or gone -- the user is told so.
+     *
+     * @param {String} draftLocalId the draft's local id
+     * @returns {Promise<void>} resolved once reopened or refused
+     */
+    async undoSend(draftLocalId) {
+      try {
+        const draft = await this.$emailConnectorMailBoxService.undoSend(draftLocalId);
+        if (this.newEmailDrawer) {
+          this.flushDraft();
+        }
+        this.openOnDraft(draft);
+        this.$root.$emit('refresh-email-box');
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.undone'), 'info');
+      } catch (error) {
+        if (error?.code === 'emailConnector.scheduled.uncertain') {
+          // Its send was interrupted: it may have gone, and Scheduled lists it for the
+          // user to decide.
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.uncertain'), 'warning');
+          this.$root.$emit('scheduled-emails-changed');
+          return;
+        }
+        const tooLate = error?.status === 409 || error?.status === 404;
+        this.$root.$emit('alert-message', this.$t(tooLate ? 'emailConnector.mailBox.newEmail.drawer.undoSend.tooLate'
+          : 'emailConnector.mailBox.newEmail.drawer.undoSend.error'), tooLate ? 'info' : 'error');
+        if (tooLate) {
+          this.$root.$emit('email-sent');
+        }
+      }
     },
     /**
      * Opens the date and time card of the split Send button, from its caret menu.
@@ -2265,8 +2826,10 @@ export default {
         this.$root.$emit('refresh-email-box');
         this.close();
       } catch (error) {
-        this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
-          'emailConnector.mailBox.newEmail.drawer.schedule.error'), 'error');
+        if (!this.onScheduleIdentityRefused(error)) {
+          this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
+            'emailConnector.mailBox.newEmail.drawer.schedule.error'), 'error');
+        }
       } finally {
         this.scheduling = false;
       }
@@ -2290,6 +2853,9 @@ export default {
         attachments: [],
         // The server reads a missing value as "no" (EXO-90435).
         readReceiptRequested: !!this.readReceiptRequested,
+        // The name it goes out in (EXO-90584): saved onto the draft before it is frozen,
+        // and checked against the owner's consent then and when it goes out.
+        sendMode: this.draftSendMode(),
       };
     },
     /**
@@ -2325,7 +2891,7 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.edit.notFound'), 'info');
         return;
       }
-      this.openOnDraft(draft);
+      this.openOnDraft(draft, true);
       this.title = this.$t('emailConnector.mailBox.newEmail.drawer.scheduled.title');
       this.scheduledEdit = {
         draftLocalId,
@@ -2480,6 +3046,9 @@ export default {
      * @returns {Promise<void>} resolved once handled
      */
     async onScheduledEditRefused(error) {
+      if (this.onScheduleIdentityRefused(error)) {
+        return;
+      }
       if (error?.status !== 409 && error?.status !== 404) {
         this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
           'emailConnector.mailBox.newEmail.drawer.scheduled.updateError'), 'error');
@@ -2611,8 +3180,9 @@ export default {
       }).filter(recipient => recipient.address);
     },
     /**
-     * Widens the quoted blocks the editor produced into something a mail client
-     * renders as a quote.
+     * Makes the composed body travel as the sender saw it: its empty lines kept
+     * (keepEmptyLines), and the quoted blocks the editor produced widened into
+     * something a mail client renders as a quote.
      *
      * @param {string} html - the composed body
      * @returns {string} the body to send
@@ -2621,7 +3191,7 @@ export default {
       if (!html) {
         return html;
       }
-      return html.replace(/<blockquote>/g, `
+      return keepEmptyLines(html).replace(/<blockquote>/g, `
       <blockquote style="
         margin: 0 0 0 6px;
         padding-left: 8px;

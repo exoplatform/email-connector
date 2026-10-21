@@ -139,6 +139,11 @@ public class EmailConnectorUtils {
 
   public static final String   SEND_EMAIL              = "exo.email.sendEmail";
 
+  // Broadcast once a mail sent in a shared mailbox owner's name went out (EXO-90583):
+  // source = the sender, data = the shape, ON_BEHALF or AS. Beside SEND_EMAIL, whose
+  // String payload other add-ons may read, rather than inside it.
+  public static final String   SEND_EMAIL_IN_OWNERS_NAME = "exo.email.sendEmailInOwnersName";
+
   public static final String   ACCESS_WEBMAIL          = "exo.email.accessWebmail";
 
   // Broadcast after a sync when new emails were fetched: source = username,
@@ -179,13 +184,51 @@ public class EmailConnectorUtils {
   // is honestly unable to promise anything came of it.
   public static final String   THREAD_AI_SUMMARY_REQUESTED = "exo.email.threadAiSummaryRequested";
 
+  // A REQUEST, as THREAD_AI_SUMMARY_REQUESTED is (EXO-90654): the owner's mail filters
+  // queued matches for an assistant. Source = the owner's username, data = the ids of
+  // the EMAIL_FILTER_MATCH rows now PENDING. The rule's other actions wait with them:
+  // they run when the glue reports the assistant done, through
+  // EmailFilterService.applyPostActions. Only broadcast when the glue declared itself
+  // as an EmailFilterAgentHandler bean; a deployment without one never queues a match
+  // (it is recorded SKIPPED_DISABLED and its actions run at once), and the matches a
+  // removed glue left waiting are released by EmailFilterAgentSweepJob after boot.
+  public static final String   FILTER_AGENT_REQUESTED      = "exo.email.filterAgentRequested";
+
+  /**
+   * A mail of the owner's inbox just got a category, whoever put it there: the AI
+   * categorizer, the user, the MCP tool or a filter's own action. Source = the owner's
+   * username, data = an {@code EmailCategoryAdded} -- the category and the INBOX UIDs of
+   * the mails whose link stuck. The owner's mail filters with a category condition run on
+   * them then, rather than at sync, when no mail has a category yet.
+   */
+  public static final String   EMAIL_CATEGORY_ADDED        = "exo.email.categoryAdded";
+
   public static final String   EMAIL_FEATURE           = "email";
+
+  /** The name a message downloaded as {@code .eml} takes when its subject gives none. */
+  public static final String   EML_DEFAULT_NAME        = "message";
+
+  /** The longest subject part of an {@code .eml} file name, in code points. */
+  public static final int      EML_NAME_MAX_LENGTH     = 100;
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
 
   private static final int     DEFAULT_AVATAR_HEIGHT   = 350;
 
   private static final Pattern MOJIBAKE_PATTERN        = Pattern.compile("[ÃÂâ][\u0080-\u00BF]");
+
+  /**
+   * What a file name may not hold on any desktop system: control and invisible format
+   * characters (a bidirectional override would show "…eml.exe" reversed), and the
+   * path and wildcard characters Windows refuses.
+   */
+  private static final Pattern EML_NAME_UNSAFE         = Pattern.compile("[\\p{Cc}\\p{Cf}\\\\/:*?\"<>|]");
+
+  /**
+   * The names Windows reserves for devices, whatever the extension: a file named so cannot
+   * be created there.
+   */
+  private static final Pattern WINDOWS_DEVICE_NAME     = Pattern.compile("(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\..*)?");
 
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
@@ -293,6 +336,50 @@ public class EmailConnectorUtils {
       return MAIL_TYPE_BULK;
     }
     return MAIL_TYPE_PERSONAL;
+  }
+
+  /**
+   * The file name a message is downloaded under (EXO-90842): its subject, made safe for a
+   * {@code Content-Disposition} header and for any desktop file system, then
+   * {@code .eml}. The subject is the sender's text, so nothing in it is trusted: control
+   * and format characters and the characters a file system refuses become {@code _},
+   * runs of white space one space, leading and trailing dots and spaces go (a name
+   * starting with a dot is hidden, one ending with a dot is refused on Windows), and the
+   * whole is cut at {@link #EML_NAME_MAX_LENGTH} code points.
+   *
+   * @param subject the message's subject, possibly null
+   * @return a non-blank file name ending in {@code .eml}
+   */
+  public static String emlFileName(String subject) {
+    return safeFileName(subject, EML_DEFAULT_NAME, ".eml");
+  }
+
+  /**
+   * A file name made of text nobody vetted -- a subject, a folder name -- by the rules of
+   * {@link #emlFileName}: control, format, path and wildcard characters become
+   * {@code _}, white space is collapsed, leading and trailing dots and spaces go, the
+   * text is cut at {@link #EML_NAME_MAX_LENGTH} code points, and a name Windows reserves
+   * for a device ({@code CON}, {@code NUL}, {@code COM1}...) gets a leading {@code _}
+   * (EXO-90845: a zip entry or an {@code .mbox} named so cannot be extracted there).
+   *
+   * @param text the text the name is made of, possibly null
+   * @param defaultName the name used when the text gives none
+   * @param extension the extension, with its dot
+   * @return a non-blank file name ending in the extension
+   */
+  public static String safeFileName(String text, String defaultName, String extension) {
+    String name = text == null ? "" : EML_NAME_UNSAFE.matcher(text).replaceAll("_");
+    name = name.replaceAll("\\s+", " ");
+    name = StringUtils.strip(name, ". ");
+    if (name.codePointCount(0, name.length()) > EML_NAME_MAX_LENGTH) {
+      name = StringUtils.stripEnd(name.substring(0, name.offsetByCodePoints(0, EML_NAME_MAX_LENGTH)), ". ");
+    }
+    if (StringUtils.isBlank(name)) {
+      name = defaultName;
+    } else if (WINDOWS_DEVICE_NAME.matcher(name).matches()) {
+      name = "_" + name;
+    }
+    return name + extension;
   }
 
   private static final Pattern FORWARD_SUBJECT = Pattern.compile("^\\s*(fw|fwd|tr|wg|rv)\\s*:", Pattern.CASE_INSENSITIVE);

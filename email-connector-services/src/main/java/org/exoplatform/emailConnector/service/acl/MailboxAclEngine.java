@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service.acl;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +27,8 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -107,12 +110,39 @@ public interface MailboxAclEngine {
   List<MailboxAce> listAcl(MailboxAclSession session, String mailbox);
 
   /**
+   * {@link #listAcl} of several folders at once, for a list that shows them all (the
+   * owner's "Folders and access", EXO-90816): an engine whose server answers them in a
+   * few calls overrides it, so that the list does not cost a round of requests per folder.
+   * A folder whose list could not be read is absent from the answer; a lost connection
+   * fails the whole read. The default asks {@link #listAcl} folder by folder.
+   *
+   * @param session the owner's session
+   * @param folders the folders' full names
+   * @return each readable folder's entries, by full name, in the order asked; never null
+   * @throws MailboxAclException {@code UNREACHABLE} when the server can no longer be asked
+   */
+  default Map<String, List<MailboxAce>> listAcls(MailboxAclSession session, List<String> folders) {
+    Map<String, List<MailboxAce>> acls = new LinkedHashMap<>();
+    for (String folder : folders) {
+      try {
+        acls.put(folder, listAcl(session, folder));
+      } catch (MailboxAclException e) {
+        if (MailboxAclException.UNREACHABLE.equals(e.getCode())) {
+          throw e;
+        }
+      }
+    }
+    return acls;
+  }
+
+  /**
    * Grants one preset to one identifier on one mailbox, as this server expresses it,
    * and answers what was written. The engine expands the preset into its server's
    * vocabulary (letters {@code lrs}/{@code lrswit} on IMAP, a verb on BlueMind), caps
    * it by its allowlist and by the owner's own rights -- eXo never grants a right the
-   * owner does not hold, nor {@code a}, {@code x}, {@code e}, {@code k}, {@code p} on an
-   * IMAP engine -- and refuses with {@code NOTHING_TO_GRANT} when what remains does
+   * owner does not hold, nor {@code a}, {@code x}, {@code k}, {@code p} on an IMAP
+   * engine, and {@code e} only where mail leaves, never on Trash (PO decision Q-1, see
+   * {@link #lettersFor}) -- and refuses with {@code NOTHING_TO_GRANT} when what remains does
    * not even read (plan, sections 3.4, 5.1, 8). On a per-mailbox server the mailbox
    * argument names the mailbox as a whole. An existing entry for the identifier is
    * replaced, not widened.
@@ -142,12 +172,52 @@ public interface MailboxAclEngine {
   void revoke(MailboxAclSession session, String mailbox, String identifier);
 
   /**
+   * Grants one preset to one identifier on the owner's <b>whole mailbox</b>, where a
+   * server that grants per folder also keeps whole-mailbox entries
+   * ({@link MailboxAclCapabilities#mailboxScope()}, EXO-90816): what changes or replaces
+   * an entry whose {@link MailboxAce#scope()} is {@link org.exoplatform.emailConnector.model.AclScope#MAILBOX}
+   * -- a write on one folder would only add to it, never narrow it. The engine expands
+   * and caps the preset as {@link #grant} does, and replaces the identifier's
+   * whole-mailbox entry, never widens it. The default is the grant on INBOX, which names
+   * the mailbox as a whole on a per-mailbox server; a per-folder engine is called here only
+   * when it says {@code mailboxScope}.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param preset READER or EDITOR
+   * @param ownerRights the owner's own rights on INBOX
+   * @return the entry as written, its scope {@code MAILBOX} on an engine that keeps both
+   * @throws MailboxAclException when nothing is left to grant or the server refuses
+   */
+  default MailboxAce grantWholeMailbox(MailboxAclSession session, String identifier, DelegationPreset preset, MailboxRights ownerRights) {
+    return grant(session, "INBOX", identifier, preset, ownerRights);
+  }
+
+  /**
+   * Removes one identifier's whole-mailbox entry, where a server that grants per folder
+   * also keeps such entries ({@link MailboxAclCapabilities#mailboxScope()}, EXO-90816):
+   * the part of "Remove access" no folder write reaches. Nothing is written when the
+   * identifier holds no whole-mailbox entry; their per-folder entries are left to
+   * {@link #revoke}. The default is the removal on INBOX, which names the mailbox as a
+   * whole on a per-mailbox server; a per-folder engine is called here only when it says
+   * {@code mailboxScope}.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @throws MailboxAclException when the server refuses
+   */
+  default void revokeWholeMailbox(MailboxAclSession session, String identifier) {
+    revoke(session, "INBOX", identifier);
+  }
+
+  /**
    * The letters a preset stands for on one folder of the owner's mailbox, by the
    * folder's role (EXO-90548). The default is the preset's own letters whatever the
    * folder: a per-mailbox engine never sees a role.
    *
    * @param preset READER or EDITOR
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the letters, before any cap
    */
   default MailboxRights lettersFor(DelegationPreset preset, FolderRole role) {
@@ -165,7 +235,8 @@ public interface MailboxAclEngine {
    * @param identifier the grantee as the server names them
    * @param preset READER or EDITOR
    * @param ownerRights the owner's own rights on that folder
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the entry as written
    * @throws MailboxAclException when nothing is left to grant or the server refuses
    */
@@ -189,6 +260,50 @@ public interface MailboxAclEngine {
    */
   default Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
     return Map.of();
+  }
+
+  /**
+   * The session user's own folders -- never one under another user's or a shared
+   * namespace, never one that cannot hold mail -- each with its role in that mailbox as
+   * {@link #findRoleFolders} reads it (EXO-90556): what the owner can share folder by
+   * folder, and the only names a per-folder grant is ever written on. Only on a
+   * per-folder engine; the default knows none.
+   *
+   * @param session the owner's session
+   * @return the folders, INBOX included, in the server's listing order; never null
+   * @throws MailboxAclException when the server cannot be asked
+   */
+  default List<OwnFolder> listOwnFolders(MailboxAclSession session) {
+    return List.of();
+  }
+
+  /**
+   * Writes on the server the owner's consent to a delegate writing mail in her name
+   * (EXO-90582), where the server has a word for it -- BlueMind's {@code SendOnBehalf} /
+   * {@code SendAs} verbs (see {@code package-info}), overridden by that engine. Called
+   * only when the probe answers {@code sendModeOnServer}. The default does nothing: RFC
+   * 4314 has no right that says "send", so on an IMAP server eXo alone holds and
+   * enforces the consent.
+   *
+   * @param session the owner's session
+   * @param identifier the delegate as the server names them
+   * @param mode {@link SendMode#ON_BEHALF} or {@link SendMode#AS}
+   * @throws MailboxAclException when the server refuses or cannot be asked
+   */
+  default void grantSendMode(MailboxAclSession session, String identifier, SendMode mode) {
+    // No word for it in an ACL: the consent is eXo's alone on this engine.
+  }
+
+  /**
+   * Takes the owner's consent to a delegate writing in her name off the server, where
+   * {@link #grantSendMode} wrote it. The default does nothing, for the same reason.
+   *
+   * @param session the owner's session
+   * @param identifier the delegate as the server names them
+   * @throws MailboxAclException when the server refuses or cannot be asked
+   */
+  default void revokeSendMode(MailboxAclSession session, String identifier) {
+    // No word for it in an ACL: the consent is eXo's alone on this engine.
   }
 
   /**

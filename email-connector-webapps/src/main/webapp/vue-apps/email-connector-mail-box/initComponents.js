@@ -41,6 +41,8 @@ import EmailConnectorMailBoxDrawerListItemDetailAttachments from './components/d
 import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailBody.vue';
 import EmailConnectorMailBoxDrawerListItemDetailContent from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerThreadContent from './components/drawer/EmailConnectorMailBoxDrawerThreadContent.vue';
+import EmailConnectorMailBoxDrawerAutomations from './components/drawer/EmailConnectorMailBoxDrawerAutomations.vue';
+import EmailConnectorMailBoxProposalCard from './components/drawer/EmailConnectorMailBoxProposalCard.vue';
 import EmailConnectorMailBoxDrawerThreadMessage from './components/drawer/EmailConnectorMailBoxDrawerThreadMessage.vue';
 import EmailConnectorMailBoxDrawerThreadDraft from './components/drawer/EmailConnectorMailBoxDrawerThreadDraft.vue';
 import EmailConnectorMailBoxDrawerCategoryBar from './components/drawer/EmailConnectorMailBoxDrawerCategoryBar.vue';
@@ -63,13 +65,23 @@ import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/draw
 import EmailConnectorMailBoxPurgeConfirmPopup from './components/drawer/EmailConnectorMailBoxPurgeConfirmPopup.vue';
 import EmailConnectorMailBoxDiscardDraftsConfirmPopup from './components/drawer/EmailConnectorMailBoxDiscardDraftsConfirmPopup.vue';
 import EmailConnectorMailBoxMoveToFolderDrawer from './components/drawer/EmailConnectorMailBoxMoveToFolderDrawer.vue';
+import EmailConnectorMailBoxSourceDrawer from './components/drawer/EmailConnectorMailBoxSourceDrawer.vue';
+import EmailConnectorMailBoxAdvancedSearchDrawer from './components/drawer/EmailConnectorMailBoxAdvancedSearchDrawer.vue';
+import EmailConnectorMailBoxSearchCriteriaChips from './components/drawer/EmailConnectorMailBoxSearchCriteriaChips.vue';
+import EmailConnectorMailBoxSearchBar from './components/drawer/EmailConnectorMailBoxSearchBar.vue';
+import EmailConnectorMailBoxImportDrawer from './components/drawer/EmailConnectorMailBoxImportDrawer.vue';
+import EmailConnectorMailBoxImportReport from './components/drawer/EmailConnectorMailBoxImportReport.vue';
 import EmailConnectorScheduleSendPicker from './components/drawer/EmailConnectorScheduleSendPicker.vue';
 import EmailConnectorMailBoxPopup from './components/drawer/EmailConnectorMailBoxPopup.vue';
 import EmailConnectorReadReceiptBanner from './components/drawer/EmailConnectorReadReceiptBanner.vue';
+import EmailConnectorSecurityBanner from './components/drawer/EmailConnectorSecurityBanner.vue';
 import EmailConnectorMailBoxScheduledList from './components/drawer/EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from './components/drawer/EmailConnectorMailBoxScheduledListItem.vue';
+import EmailConnectorMailBoxSuggestionsList from './components/drawer/EmailConnectorMailBoxSuggestionsList.vue';
 import EmailConnectorMailBoxSwitcher from './components/drawer/EmailConnectorMailBoxSwitcher.vue';
 import EmailConnectorSharedMailboxBand from './components/drawer/EmailConnectorSharedMailboxBand.vue';
+import EmailConnectorAbsenceBand from './components/drawer/EmailConnectorAbsenceBand.vue';
+import EmailConnectorForwardingBand from './components/drawer/EmailConnectorForwardingBand.vue';
 import EmailConnectorSharedMailboxConfirmPopup from './components/drawer/EmailConnectorSharedMailboxConfirmPopup.vue';
 import EmailConnectorNewEmailSharedMailboxNotice from './components/drawer/EmailConnectorNewEmailSharedMailboxNotice.vue';
 
@@ -101,6 +113,8 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-body': EmailConnectorMailBoxDrawerListItemDetailBody,
   'email-connector-mail-box-drawer-list-item-detail-content': EmailConnectorMailBoxDrawerListItemDetailContent,
   'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
+  'email-connector-mail-box-drawer-automations': EmailConnectorMailBoxDrawerAutomations,
+  'email-connector-mail-box-proposal-card': EmailConnectorMailBoxProposalCard,
   'email-connector-mail-box-drawer-thread-message': EmailConnectorMailBoxDrawerThreadMessage,
   'email-connector-mail-box-drawer-thread-draft': EmailConnectorMailBoxDrawerThreadDraft,
   'email-connector-mail-box-drawer-category-bar': EmailConnectorMailBoxDrawerCategoryBar,
@@ -123,15 +137,25 @@ const components = {
   'email-connector-mail-box-purge-confirm-popup': EmailConnectorMailBoxPurgeConfirmPopup,
   'email-connector-mail-box-switcher': EmailConnectorMailBoxSwitcher,
   'email-connector-shared-mailbox-band': EmailConnectorSharedMailboxBand,
+  'email-connector-absence-band': EmailConnectorAbsenceBand,
+  'email-connector-forwarding-band': EmailConnectorForwardingBand,
   'email-connector-shared-mailbox-confirm-popup': EmailConnectorSharedMailboxConfirmPopup,
   'email-connector-new-email-shared-mailbox-notice': EmailConnectorNewEmailSharedMailboxNotice,
   'email-connector-mail-box-discard-drafts-confirm-popup': EmailConnectorMailBoxDiscardDraftsConfirmPopup,
   'email-connector-mail-box-move-to-folder-drawer': EmailConnectorMailBoxMoveToFolderDrawer,
+  'email-connector-mail-box-source-drawer': EmailConnectorMailBoxSourceDrawer,
+  'email-connector-mail-box-advanced-search-drawer': EmailConnectorMailBoxAdvancedSearchDrawer,
+  'email-connector-mail-box-search-criteria-chips': EmailConnectorMailBoxSearchCriteriaChips,
+  'email-connector-mail-box-search-bar': EmailConnectorMailBoxSearchBar,
+  'email-connector-mail-box-import-drawer': EmailConnectorMailBoxImportDrawer,
+  'email-connector-mail-box-import-report': EmailConnectorMailBoxImportReport,
   'email-connector-schedule-picker': EmailConnectorScheduleSendPicker,
   'email-connector-mail-box-popup': EmailConnectorMailBoxPopup,
   'email-connector-read-receipt-banner': EmailConnectorReadReceiptBanner,
+  'email-connector-security-banner': EmailConnectorSecurityBanner,
   'email-connector-mail-box-scheduled-list': EmailConnectorMailBoxScheduledList,
   'email-connector-mail-box-scheduled-list-item': EmailConnectorMailBoxScheduledListItem,
+  'email-connector-mail-box-suggestions-list': EmailConnectorMailBoxSuggestionsList,
 };
 
 for (const key in components) {

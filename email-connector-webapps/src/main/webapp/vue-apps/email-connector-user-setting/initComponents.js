@@ -18,6 +18,9 @@ import EmailConnectorUserSettingApp from './components/EmailConnectorUserSetting
 import EmailConnectorUserSettingBody from './components/main/EmailConnectorUserSettingBody.vue';
 import EmailConnectorUserSettingFolders from './components/main/EmailConnectorUserSettingFolders.vue';
 import EmailConnectorUserSettingReadReceipts from './components/main/EmailConnectorUserSettingReadReceipts.vue';
+import EmailConnectorUserSettingUndoSend from './components/main/EmailConnectorUserSettingUndoSend.vue';
+import EmailConnectorUserSettingRemoteContent from './components/main/EmailConnectorUserSettingRemoteContent.vue';
+import EmailConnectorUserSettingTrustedSendersDrawer from './components/drawer/remote-content/EmailConnectorUserSettingTrustedSendersDrawer.vue';
 import EmailConnectorUserSettingAddressBook from './components/main/EmailConnectorUserSettingAddressBook.vue';
 import EmailConnectorUserSettingSignature from './components/main/EmailConnectorUserSettingSignature.vue';
 import EmailConnectorUserSettingAdvanced from './components/main/EmailConnectorUserSettingAdvanced.vue';
@@ -31,14 +34,30 @@ import EmailConnectorUserSettingDisconnectDrawer from './components/drawer/disco
 import EmailConnectorUserSettingSignatureDrawer from './components/drawer/signature/EmailConnectorUserSettingSignatureDrawer.vue';
 import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailConnectorContactsChoiceStep.vue';
 import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUserSettingSharing.vue';
+import EmailConnectorUserSettingAbsence from './components/main/EmailConnectorUserSettingAbsence.vue';
+import EmailConnectorUserSettingAbsenceForm from './components/main/EmailConnectorUserSettingAbsenceForm.vue';
+import EmailConnectorUserSettingAbsenceDrawer from './components/drawer/absence/EmailConnectorUserSettingAbsenceDrawer.vue';
+import EmailConnectorUserSettingForwardingDrawer from './components/drawer/forwarding/EmailConnectorUserSettingForwardingDrawer.vue';
+import EmailConnectorForwardingConfirm from './components/drawer/forwarding/EmailConnectorForwardingConfirm.vue';
+import EmailConnectorUserSettingFilters from './components/main/EmailConnectorUserSettingFilters.vue';
+import EmailConnectorUserSettingFiltersDrawer from './components/drawer/filters/EmailConnectorUserSettingFiltersDrawer.vue';
+import EmailConnectorUserSettingFilterForm from './components/drawer/filters/EmailConnectorUserSettingFilterForm.vue';
+import EmailConnectorUserSettingFilterCondition from './components/drawer/filters/EmailConnectorUserSettingFilterCondition.vue';
+import EmailConnectorUserSettingFilterSwitch from './components/drawer/filters/EmailConnectorUserSettingFilterSwitch.vue';
+import EmailConnectorUserSettingFilterList from './components/drawer/filters/EmailConnectorUserSettingFilterList.vue';
+import EmailConnectorUserSettingFilterLogDrawer from './components/drawer/filters/EmailConnectorUserSettingFilterLogDrawer.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
+import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
 
 const components = {
   'email-connector-user-setting-app': EmailConnectorUserSettingApp,
   'email-connector-user-setting-body': EmailConnectorUserSettingBody,
   'email-connector-user-setting-folders': EmailConnectorUserSettingFolders,
   'email-connector-user-setting-read-receipts': EmailConnectorUserSettingReadReceipts,
+  'email-connector-user-setting-undo-send': EmailConnectorUserSettingUndoSend,
+  'email-connector-user-setting-remote-content': EmailConnectorUserSettingRemoteContent,
+  'email-connector-user-setting-trusted-senders-drawer': EmailConnectorUserSettingTrustedSendersDrawer,
   'email-connector-user-setting-address-book': EmailConnectorUserSettingAddressBook,
   'email-connector-user-setting-signature': EmailConnectorUserSettingSignature,
   'email-connector-user-setting-advanced': EmailConnectorUserSettingAdvanced,
@@ -52,8 +71,21 @@ const components = {
   'email-connector-user-setting-signature-drawer': EmailConnectorUserSettingSignatureDrawer,
   'email-connector-contacts-choice-step': EmailConnectorContactsChoiceStep,
   'email-connector-user-setting-sharing': EmailConnectorUserSettingSharing,
+  'email-connector-user-setting-absence': EmailConnectorUserSettingAbsence,
+  'email-connector-user-setting-absence-form': EmailConnectorUserSettingAbsenceForm,
+  'email-connector-user-setting-absence-drawer': EmailConnectorUserSettingAbsenceDrawer,
+  'email-connector-user-setting-forwarding-drawer': EmailConnectorUserSettingForwardingDrawer,
+  'email-connector-forwarding-confirm': EmailConnectorForwardingConfirm,
+  'email-connector-user-setting-filters': EmailConnectorUserSettingFilters,
+  'email-connector-user-setting-filters-drawer': EmailConnectorUserSettingFiltersDrawer,
+  'email-connector-user-setting-filter-form': EmailConnectorUserSettingFilterForm,
+  'email-connector-user-setting-filter-condition': EmailConnectorUserSettingFilterCondition,
+  'email-connector-user-setting-filter-switch': EmailConnectorUserSettingFilterSwitch,
+  'email-connector-user-setting-filter-list': EmailConnectorUserSettingFilterList,
+  'email-connector-user-setting-filter-log-drawer': EmailConnectorUserSettingFilterLogDrawer,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
+  'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
 };
 
 for (const key in components) {

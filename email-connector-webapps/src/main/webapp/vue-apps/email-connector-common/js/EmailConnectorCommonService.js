@@ -290,6 +290,70 @@ export function getReadReceiptSettings() {
 }
 
 /**
+ * Reads the caller's choices about the resources received mail fetches from the
+ * internet (EXO-90841): whether they wait for consent, and the senders always trusted.
+ *
+ * @returns {Promise<object>} {blockRemoteContent, trustedSenders}
+ */
+export function getRemoteContentSettings() {
+  return fetch('/email-connector/rest/user-email-setting/remote-content', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the remote content settings');
+    }
+  });
+}
+
+/**
+ * Switches the holding back of remote content on or off for the caller's mail.
+ *
+ * @param {boolean} blockRemoteContent - whether remote content waits for consent
+ * @returns {Promise<object>} the choices as they now stand
+ */
+export function saveRemoteContentBlocking(blockRemoteContent) {
+  return fetch('/email-connector/rest/user-email-setting/remote-content', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ blockRemoteContent: !!blockRemoteContent }),
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when saving the remote content settings');
+    }
+  });
+}
+
+/**
+ * Trusts a sender, or stops trusting them: their mail loads its remote content without
+ * asking, or holds it back again.
+ *
+ * @param {string} address - the sender's address
+ * @param {boolean} trusted - true to trust, false to stop
+ * @returns {Promise<object>} the choices as they now stand
+ */
+export function setSenderTrusted(address, trusted) {
+  return fetch(`/email-connector/rest/user-email-setting/remote-content/trusted-senders?address=${encodeURIComponent(address || '')}`, {
+    credentials: 'include',
+    method: trusted ? 'POST' : 'DELETE',
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when changing the trusted senders');
+    }
+  });
+}
+
+/**
  * Stores the caller's read-receipt preferences. The server refuses ALWAYS while the
  * administrator disables it, and answers the preferences as they now stand.
  *
@@ -314,4 +378,245 @@ export function saveReadReceiptSettings(settings) {
       throw new Error('Error when saving the read receipt settings');
     }
   });
+}
+
+/**
+ * The caller's Undo send preference (EXO-90837): how many seconds a sent mail waits,
+ * with an Undo, before it goes (0 is off), and the waits the server offers.
+ *
+ * @returns {Promise<object>} {delaySeconds, allowedDelays}
+ */
+export function getUndoSendSettings() {
+  return fetch('/email-connector/rest/user-email-setting/undo-send', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the undo send settings');
+    }
+  });
+}
+
+/**
+ * Stores the caller's Undo send wait, one the server offers; it answers the preference
+ * as it now stands.
+ *
+ * @param {number} delaySeconds - the wait, 0 for off
+ * @returns {Promise<object>} {delaySeconds, allowedDelays}
+ */
+export function saveUndoSendSettings(delaySeconds) {
+  return fetch('/email-connector/rest/user-email-setting/undo-send', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ delaySeconds }),
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when saving the undo send settings');
+    }
+  });
+}
+
+/**
+ * Turns a refused absence request into an Error carrying the server's message code
+ * ("emailConnector.absence.*") as its message, and, for a 409, the name of the script
+ * the conflict is about as `scriptName`, so the screen can say why in the user's words.
+ *
+ * @param {Response} resp - the refused answer
+ * @param {string} fallback - the message when the answer carries no code
+ * @returns {Promise<never>} rejected with the error
+ */
+function absenceError(resp, fallback) {
+  return resp.json()
+    .catch(() => ({}))
+    .then(body => {
+      const error = new Error(body?.message || fallback);
+      error.status = resp?.status;
+      error.scriptName = body?.scriptName;
+      throw error;
+    });
+}
+
+/**
+ * The caller's automatic reply section, read live from their mail server: what the
+ * engine can do, the reply the server holds, and its state (OWN, ELSEWHERE, MODIFIED,
+ * INACTIVE or NONE). The browser's time zone is sent, so a reply the server stores as
+ * instants (BlueMind) is answered in the user's own days. With the forward, the
+ * mailbox's forward read-only (null when the deployment hides it); without it, the
+ * server is not asked for it.
+ *
+ * @param {boolean} [withForwarding=true] - whether to read the mailbox's forward
+ * @returns {Promise<object>} {capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays, forwarding}
+ */
+export function getAbsence(withForwarding = true) {
+  const params = new URLSearchParams();
+  const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (timeZone) {
+    params.set('timeZone', timeZone);
+  }
+  if (!withForwarding) {
+    params.set('forwarding', 'false');
+  }
+  const query = params.toString();
+  return fetch(`/email-connector/rest/user-email-setting/absence${query ? `?${query}` : ''}`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the automatic reply')));
+}
+
+/**
+ * Writes the caller's automatic reply on their mail server.
+ *
+ * @param {object} vacation - {enabled, start, end, subject, text}; the browser's time zone is added
+ * @param {boolean} republish - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<object>} the section after the write, capabilities not re-read
+ */
+export function saveVacation(vacation, republish) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/vacation${republish ? '?republish=true' : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      enabled: !!vacation?.enabled,
+      start: vacation?.start || null,
+      end: vacation?.end || null,
+      subject: vacation?.subject || '',
+      text: vacation?.text || '',
+      timeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+    })
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when saving the automatic reply')));
+}
+
+/**
+ * Switches the caller's automatic reply off; its text stays on the server.
+ *
+ * @returns {Promise<void>} resolved once switched off
+ */
+export function disableVacation() {
+  return fetch('/email-connector/rest/user-email-setting/absence/vacation', {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? null : absenceError(resp, 'Error when switching the automatic reply off')));
+}
+
+/**
+ * The dates-only summary of an automatic reply, for the mailbox band: the user's own, or,
+ * with a share, its owner's as her delegate sees it -- read from what eXo cached, never
+ * the text.
+ *
+ * @param {number} [delegationId] the share the user is looking at the owner's mailbox
+ *   through; none for the user's own mailbox
+ * @returns {Promise<object>} own: {enabled, start, end, timeZone, source, updatedDate,
+ *   lastServerReadDate}; an owner's: {enabled, start, end, timeZone, updatedDate,
+ *   lastServerReadDate, stale}
+ */
+export function getAbsenceStatus(delegationId) {
+  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
+  return fetch(`/email-connector/rest/user-email-setting/absence/status${query}`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the automatic reply status')));
+}
+
+/**
+ * Whether the user may set a forward from eXo, and within which bounds (EXO-90656).
+ *
+ * @returns {Promise<object>} {enabled, reasonCode, allowedDomains, confirmedDestinations}
+ */
+export function getForwardingAuthoring() {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/authoring', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the forwarding settings')));
+}
+
+/**
+ * Sends a confirmation code to a forwarding destination; the platform mails it there.
+ *
+ * @param {string} destination - the address
+ * @returns {Promise<object>} {destination, expiresAt}
+ */
+export function sendForwardingCode(destination) {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/code', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({ destination }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when sending the confirmation code')));
+}
+
+/**
+ * Confirms a forwarding destination with the code it received.
+ *
+ * @param {string} destination - the address
+ * @param {string} code - the code
+ * @returns {Promise<object>} {destination}
+ */
+export function confirmForwarding(destination, code) {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/confirm', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({ destination, code }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when confirming the address')));
+}
+
+/**
+ * Sets the user's forward: a copy of every mail to a confirmed address, the mail kept.
+ *
+ * @param {string} destination - the address
+ * @param {boolean} [republish=false] - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<object>} the forward as the mail server holds it
+ */
+export function setForwarding(destination, republish = false) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/forwarding${republish ? '?republish=true' : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ destination }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when setting the forward')));
+}
+
+/**
+ * Removes the forward set from eXo.
+ *
+ * @param {boolean} [republish=false] - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<void>} resolved once removed
+ */
+export function removeForwarding(republish = false) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/forwarding${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? null : absenceError(resp, 'Error when removing the forward')));
+}
+
+/**
+ * The forward the mailbox band shows, from what eXo cached.
+ *
+ * @returns {Promise<object>} {state, destinations, keepCopy, managedByExo, scriptName, ruleForwards, lastServerReadDate}
+ */
+export function getForwardingStatus() {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/status', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the forward')));
 }

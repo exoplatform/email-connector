@@ -17,9 +17,13 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -38,7 +42,10 @@ import static org.mockito.Mockito.when;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -57,20 +64,27 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.command.NotificationCommand;
 import org.exoplatform.commons.api.notification.command.NotificationExecutor;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
+import org.exoplatform.emailConnector.model.UndoSendSettings;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.ScheduledEmailFailedNotificationPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -78,6 +92,9 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
+
+import io.meeds.common.ContainerTransactional;
+import io.meeds.social.util.JsonUtils;
 
 /**
  * The scheduled-send rules, against a mocked storage and a mocked mailbox service, with
@@ -113,6 +130,15 @@ public class EmailScheduledSendServiceTest {
   @Mock
   private ExoContainer                                container;
 
+  @Mock
+  private EmailDelegationService                      emailDelegationService;
+
+  @Mock
+  private SettingService                              settingService;
+
+  @Mock
+  private ScheduledExecutorService                    heldTimer;
+
   @InjectMocks
   private EmailScheduledSendService                   service;
 
@@ -131,6 +157,7 @@ public class EmailScheduledSendServiceTest {
     containerContext = mockStatic(ExoContainerContext.class);
     containerContext.when(ExoContainerContext::getCurrentContainer).thenReturn(container);
     ReflectionTestUtils.setField(service, "executor", new InlineExecutor(2));
+    ReflectionTestUtils.setField(service, "heldTimer", heldTimer);
     ReflectionTestUtils.setField(service, "recovered", true);
     ReflectionTestUtils.setField(EmailConnectorUtils.class, "syncNodeName", "node-a");
     lenient().when(storage.currentTimestamp()).thenReturn(new Date(System.currentTimeMillis()));
@@ -246,8 +273,8 @@ public class EmailScheduledSendServiceTest {
   void aDueMailIsClaimedSentAndRecordedUnderItsOwnClaim() throws Exception {
     EmailScheduledSend claimed = claimedRow(1);
     when(storage.findDueToSend(any(Date.class), eq(2))).thenReturn(List.of(31L, 32L));
-    when(storage.claim(eq(31L), eq("node-a"), any(Date.class))).thenReturn(true);
-    when(storage.claim(eq(32L), eq("node-a"), any(Date.class))).thenReturn(false);
+    when(storage.claim(eq(31L), eq("node-a"), any(Date.class), eq(ScheduledSendStatus.SCHEDULED))).thenReturn(true);
+    when(storage.claim(eq(32L), eq("node-a"), any(Date.class), eq(ScheduledSendStatus.SCHEDULED))).thenReturn(false);
     when(storage.get(31L)).thenReturn(claimed);
     doAnswer(invocation -> {
       ((Runnable) invocation.getArgument(2)).run();
@@ -561,6 +588,130 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * EXO-90595 -- a mail written in a mailbox no longer shared with its owner fails for
+   * good, and the owner is told why, with the notification every refused scheduled mail
+   * sends.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWhoseMailboxIsNoLongerSharedFailsAndItsOwnerIsToldWhy() throws Exception {
+    givenTheSendFails(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED);
+    service.runClaimed(claimedRow(1));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.FAILED),
+                           eq(ScheduledSendError.MAILBOX_UNSHARED),
+                           isNull(),
+                           any(Date.class));
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, "MAILBOX_UNSHARED");
+  }
+
+  /**
+   * EXO-90584, PO decision Q-5 -- a mail scheduled in the mailbox owner's name whose
+   * consent was withdrawn or narrowed fails for good, and its writer is told why with
+   * the notification every refused scheduled mail sends; it is never sent in the
+   * writer's own name instead (the send decides that; here nothing retries it).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWhoseNameIsNoLongerAllowedFailsAndItsWriterIsToldWhy() throws Exception {
+    givenTheSendFails(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_WITHDRAWN);
+    service.runClaimed(claimedRow(1));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.FAILED),
+                           eq(ScheduledSendError.SEND_MODE_WITHDRAWN),
+                           isNull(),
+                           any(Date.class));
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, "SEND_MODE_WITHDRAWN");
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail of a shared mailbox that went out but whose copy could
+   * not be filed in the owner's Sent tells its sender so, through the scheduled-mail
+   * notification with a reason of its own; nothing about the send is recorded as a
+   * failure. A copy that was filed tells nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSentMailWhoseOwnerCopyFailedTellsItsSenderAndStaysSent() throws Exception {
+    when(emailBoxService.sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class)))
+                                                                                    .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
+                                                                                                                                    OwnerCopy.FILED))
+                                                                                    .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
+                                                                                                                                    OwnerCopy.FAILED));
+    service.runClaimed(claimedRow(1));
+    assertTrue(notified.isEmpty(), "a filed copy tells nothing");
+
+    service.runClaimed(claimedRow(1));
+
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, EmailScheduledSendService.OWNER_COPY_FAILED_REASON);
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.SUBJECT, "See you tomorrow");
+    verify(storage, never()).endRun(anyLong(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  /**
+   * EXO-90595 -- the "Scheduled" view names the shared mailbox each mail was written in,
+   * as the writer's own share resolves it, an ended one included (marked no longer
+   * shared); a mail of the owner's own mailbox names none, and a share that no longer
+   * resolves at all still reads as not shared rather than as the owner's own. A share is
+   * looked up once for the page, however many of its mails are listed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theScheduledViewNamesTheMailboxEachMailWasWrittenIn() throws Exception {
+    EmailScheduledSend own = claimedRow(0);
+    EmailScheduledSend shared = claimedRow(0);
+    shared.setEmailId(10L);
+    EmailScheduledSend unresolved = claimedRow(0);
+    unresolved.setEmailId(11L);
+    EmailScheduledSend sameShare = claimedRow(0);
+    sameShare.setEmailId(12L);
+    when(storage.getListed(USER, 0, 20)).thenReturn(List.of(own, shared, unresolved, sameShare));
+    Email ownDraft = draft();
+    Email sharedDraft = draft();
+    sharedDraft.setSendDelegationId(100L);
+    sharedDraft.setSendMode("ON_BEHALF");
+    ownDraft.setSendMode("NONE");
+    Email unresolvedDraft = draft();
+    unresolvedDraft.setSendDelegationId(7L);
+    Email sameShareDraft = draft();
+    sameShareDraft.setSendDelegationId(100L);
+    when(emailBoxStorage.getListedEmailsByIds(eq(USER), anyList())).thenReturn(Map.of(9L,
+                                                                                      ownDraft,
+                                                                                      10L,
+                                                                                      sharedDraft,
+                                                                                      11L,
+                                                                                      unresolvedDraft,
+                                                                                      12L,
+                                                                                      sameShareDraft));
+    DraftMailbox anne = new DraftMailbox(100L, "Anne Dupont", "anne@example.org", false);
+    when(emailDelegationService.draftMailboxes(eq(USER), anyCollection())).thenReturn(Map.of(100L,
+                                                                                             anne,
+                                                                                             7L,
+                                                                                             new DraftMailbox(7L, null, null, false)));
+
+    List<ScheduledEmail> listed = service.getScheduledEmails(USER, 0, 20);
+
+    assertNull(listed.get(0).getMailbox(), "the owner's own mailbox");
+    assertEquals(anne, listed.get(1).getMailbox());
+    assertEquals(new DraftMailbox(7L, null, null, false), listed.get(2).getMailbox());
+    assertEquals(anne, listed.get(3).getMailbox());
+    assertEquals("ON_BEHALF", listed.get(1).getSendMode(), "the name it goes out in from that mailbox (EXO-90584)");
+    assertNull(listed.get(0).getSendMode(), "none named for the owner's own mailbox");
+    verify(emailDelegationService, times(1)).draftMailboxes(eq(USER), anyCollection());
+  }
+
+  /**
    * The clock is the database's, to the second, when it is close to this JVM's; a
    * database clock hours away (a session time zone the driver does not expect) is not
    * trusted, and this JVM's is used.
@@ -588,6 +739,370 @@ public class EmailScheduledSendServiceTest {
     doThrow(new ScheduledSendFailure(kind, error, null)).when(emailBoxService)
                                                          .sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
     lenient().when(storage.endRun(anyLong(), anyString(), any(), any(), any(), any(), any())).thenReturn(true);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Undo send (EXO-90837)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A send with an Undo freezes the draft through the scheduling's own path into a HELD
+   * row -- no zone, not counted against the limit -- that is not due while the freeze
+   * runs (no dispatcher may claim it then), and whose wait of the sender's stored length
+   * starts once the freeze is over, with this node's timer armed for just after it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aSendWithAnUndoHoldsTheDraftForTheStoredWaitAndArmsTheTimer() throws Exception {
+    storeUndoDelay(20);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(true);
+    long before = service.now().getTime();
+
+    UndoableSend held = service.sendUndoable(draft(), USER);
+
+    ArgumentCaptor<EmailScheduledSend> row = ArgumentCaptor.forClass(EmailScheduledSend.class);
+    verify(storage).create(row.capture());
+    assertEquals(ScheduledSendStatus.HELD, row.getValue().getStatus());
+    assertEquals(9L, row.getValue().getEmailId());
+    assertNull(row.getValue().getTimeZone());
+    assertTrue(row.getValue().getNextAttemptDate().getTime() >= before + 20_000 + EmailScheduledSendService.HELD_FREEZE_MARGIN_MS,
+               "not due while the draft is frozen");
+    ArgumentCaptor<Date> due = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> started = ArgumentCaptor.forClass(Date.class);
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(emailBoxService, storage, heldTimer);
+    order.verify(emailBoxService).scheduleDraft(any(Email.class), eq(USER), any());
+    order.verify(storage).startHeldWait(eq(41L), due.capture(), started.capture());
+    assertEquals(started.getValue().getTime() + 20_000, due.getValue().getTime(), "the wait starts once the draft is frozen");
+    assertEquals(LOCAL_ID, held.getDraftLocalId());
+    assertEquals(due.getValue().getTime(), held.getSendDate());
+    assertEquals(20, held.getDelaySeconds());
+    verify(storage, never()).countListed(anyString());
+    order.verify(heldTimer).schedule(any(Runnable.class), eq(20_000L + EmailScheduledSendService.HELD_TIMER_SLACK_MS),
+                                     eq(TimeUnit.MILLISECONDS));
+  }
+
+  /**
+   * A held mail claimed before its wait could start -- only a freeze longer than its
+   * margin allows it -- is on its way: no timer is armed for it, and the send is answered
+   * as held all the same, its Undo then saying it is too late.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aHeldMailClaimedBeforeItsWaitStartedArmsNoTimer() throws Exception {
+    storeUndoDelay(5);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(false);
+    assertEquals(5, service.sendUndoable(draft(), USER).getDelaySeconds());
+    verifyNoInteractions(heldTimer);
+  }
+
+  /**
+   * A send with an Undo is refused as such when the sender turned the Undo off, without
+   * a recipient, or from a mailbox the sender may not use -- the access first -- and
+   * nothing is frozen nor armed.
+   */
+  @Test
+  void aSendWithAnUndoIsRefusedWhenOffOrInvalidAndFreezesNothing() {
+    storeUndoDelay(0);
+    assertRefused(EmailScheduledSendService.UNDO_SEND_OFF, () -> service.sendUndoable(draft(), USER));
+    storeUndoDelay(5);
+    Email noRecipient = draft();
+    noRecipient.setTo(List.of());
+    assertRefused(EmailScheduledSendService.RECIPIENTS_MANDATORY, () -> service.sendUndoable(noRecipient, USER));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> service.sendUndoable(draft(), USER));
+    verifyNoInteractions(emailBoxService, heldTimer);
+  }
+
+  /**
+   * A failure to start the wait once the draft is frozen is answered as a failure, and
+   * so the mail is taken back while it still waits: never "the send failed" about a mail
+   * that then goes out on its own.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aWaitThatCannotStartTakesTheMailBackAndFails() throws Exception {
+    storeUndoDelay(10);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenThrow(new IllegalStateException("database"));
+    assertThrows(IllegalStateException.class, () -> service.sendUndoable(draft(), USER));
+    verify(storage).deleteWaiting(41L);
+    verifyNoInteractions(heldTimer);
+  }
+
+  /**
+   * The timer sends a held mail whose wait is over through the dispatcher's claim, from
+   * HELD, on this node, and the run records it sent under that claim.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theTimerSendsAHeldMailThroughTheSameClaim() throws Exception {
+    when(storage.get(41L)).thenReturn(heldRow(new Date(System.currentTimeMillis() - 2000)), claimedRow(1));
+    when(storage.claim(eq(41L), eq("node-a"), any(Date.class), eq(ScheduledSendStatus.HELD))).thenReturn(true);
+    doAnswer(invocation -> {
+      ((Runnable) invocation.getArgument(2)).run();
+      return null;
+    }).when(emailBoxService).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
+    when(storage.markSent(eq(31L), eq("node-a"), eq(NOW), any(Date.class))).thenReturn(true);
+
+    service.dispatchHeldNow(41L, 0);
+
+    verify(emailBoxService).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
+    verify(storage).markSent(eq(31L), eq("node-a"), eq(NOW), any(Date.class));
+    verifyNoInteractions(heldTimer);
+  }
+
+  /**
+   * The timer leaves alone a mail no longer held -- taken back by its Undo, or claimed
+   * by another node first -- and a claim another node won sends nothing here.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theTimerLeavesAMailTakenBackOrClaimedElsewhereAlone() throws Exception {
+    when(storage.get(41L)).thenReturn(null);
+    service.dispatchHeldNow(41L, 0);
+    when(storage.get(41L)).thenReturn(claimedRow(1));
+    service.dispatchHeldNow(41L, 0);
+    verify(storage, never()).claim(anyLong(), anyString(), any(Date.class), any(ScheduledSendStatus.class));
+
+    when(storage.get(41L)).thenReturn(heldRow(new Date(System.currentTimeMillis() - 2000)));
+    when(storage.claim(eq(41L), eq("node-a"), any(Date.class), eq(ScheduledSendStatus.HELD))).thenReturn(false);
+    service.dispatchHeldNow(41L, 0);
+    verify(emailBoxService, never()).sendStoredDraft(anyString(), anyString(), any(Runnable.class));
+    verifyNoInteractions(heldTimer);
+  }
+
+  /**
+   * A timer firing before the mail is due on the database's clock, or onto a full pool,
+   * is armed again rather than dropped -- and past its budget it leaves the mail to the
+   * dispatcher's next tick instead of looping. Nothing is claimed early.
+   */
+  @Test
+  void anEarlyOrBlockedTimerIsArmedAgainWithinItsBudget() {
+    when(storage.get(41L)).thenReturn(heldRow(new Date(System.currentTimeMillis() + 5000)));
+    service.dispatchHeldNow(41L, 0);
+    ArgumentCaptor<Long> delay = ArgumentCaptor.forClass(Long.class);
+    verify(heldTimer).schedule(any(Runnable.class), delay.capture(), eq(TimeUnit.MILLISECONDS));
+    assertTrue(delay.getValue() > 3000 && delay.getValue() <= 6000 + EmailScheduledSendService.HELD_TIMER_SLACK_MS,
+               "armed for when it is due: " + delay.getValue());
+
+    InlineExecutor full = new InlineExecutor(2);
+    full.active = 2;
+    ReflectionTestUtils.setField(service, "executor", full);
+    when(storage.get(41L)).thenReturn(heldRow(new Date(System.currentTimeMillis() - 2000)));
+    service.dispatchHeldNow(41L, 3);
+    verify(heldTimer).schedule(any(Runnable.class), eq(EmailScheduledSendService.HELD_RETRY_MS), eq(TimeUnit.MILLISECONDS));
+
+    service.dispatchHeldNow(41L, EmailScheduledSendService.HELD_MAX_REARMS);
+    verify(heldTimer, times(2)).schedule(any(Runnable.class), anyLong(), eq(TimeUnit.MILLISECONDS));
+    verify(storage, never()).claim(anyLong(), anyString(), any(Date.class), any(ScheduledSendStatus.class));
+  }
+
+  /**
+   * A timer that cannot run (the node is stopping) is not an error: the mail stays held
+   * for the dispatcher's next tick.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aStoppedTimerLeavesTheMailToTheTick() throws Exception {
+    storeUndoDelay(10);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(true);
+    when(heldTimer.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class))).thenThrow(new RejectedExecutionException());
+    assertEquals(10, service.sendUndoable(draft(), USER).getDelaySeconds());
+  }
+
+  /**
+   * The timer is the container's entry point on its thread: the annotation-removed
+   * mutant leaves the work without a container, which a test calling the method cannot
+   * show, so it is pinned here.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theTimerRunsInAContainer() throws Exception {
+    assertTrue(EmailScheduledSendService.class.getMethod("dispatchHeld", long.class, int.class)
+                                              .isAnnotationPresent(ContainerTransactional.class));
+  }
+
+  /**
+   * The dispatcher's tick sends the held mails a stopped node left behind, first, from
+   * HELD; and a held row the pool refuses goes back to HELD, out of the "Scheduled" view,
+   * never to SCHEDULED.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theTickSendsHeldMailsFirstAndGivesARefusedOneBackAsHeld() throws Exception {
+    EmailScheduledSend claimed = claimedRow(1);
+    when(storage.findDueHeld(any(Date.class), anyInt())).thenReturn(List.of(41L));
+    when(storage.claim(eq(41L), eq("node-a"), any(Date.class), eq(ScheduledSendStatus.HELD))).thenReturn(true);
+    when(storage.get(41L)).thenReturn(claimed);
+    when(storage.markSent(eq(31L), eq("node-a"), eq(NOW), any(Date.class))).thenReturn(true);
+    doAnswer(invocation -> {
+      ((Runnable) invocation.getArgument(2)).run();
+      return null;
+    }).when(emailBoxService).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
+
+    assertEquals(1, service.dispatchDue());
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(storage);
+    order.verify(storage).findDueHeld(any(Date.class), anyInt());
+    order.verify(storage).findDueToSend(any(Date.class), anyInt());
+    verify(emailBoxService).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
+
+    ReflectionTestUtils.setField(service, "executor", new RejectingExecutor());
+    assertEquals(0, service.dispatchDue());
+    verify(storage).endRun(eq(31L), eq("node-a"), eq(NOW), eq(ScheduledSendStatus.HELD), isNull(), eq(NOW), any(Date.class));
+    verify(storage, never()).endRun(anyLong(), anyString(), any(), eq(ScheduledSendStatus.SCHEDULED), any(), any(), any());
+  }
+
+  /**
+   * The Undo takes the mail back and answers its draft as it was frozen; a mail being
+   * sent or sent is a conflict saying so, one that may have gone says that, and a mail
+   * the sender has no such row for is not found. Never another user's: the row is
+   * looked up by the caller's name.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUndoAnswersTheDraftOrWhyItCameTooLate() throws Exception {
+    Email stored = draft();
+    when(storage.cancelUndoable(USER, LOCAL_ID)).thenReturn(true);
+    when(emailBoxStorage.getDraftByLocalId(USER, LOCAL_ID)).thenReturn(stored);
+    assertEquals(stored, service.undoSend(LOCAL_ID, USER));
+
+    when(storage.cancelUndoable(USER, LOCAL_ID)).thenReturn(false);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(claimedRow(1));
+    assertEquals(ScheduledSendConflictException.SENDING,
+                 assertThrows(ScheduledSendConflictException.class, () -> service.undoSend(LOCAL_ID, USER)).getMessage());
+    EmailScheduledSend uncertain = claimedRow(1);
+    uncertain.setStatus(ScheduledSendStatus.UNCERTAIN);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(uncertain);
+    assertEquals(EmailScheduledSendService.UNCERTAIN_CONFLICT,
+                 assertThrows(ScheduledSendConflictException.class, () -> service.undoSend(LOCAL_ID, USER)).getMessage());
+    when(storage.get(USER, LOCAL_ID)).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> service.undoSend(LOCAL_ID, USER));
+
+    UserEmailSetting mallorySetting = userEmailSettingService.getUserEmailSetting(USER);
+    when(userEmailSettingService.getUserEmailSetting("mallory")).thenReturn(mallorySetting);
+    when(storage.cancelUndoable("mallory", LOCAL_ID)).thenReturn(false);
+    assertThrows(ObjectNotFoundException.class, () -> service.undoSend(LOCAL_ID, "mallory"));
+    verify(emailBoxStorage, never()).getDraftByLocalId(eq("mallory"), anyString());
+  }
+
+  /**
+   * The Undo preference: ten seconds by default, the stored wait when it is one offered,
+   * the default again for a wait no longer offered or an unreadable document; the offered
+   * waits always answered.
+   */
+  @Test
+  void theUndoPreferenceDefaultsToTenSecondsAndAnswersTheOfferedWaits() {
+    assertEquals(new UndoSendSettings(10, EmailScheduledSendService.UNDO_SEND_DELAYS), service.getUndoSendSettings(USER));
+    storeUndoDelay(20);
+    assertEquals(20, service.getUndoSendSettings(USER).getDelaySeconds());
+    storeUndoDelay(0);
+    assertEquals(0, service.getUndoSendSettings(USER).getDelaySeconds(), "off is a choice, not a missing one");
+    storeUndoDelay(7);
+    assertEquals(10, service.getUndoSendSettings(USER).getDelaySeconds());
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                            EmailScheduledSendService.UNDO_SEND_SETTINGS_KEY)).thenAnswer(invocation -> SettingValue.create("{not json"));
+    assertEquals(10, service.getUndoSendSettings(USER).getDelaySeconds());
+    assertEquals(List.of(0, 5, 10, 20, 30), service.getUndoSendSettings(USER).getAllowedDelays());
+  }
+
+  /**
+   * Only an offered wait is stored, as the wait alone; anything else is refused with its
+   * code and nothing is written.
+   */
+  @Test
+  void onlyAnOfferedWaitIsStored() {
+    assertRefused(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY,
+                  () -> service.saveUndoSendSettings(USER, new UndoSendSettings(7, null)));
+    assertRefused(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY, () -> service.saveUndoSendSettings(USER, null));
+    verify(settingService, never()).set(any(), any(), anyString(), any());
+
+    service.saveUndoSendSettings(USER, new UndoSendSettings(30, List.of(1, 2)));
+    ArgumentCaptor<SettingValue<?>> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id(USER)),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailScheduledSendService.UNDO_SEND_SETTINGS_KEY),
+                               stored.capture());
+    UndoSendSettings written = JsonUtils.fromJsonString(stored.getValue().getValue().toString(), UndoSendSettings.class);
+    assertEquals(30, written.getDelaySeconds());
+    assertNull(written.getAllowedDelays(), "the offered waits are the server's, never stored");
+  }
+
+  /**
+   * States the sender's stored Undo wait.
+   *
+   * @param seconds the wait
+   */
+  private void storeUndoDelay(int seconds) {
+    lenient().when(settingService.get(Context.USER.id(USER),
+                                      UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                      EmailScheduledSendService.UNDO_SEND_SETTINGS_KEY))
+             .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(new UndoSendSettings(seconds, null))));
+  }
+
+  /**
+   * A row held for its Undo, due at an instant.
+   *
+   * @param due the end of its wait
+   * @return the row
+   */
+  private EmailScheduledSend heldRow(Date due) {
+    return new EmailScheduledSend(41L, 9L, USER, LOCAL_ID, due, null, ScheduledSendStatus.HELD, due, 0, null, null, null, NOW, NOW);
   }
 
   /**
@@ -646,6 +1161,29 @@ public class EmailScheduledSendServiceTest {
    */
   private void assertRefused(String code, org.junit.jupiter.api.function.Executable call) {
     assertEquals(code, assertThrows(IllegalArgumentException.class, call).getMessage());
+  }
+
+  /**
+   * A pool that refuses every task, as a full one does.
+   */
+  private static class RejectingExecutor extends ThreadPoolExecutor {
+
+    /**
+     * One thread, never used.
+     */
+    RejectingExecutor() {
+      super(1, 1, 60, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1));
+    }
+
+    /**
+     * Refuses the task.
+     *
+     * @param command the task
+     */
+    @Override
+    public void execute(Runnable command) {
+      throw new RejectedExecutionException();
+    }
   }
 
   /**

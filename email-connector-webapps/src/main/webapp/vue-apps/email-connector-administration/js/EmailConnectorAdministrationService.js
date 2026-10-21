@@ -32,14 +32,17 @@
 function refusal(resp, fallback) {
   return resp.text().then(body => {
     let code = body || '';
+    let parsed = null;
     try {
-      const parsed = JSON.parse(body);
+      parsed = JSON.parse(body);
       code = parsed && parsed.message || '';
     } catch (e) {
       // not JSON: the body is the code itself
     }
     const error = new Error(code || fallback);
     error.messageCode = code || null;
+    // What else the refusal says, such as the counts of a 409 on the engines.
+    error.details = parsed && typeof parsed === 'object' ? parsed : null;
     throw error;
   }, () => {
     throw new Error(fallback);
@@ -655,5 +658,103 @@ export function clearManagedMode() {
     } else {
       throw new Error('Error when switching the mail managed mode off');
     }
+  });
+}
+
+/**
+ * Whether users of a connector may forward their mail from eXo, and to which domains
+ * (EXO-90656).
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {authoringEnabled, allowedDomains, saved, killSwitch}
+ */
+export function getConnectorForwarding(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves whether users of a connector may forward their mail from eXo, and to which
+ * domains; it applies at once.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} forwarding - {authoringEnabled, allowedDomains}
+ * @returns {Promise<object>} the settings that apply after the save
+ */
+export function saveConnectorForwarding(emailConnectorId, forwarding) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      authoringEnabled: !!forwarding?.authoringEnabled,
+      allowedDomains: forwarding?.allowedDomains || [],
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Which engines a connector's server rules and mailbox sharing go through: the ones
+ * that apply (rulesEngine, aclEngine, which a deployment property may decide), the
+ * screen's choices (rulesEngineChoice, aclEngineChoice, the default when none was
+ * made), the ones installed, and the deployment property overriding either.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {rulesEngine, aclEngine, rulesEngineChoice, aclEngineChoice,
+ *          rulesEngines, aclEngines, rulesEngineProperty, aclEngineProperty,
+ *          authProviderName, authProviderMissing}
+ */
+export function getConnectorEngines(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the connector engines');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves the engines chosen for a connector's server rules and mailbox sharing; they
+ * apply at once, unless a deployment property decides them.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} engines - {rulesEngine, aclEngine}
+ * @returns {Promise<object>} the engines after the save
+ */
+export function saveConnectorEngines(emailConnectorId, engines) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      rulesEngine: engines?.rulesEngine || null,
+      aclEngine: engines?.aclEngine || null,
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the connector engines');
+    }
+    return resp.json();
   });
 }

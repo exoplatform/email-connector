@@ -1,0 +1,3276 @@
+/**
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License
+ * as published by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <gnu.org/licenses>.
+ */
+package org.exoplatform.emailConnector.service;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.ResourceBundle;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.emailConnector.event.NewInboxMailEvent;
+import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.AppliedAction;
+import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailFilter;
+import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FilterAction;
+import org.exoplatform.emailConnector.model.FilterApplyReport;
+import org.exoplatform.emailConnector.model.FilterPreview;
+import org.exoplatform.emailConnector.model.HopRef;
+import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
+import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.notification.plugin.EmailFilterNotificationPlugin;
+import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.service.filters.EmailFilterMail;
+import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator;
+import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator.Result;
+import org.exoplatform.emailConnector.service.filters.FilterMail;
+import org.exoplatform.emailConnector.service.filters.FilterRunContext;
+import org.exoplatform.emailConnector.service.filters.SpamSignals;
+import org.exoplatform.emailConnector.service.rules.sieve.SieveRuleEngine;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage.OwnedMatch;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.NotificationConstants;
+import org.exoplatform.services.listener.ListenerService;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+import org.exoplatform.services.resources.ResourceBundleService;
+
+/**
+ * The rules eXo runs itself on the owner's own inbox, after each sync: their CRUD, the
+ * run on new mail, the post-actions, the log and its undo, and the preview and one-off
+ * pass over the mail eXo already keeps.
+ * <p>
+ * <b>The hop.</b> A rule that must also run at delivery ({@link EmailFilter#KIND_HOP}) has
+ * a server half, published through {@link EmailServerRuleService#reconcileHops}: a server
+ * rule with the same conditions whose one action is the keyword
+ * {@value ServerRule#TAG_PREFIX}{@code <id>}, under the reference
+ * {@value HopRef#REF_PREFIX}{@code <id>} -- the rule's own id, which the stored
+ * {@code SERVER_RULE_REF} and {@code TAG_KEYWORD} hold. Every write that touches a hop
+ * reconciles the whole set of the owner's hops, <b>server first</b>: when the server
+ * refuses, nothing is stored in eXo. A new hop needs its id before the server write, and
+ * on MySQL an id exists only once inserted, so it is inserted switched off -- no keyword
+ * anyone listens to -- and switched on only after the server accepted its half, or
+ * deleted when it did not.
+ * <p>
+ * <b>The run.</b> {@link #applyToNewMail} evaluates the owner's rules of the mailbox's scope
+ * in their order; a hop rule is triggered by its keyword and still checks its conditions,
+ * since anyone who may flag the mailbox's mail -- a delegate with {@code w} -- may set the
+ * keyword too. A match is recorded once per rule and mail (the unique key); its
+ * post-actions run in the same pass, batched per rule, or wait for the assistant when the
+ * rule has one and the deployment has something to run it ({@link EmailFilterAgentHandler}). A rule that files the mail stops the rules after it, and the mail is left
+ * out of the new-mail announcement.
+ * <p>
+ * Every verb acts as the owner, on their own mailbox, through the mailbox's own
+ * ACL-checked methods; a request made from a shared mailbox is refused.
+ * <p>
+ * Every owner starts with one rule, "Important mail", switched off until they turn it
+ * on: an assistant on the mail the Important category reaches, seeded once, lazily --
+ * the first time their rules are read, or when a mailbox is connected -- and then
+ * theirs ({@link #ensureImportantFilter}).
+ */
+@Service
+public class EmailFilterService {
+
+  private static final Log            LOG                        = ExoLogger.getLogger(EmailFilterService.class);
+
+  /** The deployment's switch for eXo rules, on by default. */
+  public static final String          ENABLED_PROPERTY           = "email.connector.filters.exo.enabled";
+
+  /** The deployment's switch for the assistant action, on by default. */
+  public static final String          AGENT_ENABLED_PROPERTY     = "exo.email.filters.agent.enabled";
+
+  /** How many matches of one owner may wait for the assistant. */
+  public static final String          MAX_PENDING_PROPERTY       = "exo.email.filters.agent.maxPending";
+
+  /**
+   * How many of one mailbox's matches the assistant may run on per day, default
+   * {@value #DEFAULT_DAILY_CAP}; the day is UTC's. What is bounded is the number of
+   * matched mails the assistant ran on today, not the number of model calls: a mail run
+   * again today -- a "Run again", or an attempt given back and retried -- is not charged a
+   * second time. Past it, a matched mail is skipped with {@value #DAILY_LIMIT}, no attempt
+   * spent, and can be run again later.
+   */
+  public static final String          DAILY_CAP_PROPERTY         = "exo.email.filters.agent.dailyCap";
+
+  /** The default of {@value #DAILY_CAP_PROPERTY}. */
+  public static final int             DEFAULT_DAILY_CAP          = 100;
+
+  /** The default of {@value #MAX_PENDING_PROPERTY}. */
+  public static final int             DEFAULT_MAX_PENDING        = 200;
+
+  /** Why the assistant was skipped: the mailbox's daily cap on matches run was reached. */
+  public static final String          DAILY_LIMIT                = "emailConnector.filters.agent.dailyLimit";
+
+  /** Why the assistant was skipped: too many of the mailbox's mails wait for it. */
+  public static final String          PENDING_LIMIT              = "emailConnector.filters.agent.pendingLimit";
+
+  /** Why the assistant was skipped: the mail is in Junk, or the server flagged it as spam. */
+  public static final String          SPAM                       = "emailConnector.filters.agent.spam";
+
+  /**
+   * Why a mail waits: its spam marks could not be read from the mail server. The first
+   * give-back carries the code as it is; the next ones carry it followed by
+   * {@code :<n>}, the number of give-backs in a row, so that the count survives the
+   * mailbox's wait, whichever node runs it next.
+   */
+  public static final String          SPAM_UNCHECKED             = "emailConnector.filters.agent.spamUnchecked";
+
+  /**
+   * Why the assistant was skipped: the mail's spam marks could not be read
+   * {@value #MAX_SPAM_UNCHECKED} times in a row. Fail-safe: no model call, the held
+   * actions run, and the owner can run the assistant again from the mail.
+   */
+  public static final String          SPAM_UNCHECKED_LIMIT       = "emailConnector.filters.agent.spamUncheckedLimit";
+
+  /**
+   * How many times in a row a match is given back because its spam marks could not be
+   * read before it is skipped ({@value #SPAM_UNCHECKED_LIMIT}). The mailbox waits a minute
+   * doubled per give-back, so five is about half an hour of an unreadable mail.
+   */
+  public static final int             MAX_SPAM_UNCHECKED         = 5;
+
+  /** How many of the newest mails a one-off pass may queue for the assistant. */
+  public static final String          RETROACTIVE_MAX_PROPERTY   = "exo.email.filters.agent.retroactiveMax";
+
+  /** How many days the matches are kept. */
+  public static final String          RETENTION_PROPERTY         = "exo.email.filters.log.retentionDays";
+
+  /** The deployment's switch for the seeded "Important mail" rule, on by default. */
+  public static final String          SEED_IMPORTANT_PROPERTY    = "exo.emailConnector.filters.seed.important";
+
+  /** The per-owner settings scope of the seeds' markers. */
+  public static final Scope           SEED_SCOPE                 = Scope.APPLICATION.id("EMAIL_FILTERS");
+
+  /** The marker of the "Important mail" seed: set once the owner got, or forwent, their copy. */
+  public static final String          SEED_IMPORTANT_KEY         = "seed.important";
+
+  /** The version of the "Important mail" seed the marker records; a bump never re-seeds. */
+  public static final String          SEED_IMPORTANT_VERSION     = "1";
+
+  /** The bundle the seeded rule's name is read from, in the owner's language. */
+  public static final String          SEED_BUNDLE                = "locale.portlet.emailConnector.emailConnectorUserSetting";
+
+  /** The key of the seeded rule's name in {@link #SEED_BUNDLE}. */
+  public static final String          SEED_IMPORTANT_NAME_KEY    = "UserSettings.emailConnector.filters.seed.important.name";
+
+  /** The seeded rule's name when the bundle cannot be read. */
+  public static final String          SEED_IMPORTANT_NAME        = "Important mail: what it asks of me";
+
+  /** The category the seeded rule waits for, by its stable key. */
+  public static final String          SEED_IMPORTANT_CATEGORY    = "emailImportantCategory";
+
+  /**
+   * The assistant the seeded rule names. Only a marker, like the one the drawer's form
+   * stores: the assistant that runs is always the administrator's, from the "Mail
+   * filters" binding; the marker is what the log and the retry read to know the rule
+   * has one.
+   */
+  public static final String          SEED_AGENT_MARKER          = "EMAIL_FILTER_ASSISTANT";
+
+  /** What the seeded rule asks of the assistant. */
+  public static final String          SEED_IMPORTANT_INSTRUCTION =
+                                                                 "This email was flagged important. Note in two or three sentences what it is about, "
+                                                                     + "who wants what from me, and every deadline or date it names. Then act on what it "
+                                                                     + "clearly calls for, at most three actions: work, a decision or a reply I must do goes in "
+                                                                     + "a personal task with its deadline; a meeting it proposes goes in my agenda; minutes, decisions or "
+                                                                     + "reference information go in a personal note; thanks or praise for a colleague is a kudos; "
+                                                                     + "a request to share something is a post in the space it names. If it only informs me, do "
+                                                                     + "nothing more.";
+
+  /** The feature is switched off. */
+  public static final String          DISABLED                   = "emailConnector.filters.disabled";
+
+  /** No such rule of the caller's. */
+  public static final String          NOT_FOUND                  = "emailConnector.filters.notFound";
+
+  /** No such match of the caller's. */
+  public static final String          MATCH_NOT_FOUND            = "emailConnector.filters.match.notFound";
+
+  /** The owner has as many rules as allowed. */
+  public static final String          TOO_MANY                   = "emailConnector.filters.tooMany";
+
+  /** An invalid kind. */
+  public static final String          INVALID_KIND               = "emailConnector.filters.kind.invalid";
+
+  /** A scope other than the owner's own mailbox. */
+  public static final String          INVALID_SCOPE              = "emailConnector.filters.scope.invalid";
+
+  /** A category that is not one of the owner's. */
+  public static final String          UNKNOWN_CATEGORY           = "emailConnector.filters.category.unknown";
+
+  /** An invalid assistant action. */
+  public static final String          INVALID_AGENT              = "emailConnector.filters.agent.invalid";
+
+  /** An order that is not every rule of the owner's, once. */
+  public static final String          INVALID_ORDER              = "emailConnector.filters.order.invalid";
+
+  /** A verb about a hop, on a rule that is not one. */
+  public static final String          NOT_A_HOP                  = "emailConnector.filters.notHop";
+
+  /** A one-off pass of a rule that is switched off. */
+  public static final String          NOT_ENABLED                = "emailConnector.filters.notEnabled";
+
+  /** The mail an undo acts on is not where eXo can see it yet. */
+  public static final String          UNDO_NOT_YET               = "emailConnector.filters.undo.notYet";
+
+  /** An action nothing can undo. */
+  public static final String          UNDO_UNSUPPORTED           = "emailConnector.filters.undo.unsupported";
+
+  /** An action eXo could not apply, when the mailbox gave no reason of its own. */
+  public static final String          ACTION_FAILED              = "emailConnector.filters.action.failed";
+
+  /** Some of a batch's mails were not filed. */
+  public static final String          PARTIAL                    = "emailConnector.filters.action.partial";
+
+  /** The rule a match's deferred actions belong to was deleted. */
+  public static final String          FILTER_DELETED             = "emailConnector.filters.deleted";
+
+  /** The mail a match's deferred actions act on left the inbox. */
+  public static final String          MAIL_GONE                  = "emailConnector.filters.mailGone";
+
+  /** A stored rule the sync cannot read. */
+  public static final String          UNREADABLE                 = "emailConnector.filters.unreadable";
+
+  /** The most rules one owner may have. */
+  public static final int             MAX_FILTERS                = 50;
+
+  /** The longest assistant instruction accepted. */
+  public static final int             MAX_INSTRUCTION_LENGTH     = 2000;
+
+  /** The most lines a rule's log answers. */
+  public static final int             MAX_LOG                    = 100;
+
+  /** The most mails a preview shows. */
+  public static final int             PREVIEW_SAMPLE             = 10;
+
+  /** How long before a rule became active a mail may have arrived and still be new to it: the clocks' grace. */
+  static final long                   RECEIVED_GRACE_MS          = 10 * 60_000L;
+
+  /** The longest assistant answer kept. */
+  private static final int            MAX_AGENT_OUTPUT_LENGTH    = 65_536;
+
+  /**
+   * The fields only eXo evaluates: never on a rule the server runs too. The category is
+   * one: the mail server knows nothing of eXo's categories.
+   */
+  private static final Set<String>    EXO_ONLY_FIELDS            = Set.of(FilterConditionEvaluator.BODY,
+                                                                          FilterConditionEvaluator.SUBJECT_OR_BODY,
+                                                                          FilterConditionEvaluator.HAS_ATTACHMENT,
+                                                                          FilterConditionEvaluator.CATEGORY);
+
+  /**
+   * The actions a mail server may run itself, when its capabilities say so; the forward
+   * only where the deployment enabled forwarding, which narrows the capabilities.
+   */
+  private static final Set<String>    SERVER_ACTIONS             = Set.of(FilterAction.MOVE_TO_FOLDER,
+                                                                          FilterAction.MARK_READ,
+                                                                          FilterAction.STAR,
+                                                                          FilterAction.MARK_JUNK,
+                                                                          FilterAction.DELETE,
+                                                                          FilterAction.FORWARD);
+
+  /** The fields eXo cannot evaluate on a mail it already keeps. */
+  private static final List<String>   NOT_PREVIEWABLE            = List.of(ServerRule.HEADER, ServerRule.MESSAGE_SIZE);
+
+  /**
+   * The assistant statuses of a match whose assistant was called -- running, given back
+   * for another attempt, done or failed --, counted once each by the daily cap with its
+   * conversation.
+   */
+  private static final List<String>   CALLED_STATUSES            = List.of(EmailFilterMatch.AGENT_PENDING,
+                                                                           EmailFilterMatch.AGENT_RUNNING,
+                                                                           EmailFilterMatch.AGENT_DONE,
+                                                                           EmailFilterMatch.AGENT_FAILED);
+
+  /**
+   * The statuses of a match the assistant ran on today and that no longer waits for it:
+   * the sync counts these beside the waiting ones, so a match given back {@code PENDING}
+   * after a run today is counted once, as waiting.
+   */
+  private static final List<String>   RAN_STATUSES               = List.of(EmailFilterMatch.AGENT_RUNNING,
+                                                                           EmailFilterMatch.AGENT_DONE,
+                                                                           EmailFilterMatch.AGENT_FAILED);
+
+  /** The assistant statuses of a match still waiting for an answer. */
+  private static final List<String>   WAITING_STATUSES           = List.of(EmailFilterMatch.AGENT_PENDING,
+                                                                           EmailFilterMatch.AGENT_RUNNING);
+
+  /** How many waiting matches the startup sweep reads at once. */
+  private static final int            SWEEP_BATCH                = 200;
+
+  /** The statuses the assistant's handler writes. */
+  private static final List<String>   AGENT_OUTCOME_STATUSES     = List.of(EmailFilterMatch.AGENT_RUNNING,
+                                                                           EmailFilterMatch.AGENT_PENDING,
+                                                                           EmailFilterMatch.AGENT_DONE,
+                                                                           EmailFilterMatch.AGENT_FAILED,
+                                                                           EmailFilterMatch.AGENT_SKIPPED_DISABLED);
+
+  private static final Pattern        AGENT_NAME                 = Pattern.compile("[A-Za-z0-9._-]{1,200}");
+
+  /** The locks two first reads of one owner's rules take turns on, striped by owner. */
+  private static final Object[]       SEED_LOCKS                 = newLocks(64);
+
+  @Autowired
+  private EmailFilterStorage          emailFilterStorage;
+
+  /** Where the seeds' markers are kept, per owner. */
+  @Autowired
+  private SettingService              settingService;
+
+  /** Where the seeded rule's name is read from, in the owner's language. */
+  @Autowired
+  private ResourceBundleService       resourceBundleService;
+
+  @Autowired
+  private EmailServerRuleService      emailServerRuleService;
+
+  @Autowired
+  private EmailForwardingService      emailForwardingService;
+
+  @Autowired
+  private EmailBoxService             emailBoxService;
+
+  @Autowired
+  private EmailFolderService          emailFolderService;
+
+  @Autowired
+  private UserEmailSettingService     userEmailSettingService;
+
+  @Autowired
+  private ListenerService             listenerService;
+
+  // Resolved at each call rather than injected as a bean: the handler is optional (the
+  // enterprise glue, hosted by this context under the ai-agent profile), and a lookup
+  // at call time does not depend on the order the beans are built in.
+  @Autowired
+  private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
+
+  private Clock                       clock                      = Clock.systemUTC();
+
+  /**
+   * Replaces the clock.
+   *
+   * @param newClock the clock
+   */
+  void setClock(Clock newClock) {
+    this.clock = newClock;
+  }
+
+  /**
+   * The caller's eXo rules, in the order they run. The first read seeds the "Important
+   * mail" rule ({@link #ensureImportantFilter}), so the drawer never opens empty.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @return the rules
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   */
+  public List<EmailFilter> getFilters(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    seedImportantFilter(username);
+    return emailFilterStorage.getFilters(username);
+  }
+
+  /**
+   * Gives the owner their "Important mail" rule, once: an assistant on the mail the
+   * Important category reaches, switched off until they turn it on, last in the order.
+   * A per-owner marker ({@link #SEED_SCOPE}, {@link #SEED_IMPORTANT_KEY}) records that
+   * the copy was made, or forgone; it is written right after the insert and never by a
+   * deletion, so a rule the owner deleted never comes back, and a later version of the
+   * seed never replaces the owner's copy. The seed is skipped without the marker, to be
+   * tried again on the next read, while the Important category is not imported yet;
+   * skipped for good, with the marker, when the owner already has {@value #MAX_FILTERS}
+   * rules, or when the deployment switched the seed off
+   * ({@value #SEED_IMPORTANT_PROPERTY}); and only ever attempted for a connected mailbox
+   * -- an owner without one has no rules to read, and gets it when they connect.
+   *
+   * @param username the owner
+   * @return true when the rule was created by this call
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the owner may not use their connector
+   */
+  public boolean ensureImportantFilter(String username) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, null);
+    return seedImportantFilter(username);
+  }
+
+  /**
+   * Seeds the "Important mail" rule of an owner whose mailbox was checked, as
+   * {@link #ensureImportantFilter} says. Two reads of the same owner take turns on a
+   * lock and re-read the marker under it, so the second finds the first's copy.
+   *
+   * @param username the owner
+   * @return true when the rule was created by this call
+   */
+  private boolean seedImportantFilter(String username) {
+    if (!isSeedImportantEnabled() || isSeeded(username)) {
+      return false;
+    }
+    synchronized (seedLockOf(username)) {
+      if (isSeeded(username)) {
+        return false;
+      }
+      if (emailBoxService.getDefaultEmailCategoryId(SEED_IMPORTANT_CATEGORY) == null) {
+        // Not imported yet: the rule could name it, but never run. Tried again next time.
+        LOG.debug("The Important category is not imported yet: the Important mail filter of user {} waits", username);
+        return false;
+      }
+      if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+        markSeeded(username);
+        LOG.info("User {} already has {} mail filters: the Important mail filter is not seeded", username, MAX_FILTERS);
+        return false;
+      }
+      EmailFilter filter = validated(username, importantFilterSeed(username));
+      filter.setPosition(emailFilterStorage.nextPosition(username));
+      Date now = now();
+      filter.setActiveSince(now.getTime());
+      EmailFilter saved = emailFilterStorage.save(username, filter, now);
+      markSeeded(username);
+      LOG.info("Mail filter {} 'Important mail' seeded, switched off, for user {}", saved.getId(), username);
+      return true;
+    }
+  }
+
+  /**
+   * The "Important mail" rule as the form would have sent it: named in the owner's
+   * language, on the Important category, switched off, its assistant asked for a
+   * summary and at most two suggestions, written as a note.
+   *
+   * @param username the owner
+   * @return the rule, to validate
+   */
+  private EmailFilter importantFilterSeed(String username) {
+    EmailFilter filter = new EmailFilter();
+    filter.setName(seedName(username));
+    filter.setEnabled(false);
+    filter.setKind(EmailFilter.KIND_EXO);
+    filter.setMailboxScope(EmailFilter.SCOPE_OWN);
+    filter.setMatchAll(true);
+    filter.setConditions(List.of(new ServerRule.Condition(FilterConditionEvaluator.CATEGORY,
+                                                          ServerRule.EQUALS,
+                                                          null,
+                                                          SEED_IMPORTANT_CATEGORY)));
+    filter.setActions(List.of(new FilterAction(FilterAction.AGENT,
+                                               null,
+                                               null,
+                                               SEED_AGENT_MARKER,
+                                               SEED_IMPORTANT_INSTRUCTION,
+                                               List.of("NOTE"),
+                                               null,
+                                               null,
+                                               true)));
+    filter.setStopProcessing(false);
+    return filter;
+  }
+
+  /**
+   * The seeded rule's name in the owner's language, from the settings bundle the
+   * drawer reads, or the English name when the bundle or the key cannot be read.
+   *
+   * @param username the owner
+   * @return the name
+   */
+  private String seedName(String username) {
+    try {
+      ResourceBundle bundle = resourceBundleService.getResourceBundle(SEED_BUNDLE, seedLocale(username));
+      if (bundle != null) {
+        return StringUtils.defaultIfBlank(bundle.getString(SEED_IMPORTANT_NAME_KEY), SEED_IMPORTANT_NAME);
+      }
+    } catch (RuntimeException e) {
+      // A missing bundle or key too: MissingResourceException is one.
+      LOG.warn("The name of the Important mail filter of user {} could not be read from the bundle; the English name is used", username, e);
+    }
+    return SEED_IMPORTANT_NAME;
+  }
+
+  /**
+   * The owner's language, as their profile says; English when it cannot be read.
+   *
+   * @param username the owner
+   * @return the locale
+   */
+  Locale seedLocale(String username) {
+    try {
+      String language = NotificationPluginUtils.getLanguage(username);
+      return StringUtils.isBlank(language) ? Locale.ENGLISH : Locale.of(language);
+    } catch (RuntimeException e) {
+      return Locale.ENGLISH;
+    }
+  }
+
+  /**
+   * Whether the owner got, or forwent, their "Important mail" rule.
+   *
+   * @param username the owner
+   * @return true when the marker is set
+   */
+  private boolean isSeeded(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_KEY);
+    return value != null && value.getValue() != null && StringUtils.isNotBlank(value.getValue().toString());
+  }
+
+  /**
+   * Records that the owner got, or forwent, their "Important mail" rule.
+   *
+   * @param username the owner
+   */
+  private void markSeeded(String username) {
+    settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_KEY, SettingValue.create(SEED_IMPORTANT_VERSION));
+  }
+
+  /**
+   * Whether the deployment seeds the "Important mail" rule.
+   *
+   * @return true unless {@value #SEED_IMPORTANT_PROPERTY} is false
+   */
+  private static boolean isSeedImportantEnabled() {
+    return Boolean.parseBoolean(System.getProperty(SEED_IMPORTANT_PROPERTY, "true").trim());
+  }
+
+  /**
+   * The lock of an owner's seed.
+   *
+   * @param username the owner
+   * @return the lock
+   */
+  private static Object seedLockOf(String username) {
+    return SEED_LOCKS[Math.floorMod(username.hashCode(), SEED_LOCKS.length)];
+  }
+
+  /**
+   * New locks.
+   *
+   * @param count how many
+   * @return the locks
+   */
+  private static Object[] newLocks(int count) {
+    Object[] locks = new Object[count];
+    for (int i = 0; i < count; i++) {
+      locks[i] = new Object();
+    }
+    return locks;
+  }
+
+  /**
+   * Creates one of the caller's eXo rules, last in the order. A rule that also runs at
+   * delivery publishes its server half first; when the server refuses, nothing is
+   * stored.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param input the rule as the form sent it
+   * @param consent true when the caller agreed, in this request, that eXo manages rules
+   *          on their mail server; needed once, by the first rule with a server half
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @return the rule as stored
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException with a message code for an invalid value, a folder
+   *           or category that is not the caller's, a missing consent, or too many rules
+   * @throws ServerRuleUnavailableException when the server half cannot be written
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the server half
+   */
+  public EmailFilter createFilter(String username,
+                                  Long delegationId,
+                                  EmailFilter input,
+                                  boolean consent,
+                                  boolean republish) throws ObjectNotFoundException,
+                                                     IllegalAccessException,
+                                                     ServerRuleUnavailableException,
+                                                     ServerRuleConflictException,
+                                                     ServerRuleUnsupportedException {
+    checkOwnMailbox(username, delegationId);
+    if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+      throw new IllegalArgumentException(TOO_MANY);
+    }
+    EmailFilter filter = validated(username, input);
+    filter.setId(null);
+    filter.setPosition(emailFilterStorage.nextPosition(username));
+    Date now = now();
+    filter.setActiveSince(now.getTime());
+    if (!EmailFilter.KIND_HOP.equals(filter.getKind())) {
+      return emailFilterStorage.save(username, filter, now);
+    }
+    boolean wanted = filter.isEnabled();
+    filter.setEnabled(false);
+    EmailFilter provisional = emailFilterStorage.save(username, filter, now);
+    try {
+      EmailFilter hop = withHopNames(provisional);
+      hop.setEnabled(wanted);
+      hop.setActiveSince(now.getTime());
+      if (wanted) {
+        publishHops(username, hop, consent, republish);
+      }
+      return emailFilterStorage.save(username, hop, now);
+    } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
+        | ServerRuleUnsupportedException | RuntimeException e) {
+      // The server did not take the rule's half: the rule is not created.
+      emailFilterStorage.delete(provisional.getId(), username);
+      throw e;
+    }
+  }
+
+  /**
+   * Replaces one of the caller's eXo rules; it keeps its place. When the rule has, or
+   * had, a server half, the server is written first, and nothing is stored when it
+   * refuses.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the rule
+   * @param input the rule as the form sent it
+   * @param consent as for {@link #createFilter}
+   * @param republish as for {@link #createFilter}
+   * @return the rule as stored
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the rule is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException with a message code, as for {@link #createFilter}
+   * @throws ServerRuleUnavailableException when the server half cannot be written
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the server half
+   */
+  public EmailFilter updateFilter(String username,
+                                  Long delegationId,
+                                  long id,
+                                  EmailFilter input,
+                                  boolean consent,
+                                  boolean republish) throws ObjectNotFoundException,
+                                                     IllegalAccessException,
+                                                     ServerRuleUnavailableException,
+                                                     ServerRuleConflictException,
+                                                     ServerRuleUnsupportedException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilter existing = ownFilter(username, id);
+    EmailFilter filter = validated(username, input);
+    filter.setId(id);
+    filter.setPosition(existing.getPosition());
+    filter.setLastError(null);
+    // Switched back on, the rule is new to the mail from now; an edit keeps its start.
+    boolean reEnabled = filter.isEnabled() && !existing.isEnabled();
+    filter.setActiveSince(reEnabled || existing.getActiveSince() == null ? Long.valueOf(clock.millis()) : existing.getActiveSince());
+    if (EmailFilter.KIND_HOP.equals(filter.getKind())) {
+      filter = withHopNames(filter);
+    }
+    if (isLiveHop(filter)) {
+      publishHops(username, filter, consent, republish);
+    } else if (isLiveHop(existing)) {
+      removeHop(username, existing, republish);
+    }
+    return emailFilterStorage.save(username, filter, now());
+  }
+
+  /**
+   * Deletes one of the caller's eXo rules; its log stays. A rule with a server half
+   * removes it from the server first.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the rule
+   * @param republish as for {@link #createFilter}
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the rule is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server half cannot be removed
+   * @throws ServerRuleConflictException when eXo's script changed outside eXo
+   */
+  public void deleteFilter(String username,
+                           Long delegationId,
+                           long id,
+                           boolean republish) throws ObjectNotFoundException,
+                                              IllegalAccessException,
+                                              ServerRuleUnavailableException,
+                                              ServerRuleConflictException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilter existing = ownFilter(username, id);
+    if (isLiveHop(existing)) {
+      removeHop(username, existing, republish);
+    }
+    emailFilterStorage.delete(id, username);
+    LOG.info("Mail filter {} deleted by user {}", id, username);
+  }
+
+  /**
+   * Saves a filter of the one list of the filters drawer, and decides where it runs --
+   * the one entry point the drawer's form saves through:
+   * <ul>
+   * <li>{@link EmailFilter#KIND_SERVER}: every condition and every action is one the mail
+   * server can run, per its capabilities; the mail server runs it at delivery, and eXo
+   * keeps no copy of it.</li>
+   * <li>{@link EmailFilter#KIND_HOP}: every condition is the server's, some action is not
+   * (a category, a notification, the assistant, or a flag the server cannot set), and
+   * the server can set eXo's keyword: the server marks the mail at delivery, eXo applies
+   * every action after its next sync.</li>
+   * <li>{@link EmailFilter#KIND_EXO} otherwise -- a condition only eXo reads, or a server
+   * that lets eXo manage no rule: eXo alone runs it, after each sync.</li>
+   * </ul>
+   * A filter that forwards a copy runs on the mail server only: its destinations are
+   * checked first (the connector allows forwarding, the domain is allowed, the address
+   * confirmed), and it is refused when it could not be a server filter.
+   * A filter that changes kind moves cleanly, the server first: a server filter that
+   * becomes an eXo one is removed from the server in the write that adds its hop, or
+   * before its eXo row is switched on; an eXo filter that becomes a server one is switched
+   * off in eXo first, swapped for the server rule in one write when it had a hop, and
+   * deleted once the server holds the rule. When the server refuses, nothing changed.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param input the filter as the form sent it; its kind is ignored
+   * @param fromRef the server rule the filter was, by its reference; null otherwise
+   * @param fromId the eXo filter it was, by its id; null otherwise
+   * @param consent true when the caller agreed, in this request, that eXo manages rules
+   *          on their mail server
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @return the filter as saved: an eXo row, or for a server filter its kind, name,
+   *         conditions and actions, and its reference when it had one
+   * @throws ObjectNotFoundException when a feature the filter needs is off, no mailbox is
+   *           connected, or the filter it was is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, the
+   *           caller may not use their connector, or the filter forwards where the
+   *           forwarding checks do not allow
+   * @throws IllegalArgumentException with a message code for an invalid value, both a
+   *           reference and an id, a missing consent, too many rules, or a filter that
+   *           forwards and cannot run on the mail server
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  public EmailFilter saveRouted(String username,
+                                Long delegationId,
+                                EmailFilter input,
+                                String fromRef,
+                                Long fromId,
+                                boolean consent,
+                                boolean republish) throws ObjectNotFoundException,
+                                                   IllegalAccessException,
+                                                   ServerRuleUnavailableException,
+                                                   ServerRuleConflictException,
+                                                   ServerRuleUnsupportedException {
+    if (input == null || fromRef != null && fromId != null) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    if (delegationId != null) {
+      throw new IllegalAccessException(EmailServerRuleService.OWN_MAILBOX_ONLY);
+    }
+    boolean forwards = input.getActions() != null
+        && input.getActions()
+                .stream()
+                .anyMatch(action -> action != null && action.type() != null
+                    && FilterAction.FORWARD.equalsIgnoreCase(action.type().trim()));
+    if (forwards && input.isEnabled()) {
+      // Before anything is routed: the connector allows forwarding, and every destination
+      // is in the allowed domains and was confirmed. A filter saved switched off forwards
+      // nothing, so switching one off is never refused.
+      emailForwardingService.requireRuleForwardsAllowed(username, serverRuleOf(input).actions());
+    }
+    String kind = route(input, capabilitiesFor(username, input, fromRef != null));
+    if (forwards && !EmailFilter.KIND_SERVER.equals(kind)) {
+      // A forward is the mail server's to run, as the mail arrives; eXo never sends one.
+      throw new IllegalArgumentException(EmailForwardingService.SERVER_ONLY);
+    }
+    if (EmailFilter.KIND_SERVER.equals(kind)) {
+      return fromId == null ? saveServer(username, input, fromRef, consent, republish)
+                            : toServer(username, fromId, input, consent, republish);
+    }
+    EmailFilter routed = copyOf(input);
+    routed.setKind(kind);
+    if (fromRef != null) {
+      return fromServer(username, routed, fromRef, consent, republish);
+    }
+    return fromId == null ? createFilter(username, null, routed, consent, republish)
+                          : updateFilter(username, null, fromId, routed, consent, republish);
+  }
+
+  /**
+   * Where a filter runs, from what the mail server can do: {@link EmailFilter#KIND_SERVER}
+   * when the server can run every condition and every action,
+   * {@link EmailFilter#KIND_HOP} when it can test every condition and set eXo's keyword
+   * but not run every action, {@link EmailFilter#KIND_EXO} otherwise.
+   *
+   * @param filter the filter
+   * @param capabilities what the server can do, or null when eXo manages no rule there
+   * @return the kind
+   */
+  static String route(EmailFilter filter, ServerRuleCapabilities capabilities) {
+    if (capabilities == null || !capabilities.supported()) {
+      return EmailFilter.KIND_EXO;
+    }
+    List<ServerRule.Condition> conditions = filter.getConditions() == null ? List.of() : filter.getConditions();
+    boolean serverConditions = conditions.stream()
+                                         .allMatch(condition -> condition != null && condition.field() != null
+                                             && !EXO_ONLY_FIELDS.contains(condition.field().trim().toUpperCase(Locale.ROOT))
+                                             && capabilities.isSupported(condition.field().trim().toUpperCase(Locale.ROOT)));
+    if (!serverConditions) {
+      return EmailFilter.KIND_EXO;
+    }
+    List<FilterAction> actions = filter.getActions() == null ? List.of() : filter.getActions();
+    boolean serverActions = actions.stream()
+                                   .allMatch(action -> action != null && action.type() != null
+                                       && SERVER_ACTIONS.contains(action.type().trim().toUpperCase(Locale.ROOT))
+                                       && capabilities.isSupported(action.type().trim().toUpperCase(Locale.ROOT)));
+    if (serverActions) {
+      return EmailFilter.KIND_SERVER;
+    }
+    return capabilities.isSupported(ServerRuleCapabilities.TAG) ? EmailFilter.KIND_HOP : EmailFilter.KIND_EXO;
+  }
+
+  /**
+   * What the caller's mail server can do, for routing a filter: null when eXo manages no
+   * rule there -- server rules switched off, or an engine without rules -- so the filter
+   * runs in eXo. A filter with a condition only eXo reads runs in eXo whatever the server
+   * can do, so it needs no probe unless it was a server filter, which the server must
+   * remove. A server that cannot be reached leaves the filter to eXo, unless it was a
+   * server filter: then it is said, since the server must remove it.
+   *
+   * @param username the caller
+   * @param filter the filter
+   * @param existing whether the filter was a server filter
+   * @return the capabilities, or null
+   * @throws ObjectNotFoundException when no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server, needed, cannot be used
+   */
+  private ServerRuleCapabilities capabilitiesFor(String username,
+                                                 EmailFilter filter,
+                                                 boolean existing) throws ObjectNotFoundException,
+                                                                   IllegalAccessException,
+                                                                   ServerRuleUnavailableException {
+    boolean exoOnly = filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && condition.field() != null
+                     && EXO_ONLY_FIELDS.contains(condition.field().trim().toUpperCase(Locale.ROOT)));
+    if (exoOnly && !existing) {
+      return null;
+    }
+    try {
+      return emailServerRuleService.getCapabilities(username, null);
+    } catch (ObjectNotFoundException e) {
+      if (EmailServerRuleService.DISABLED.equals(e.getMessage())) {
+        return null;
+      }
+      throw e;
+    } catch (ServerRuleUnavailableException e) {
+      // A server that cannot be reached runs no new rule: the filter runs in eXo, which
+      // needs no server. A filter that is a server rule must leave the server, so that
+      // one waits for it.
+      if (existing) {
+        throw e;
+      }
+      LOG.debug("Mail server of user {} unreachable, the filter runs in eXo: {}", username, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Creates or replaces a server filter.
+   *
+   * @param username the caller
+   * @param input the filter
+   * @param ref the server rule it replaces, or null for a new one
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}
+   * @throws ObjectNotFoundException when the feature is off, or no such server rule
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  private EmailFilter saveServer(String username,
+                                 EmailFilter input,
+                                 String ref,
+                                 boolean consent,
+                                 boolean republish) throws ObjectNotFoundException,
+                                                    IllegalAccessException,
+                                                    ServerRuleUnavailableException,
+                                                    ServerRuleConflictException,
+                                                    ServerRuleUnsupportedException {
+    emailServerRuleService.saveRule(username, null, ref, serverRuleOf(input), republish, consent);
+    return serverFilter(input, ref);
+  }
+
+  /**
+   * Turns one of the caller's eXo filters into a server filter. The eXo filter is
+   * switched off first, so eXo never acts on a mail the server rule acted on; then the
+   * server takes the rule -- in the one write that removes its hop, when it had one --
+   * and only then is the eXo filter deleted. When the server refuses, the eXo filter is
+   * put back as it was.
+   *
+   * @param username the caller
+   * @param id the eXo filter
+   * @param input the filter as it becomes
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}
+   * @throws ObjectNotFoundException when a feature is off, or the filter is not the
+   *           caller's
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  private EmailFilter toServer(String username,
+                               long id,
+                               EmailFilter input,
+                               boolean consent,
+                               boolean republish) throws ObjectNotFoundException,
+                                                  IllegalAccessException,
+                                                  ServerRuleUnavailableException,
+                                                  ServerRuleConflictException,
+                                                  ServerRuleUnsupportedException {
+    checkOwnMailbox(username, null);
+    EmailFilter existing = ownFilter(username, id);
+    ServerRule rule = serverRuleOf(input);
+    if (existing.isEnabled()) {
+      EmailFilter off = copyOf(existing);
+      off.setEnabled(false);
+      emailFilterStorage.save(username, off, now());
+    }
+    try {
+      if (isLiveHop(existing)) {
+        emailServerRuleService.reconcileHops(username, hopsBut(username, id), rule, null, republish, consent, false);
+      } else {
+        emailServerRuleService.saveRule(username, null, null, rule, republish, consent);
+      }
+    } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
+        | ServerRuleUnsupportedException | RuntimeException e) {
+      // The server did not take the rule: the eXo filter stays what it was.
+      emailFilterStorage.save(username, existing, now());
+      throw e;
+    }
+    emailFilterStorage.delete(id, username);
+    LOG.info("Mail filter {} of user {} moved to the mail server", id, username);
+    return serverFilter(input, null);
+  }
+
+  /**
+   * Turns one of the caller's server filters into an eXo filter, with or without a hop.
+   * Like a creation, the eXo row is inserted switched off to get its id; the server rule
+   * is then removed -- in the one write that adds the hop, for a hop -- and only then is
+   * the row switched on. When the server refuses, the row is deleted and the server rule
+   * stays; once the server took the write, the row is never deleted, and stays switched
+   * off when it cannot be switched on.
+   *
+   * @param username the caller
+   * @param input the filter as it becomes, its kind set
+   * @param ref the server rule it was
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the eXo filter as stored
+   * @throws ObjectNotFoundException when a feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws IllegalArgumentException with a message code, as for {@link #createFilter}
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the hop
+   */
+  private EmailFilter fromServer(String username,
+                                 EmailFilter input,
+                                 String ref,
+                                 boolean consent,
+                                 boolean republish) throws ObjectNotFoundException,
+                                                    IllegalAccessException,
+                                                    ServerRuleUnavailableException,
+                                                    ServerRuleConflictException,
+                                                    ServerRuleUnsupportedException {
+    checkOwnMailbox(username, null);
+    if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+      throw new IllegalArgumentException(TOO_MANY);
+    }
+    EmailFilter filter = validated(username, input);
+    filter.setId(null);
+    filter.setPosition(emailFilterStorage.nextPosition(username));
+    Date now = now();
+    filter.setActiveSince(now.getTime());
+    boolean wanted = filter.isEnabled();
+    filter.setEnabled(false);
+    EmailFilter provisional = emailFilterStorage.save(username, filter, now);
+    EmailFilter saved = EmailFilter.KIND_HOP.equals(provisional.getKind()) ? withHopNames(provisional) : provisional;
+    try {
+      if (EmailFilter.KIND_HOP.equals(saved.getKind())) {
+        List<HopRef> hops = hopsBut(username, saved.getId());
+        if (wanted) {
+          saved.setEnabled(true);
+          hops.add(hopOf(saved));
+        }
+        emailServerRuleService.reconcileHops(username, hops, null, ref, republish, consent, wanted);
+      } else {
+        removeServerRule(username, ref, republish);
+      }
+    } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
+        | ServerRuleUnsupportedException | RuntimeException e) {
+      // The server still holds the rule: the eXo filter is not created.
+      emailFilterStorage.delete(provisional.getId(), username);
+      throw e;
+    }
+    // The server no longer holds the rule: from here on the row is the filter's only copy,
+    // never deleted. When it cannot be switched on, it stays in the list, switched off,
+    // for the user to switch on again.
+    saved.setEnabled(wanted);
+    return emailFilterStorage.save(username, saved, now);
+  }
+
+  /**
+   * Removes a server rule a filter was, when it became an eXo filter. A rule the server
+   * no longer holds is already gone.
+   *
+   * @param username the caller
+   * @param ref the rule's reference
+   * @param republish as for {@link #saveRouted}
+   * @throws ObjectNotFoundException when the feature is off
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector holds no rules
+   */
+  private void removeServerRule(String username, String ref, boolean republish) throws ObjectNotFoundException,
+                                                                                IllegalAccessException,
+                                                                                ServerRuleUnavailableException,
+                                                                                ServerRuleConflictException,
+                                                                                ServerRuleUnsupportedException {
+    try {
+      emailServerRuleService.deleteRule(username, null, ref, republish);
+    } catch (ObjectNotFoundException e) {
+      if (!SieveRuleEngine.RULE_NOT_FOUND.equals(e.getMessage())) {
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * A filter as a server rule, folders as eXo keys, the way the server group's form
+   * sends it.
+   *
+   * @param filter the filter
+   * @return the rule, without a reference
+   */
+  static ServerRule serverRuleOf(EmailFilter filter) {
+    List<ServerRule.Action> actions = new ArrayList<>();
+    if (filter.getActions() != null) {
+      filter.getActions()
+            .forEach(action -> actions.add(action == null ? null
+                                                         : new ServerRule.Action(action.type(),
+                                                                                 action.folderKey(),
+                                                                                 null,
+                                                                                 null,
+                                                                                 action.destination())));
+    }
+    return new ServerRule(null,
+                          StringUtils.trimToEmpty(filter.getName()),
+                          filter.isEnabled(),
+                          filter.isMatchAll(),
+                          filter.getConditions(),
+                          actions,
+                          filter.isStopProcessing());
+  }
+
+  /**
+   * A server filter, as the entry point answers it.
+   *
+   * @param input the filter as saved
+   * @param ref its reference, when known
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}, no id
+   */
+  private static EmailFilter serverFilter(EmailFilter input, String ref) {
+    EmailFilter answer = copyOf(input);
+    answer.setId(null);
+    answer.setKind(EmailFilter.KIND_SERVER);
+    answer.setServerRuleRef(ref);
+    answer.setTagKeyword(null);
+    return answer;
+  }
+
+  /**
+   * A shallow copy of a filter, the lists shared.
+   *
+   * @param filter the filter
+   * @return the copy
+   */
+  private static EmailFilter copyOf(EmailFilter filter) {
+    EmailFilter copy = new EmailFilter();
+    copy.setId(filter.getId());
+    copy.setName(filter.getName());
+    copy.setEnabled(filter.isEnabled());
+    copy.setPosition(filter.getPosition());
+    copy.setKind(filter.getKind());
+    copy.setMailboxScope(filter.getMailboxScope());
+    copy.setMatchAll(filter.isMatchAll());
+    copy.setConditions(filter.getConditions());
+    copy.setActions(filter.getActions());
+    copy.setStopProcessing(filter.isStopProcessing());
+    copy.setTagKeyword(filter.getTagKeyword());
+    copy.setServerRuleRef(filter.getServerRuleRef());
+    copy.setAgentNameId(filter.getAgentNameId());
+    copy.setMatchCount(filter.getMatchCount());
+    copy.setLastMatchDate(filter.getLastMatchDate());
+    copy.setLastError(filter.getLastError());
+    copy.setActiveSince(filter.getActiveSince());
+    copy.setCreatedDate(filter.getCreatedDate());
+    copy.setUpdatedDate(filter.getUpdatedDate());
+    return copy;
+  }
+
+  /**
+   * Orders the caller's eXo rules.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param orderedIds every rule of the caller's, once, in the new order
+   * @return the rules, in their new order
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #INVALID_ORDER} for anything but a
+   *           permutation of the caller's rules
+   */
+  public List<EmailFilter> reorder(String username,
+                                   Long delegationId,
+                                   List<Long> orderedIds) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    Set<Long> current = new HashSet<>();
+    emailFilterStorage.getFilters(username).forEach(filter -> current.add(filter.getId()));
+    if (orderedIds == null || orderedIds.size() != current.size() || !current.equals(new HashSet<>(orderedIds))) {
+      throw new IllegalArgumentException(INVALID_ORDER);
+    }
+    emailFilterStorage.reorder(username, orderedIds, now());
+    return emailFilterStorage.getFilters(username);
+  }
+
+  /**
+   * Publishes the server half of one of the caller's rules again: after it was removed
+   * or edited on the server, which eXo never repairs silently.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the rule
+   * @param consent as for {@link #createFilter}
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @return the rule
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the rule is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #NOT_A_HOP} for a rule without a server
+   *           half, or switched off
+   * @throws ServerRuleUnavailableException when the server half cannot be written
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the server half
+   */
+  public EmailFilter republishHop(String username,
+                                  Long delegationId,
+                                  long id,
+                                  boolean consent,
+                                  boolean republish) throws ObjectNotFoundException,
+                                                     IllegalAccessException,
+                                                     ServerRuleUnavailableException,
+                                                     ServerRuleConflictException,
+                                                     ServerRuleUnsupportedException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilter filter = ownFilter(username, id);
+    if (!isLiveHop(filter)) {
+      throw new IllegalArgumentException(NOT_A_HOP);
+    }
+    publishHops(username, filter, consent, republish);
+    return filter;
+  }
+
+  /**
+   * What a rule would match among the mail eXo keeps of the caller's inbox, before it is
+   * saved. Works for a server rule too ({@link EmailFilter#KIND_SERVER}): eXo evaluates
+   * the same vocabulary, and says the count is the server's approximation.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param draft the rule's conditions, kind and match mode; its actions are not read
+   * @return the count and a sample
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException with a message code for an invalid condition
+   */
+  public FilterPreview preview(String username, Long delegationId, EmailFilter draft) throws ObjectNotFoundException,
+                                                                                     IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    if (draft == null) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    String kind = StringUtils.defaultIfBlank(draft.getKind(), EmailFilter.KIND_EXO).toUpperCase(Locale.ROOT);
+    if (!EmailFilter.KINDS.contains(kind) && !EmailFilter.KIND_SERVER.equals(kind)) {
+      throw new IllegalArgumentException(INVALID_KIND);
+    }
+    List<ServerRule.Condition> conditions = validatedConditions(draft.getConditions(), kind);
+    List<Email> window = emailBoxService.getCachedInbox(username);
+    Map<Long, String> categoryKeys = categoryKeys(conditions);
+    int total = 0;
+    List<FilterPreview.Row> sample = new ArrayList<>();
+    for (Email email : window) {
+      if (FilterConditionEvaluator.evaluate(conditions, draft.isMatchAll(), cachedMail(username, email, categoryKeys)) == Result.TRUE) {
+        total++;
+        if (sample.size() < PREVIEW_SAMPLE) {
+          sample.add(new FilterPreview.Row(email.getId(),
+                                           email.getSubject(),
+                                           email.getSender() == null ? null : email.getSender().getAddress(),
+                                           email.getReceivedDate() == null ? null : email.getReceivedDate().getTime()));
+        }
+      }
+    }
+    List<String> notPreviewable = conditions.stream()
+                                            .map(ServerRule.Condition::field)
+                                            .filter(NOT_PREVIEWABLE::contains)
+                                            .distinct()
+                                            .toList();
+    return new FilterPreview(total, window.size(), sample, notPreviewable, !EmailFilter.KIND_EXO.equals(kind));
+  }
+
+  /**
+   * Runs one of the caller's rules once over the mail eXo already keeps of their inbox,
+   * as the owner: its post-actions on every match it has not handled yet, logged and
+   * undoable; its assistant only when asked, on the newest matches, within the caps.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the rule
+   * @param withAgent true to queue the assistant on the newest matches too
+   * @return what the pass did
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the rule is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #NOT_ENABLED} for a rule switched off, or
+   *           {@value #UNREADABLE} for one eXo cannot read
+   */
+  public FilterApplyReport applyOnce(String username,
+                                     Long delegationId,
+                                     long id,
+                                     boolean withAgent) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilter filter = ownFilter(username, id);
+    if (!filter.isEnabled()) {
+      throw new IllegalArgumentException(NOT_ENABLED);
+    }
+    if (!isRunnable(filter)) {
+      throw new IllegalArgumentException(UNREADABLE);
+    }
+    List<Email> window = emailBoxService.getCachedInbox(username);
+    Map<Long, String> categoryKeys = categoryKeys(filter.getConditions());
+    Run run = new Run(username, now(), false, withAgent);
+    for (Email email : window) {
+      if (StringUtils.isBlank(email.getMailHeaderId()) || email.getMailRemoteId() == null) {
+        continue;
+      }
+      // A rule on a category matches the mails that already carry it: the one-off pass is
+      // how it reaches mail categorised before it was switched on.
+      evaluate(run, List.of(filter), cachedMail(username, email, categoryKeys));
+    }
+    execute(run);
+    LOG.info("Mail filter {} of user {} applied to the cached inbox: {} matched, {} queued", id, username, run.matched, run.queued.size());
+    return new FilterApplyReport(window.size(), run.matched, run.alreadyHandled, run.queued.size(), run.notApplicable);
+  }
+
+  /**
+   * Runs the owner's rules on the mail a sync of their own inbox just cached. Called by
+   * the sync, on its thread, before the mail is announced; never throws.
+   *
+   * @param username the mailbox's owner
+   * @param mails the mails just cached, with what the sync read of them
+   * @param context which mailbox they are in; nothing runs on any but the owner's own
+   *          inbox
+   * @return the UIDs of the mails a rule filed away, to leave out of the announcement
+   */
+  public Set<Long> applyToNewMail(String username, List<NewInboxMailEvent.InboxMail> mails, FilterRunContext context) {
+    if (!isEnabled() || context == null || !context.isOwnInbox() || mails == null || mails.isEmpty()) {
+      return Set.of();
+    }
+    try {
+      if (emailFilterStorage.countEnabled(username) == 0) {
+        return Set.of();
+      }
+      // A rule on a category runs when the mail gets it (applyToCategorizedMail), never at
+      // sync: a mail just synced has no category yet.
+      List<EmailFilter> filters = runnableFilters(username, context).stream().filter(filter -> !onCategory(filter)).toList();
+      if (filters.isEmpty()) {
+        return Set.of();
+      }
+      Run run = new Run(username, now(), true, true);
+      for (NewInboxMailEvent.InboxMail inboxMail : mails) {
+        Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(inboxMail.uid(),
+                                                                      username,
+                                                                      MailFolder.INBOX,
+                                                                      true,
+                                                                      true,
+                                                                      false,
+                                                                      false);
+        if (email == null || StringUtils.isBlank(email.getMailHeaderId())) {
+          continue;
+        }
+        evaluate(run, filters, new EmailFilterMail(email, null, inboxMail.keywords(), inboxMail.headers(), inboxMail.sizeKb()));
+      }
+      execute(run);
+      prune(username);
+      return run.filed;
+    } catch (Exception e) {
+      LOG.warn("The mail filters of user {} failed on {} new mail(s)", username, mails.size(), e);
+      return Set.of();
+    }
+  }
+
+  /**
+   * Runs the owner's rules on a category on the inbox mails that just got it, whoever
+   * added it -- the AI categorizer, the user, the MCP tool, another rule's action. Only
+   * the enabled rules with a condition on that very category run, and only on a mail that
+   * still carries it when they do, in the owner's inbox (never Junk): every other
+   * condition must hold too, as the rule joins them. A match is recorded, its actions run
+   * and its assistant is queued exactly as at sync; a mail never matches the same rule
+   * twice, even when the category is removed and added again, the match being recorded
+   * once per rule and mail.
+   * <p>
+   * The rule's start is the categorisation, not the mail's arrival: a rule switched on
+   * runs on every mail categorised after that, however old the mail; the mails
+   * categorised before are reached by the one-off pass ({@link #applyOnce}). Called by
+   * the listener of {@link EmailConnectorUtils#EMAIL_CATEGORY_ADDED}, off the thread
+   * that added the category; never throws.
+   *
+   * @param username the mailbox's owner
+   * @param categoryId the category added
+   * @param mailRemoteIds the INBOX UIDs of the mails that got it
+   */
+  public void applyToCategorizedMail(String username, long categoryId, List<Long> mailRemoteIds) {
+    if (!isEnabled() || StringUtils.isBlank(username) || mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      return;
+    }
+    try {
+      if (emailFilterStorage.countEnabled(username) == 0) {
+        return;
+      }
+      Map<Long, String> categoryKeys = emailBoxService.getDefaultEmailCategoryNameIds();
+      String key = categoryKeys.get(categoryId);
+      if (key == null) {
+        return;
+      }
+      List<EmailFilter> filters = runnableFilters(username, FilterRunContext.OWN_INBOX).stream()
+                                                                                        .filter(filter -> onCategory(filter, key))
+                                                                                        .toList();
+      if (filters.isEmpty()) {
+        return;
+      }
+      Run run = new Run(username, now(), false, true);
+      for (Long uid : mailRemoteIds) {
+        Email email = uid == null ? null
+                                  : emailBoxService.getEmailByMailRemoteIdAndUserId(uid,
+                                                                                    username,
+                                                                                    MailFolder.INBOX,
+                                                                                    true,
+                                                                                    true,
+                                                                                    false,
+                                                                                    false);
+        if (email == null || StringUtils.isBlank(email.getMailHeaderId()) || email.getCategoryIds() == null
+            || !email.getCategoryIds().contains(categoryId)) {
+          // Gone from the inbox, or the category was taken off again before the rules ran.
+          continue;
+        }
+        evaluate(run, filters, new EmailFilterMail(email, null, Set.of(), null, null, categoryKeys::get));
+      }
+      execute(run);
+      if (run.matched > 0) {
+        LOG.info("Mail filters on category {} of user {}: {} match(es) on {} mail(s) just categorised",
+                 key,
+                 username,
+                 run.matched,
+                 mailRemoteIds.size());
+      }
+    } catch (Exception e) {
+      LOG.warn("The mail filters on category {} of user {} failed on {} mail(s)", categoryId, username, mailRemoteIds.size(), e);
+    }
+  }
+
+  /**
+   * Runs the post-actions a match kept for after its assistant: called by the assistant's
+   * handler once the run is over, whatever its outcome, so a rule's deterministic half is
+   * never lost to a failed or capped assistant -- and by {@link #retry} and
+   * {@link #releaseUnansweredAgentMatches} when nothing runs the assistant any more.
+   * Idempotent: a match whose post-actions ran is answered as it is.
+   *
+   * @param matchId the match
+   * @param username the rule's owner, the handler's acting user
+   * @return the match after the post-actions
+   * @throws ObjectNotFoundException when the match is not this user's
+   * @throws IllegalAccessException when the owner may no longer read their mailbox
+   */
+  public EmailFilterMatch applyPostActions(long matchId, String username) throws ObjectNotFoundException, IllegalAccessException {
+    EmailFilterMatch match = ownMatch(username, matchId);
+    if (!EmailFilterMatch.POST_PENDING_AGENT.equals(match.getPostActionsState())) {
+      return named(username, match);
+    }
+    Optional<EmailFilter> filter = emailFilterStorage.getFilter(match.getFilterId(), username);
+    Email email = filter.isPresent() ? emailBoxService.getOwnEmailByMailHeaderId(username, match.getMailHeaderId(), MailFolder.INBOX)
+                                     : null;
+    if (filter.isEmpty() || email == null) {
+      match.setPostActionsState(EmailFilterMatch.POST_DONE);
+      match.setLastError(filter.isEmpty() ? FILTER_DELETED : MAIL_GONE);
+      return named(username, emailFilterStorage.updateMatch(match, username));
+    }
+    Run run = new Run(username, now(), false, false);
+    run.immediate.computeIfAbsent(filter.get(), key -> new ArrayList<>()).add(new Entry(match, email));
+    execute(run);
+    return named(username, emailFilterStorage.getMatch(matchId, username).orElse(match));
+  }
+
+  /**
+   * Records what the assistant made of a match: its handler's write, as the owner.
+   * <p>
+   * {@code RUNNING} marks the start of an attempt and counts nothing. Every other status
+   * counts one attempt: {@code DONE}, {@code FAILED} and {@code SKIPPED_DISABLED} end the
+   * run -- the handler then applies the post-actions --, while {@code PENDING} gives a
+   * failed attempt back for another one, its error kept, so the attempts a mail has
+   * spent survive the run and the node that made them.
+   *
+   * @param matchId the match
+   * @param username the rule's owner
+   * @param status {@code RUNNING}, {@code PENDING}, {@code DONE}, {@code FAILED} or
+   *          {@code SKIPPED_DISABLED}
+   * @param conversationId the assistant's conversation, to open it in the chat
+   * @param output the assistant's answer as the handler applied it; ignored for
+   *          {@code RUNNING} and {@code PENDING}
+   * @param error the reason of a failure
+   * @return the match
+   * @throws ObjectNotFoundException when the match is not this user's
+   * @throws IllegalArgumentException {@value ServerRule#INVALID} for another status
+   */
+  public EmailFilterMatch saveAgentOutcome(long matchId,
+                                           String username,
+                                           String status,
+                                           String conversationId,
+                                           String output,
+                                           String error) throws ObjectNotFoundException {
+    if (!AGENT_OUTCOME_STATUSES.contains(status)) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    EmailFilterMatch match = ownMatch(username, matchId);
+    match.setAgentStatus(status);
+    match.setAgentDate(clock.millis());
+    if (conversationId != null) {
+      match.setAgentConversationId(StringUtils.left(conversationId, 64));
+    }
+    if (EmailFilterMatch.AGENT_PENDING.equals(status)) {
+      match.setAgentAttempts(match.getAgentAttempts() + 1);
+      match.setLastError(error);
+    } else if (!EmailFilterMatch.AGENT_RUNNING.equals(status)) {
+      match.setAgentAttempts(match.getAgentAttempts() + 1);
+      match.setAgentOutput(StringUtils.left(output, MAX_AGENT_OUTPUT_LENGTH));
+      match.setLastError(error);
+    }
+    return named(username, emailFilterStorage.updateMatch(match, username));
+  }
+
+  /**
+   * Puts a match back to {@code PENDING} without counting an attempt: its assistant could
+   * not be reached (the provider's error or timeout, the AI add-on not up), which says
+   * nothing about the mail. Its post-actions stay held; its error is kept for the
+   * Automations panel.
+   *
+   * @param matchId the match
+   * @param username the rule's owner
+   * @param error why it waits
+   * @return the match
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  public EmailFilterMatch parkAgentMatch(long matchId, String username, String error) throws ObjectNotFoundException {
+    EmailFilterMatch match = ownMatch(username, matchId);
+    match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
+    match.setAgentDate(clock.millis());
+    match.setLastError(error);
+    return named(username, emailFilterStorage.updateMatch(match, username));
+  }
+
+  /**
+   * The guard rails the assistant's handler passes a match through before it calls the
+   * model, as the owner. In order, the reads of eXo's own data first and the mail server
+   * last:
+   * <ol>
+   * <li><b>Never on spam, from the cache.</b> A mail the cache holds in the Junk folder is
+   * skipped {@code SKIPPED_SPAM} ({@value #SPAM}).</li>
+   * <li><b>The daily cap.</b> Once the assistant ran on {@value #DAILY_CAP_PROPERTY} of the
+   * owner's matches today, the match is skipped {@code SKIPPED_CAP} ({@value #DAILY_LIMIT});
+   * a match the assistant already ran on today is not charged again.</li>
+   * <li><b>Never on spam, from the server.</b> A mail the mail server flagged as spam
+   * ({@link SpamSignals}, read live: the categoriser, the user or a one-off pass may have
+   * queued a mail the sync never looked at) is skipped {@code SKIPPED_SPAM}. When the
+   * server cannot be reached, the match is given back {@code PENDING}
+   * ({@value #SPAM_UNCHECKED}), no attempt spent, for the handler to wait; after
+   * {@value #MAX_SPAM_UNCHECKED} such give-backs in a row, it is skipped
+   * {@code SKIPPED_SPAM} ({@value #SPAM_UNCHECKED_LIMIT}), so that one mail cannot hold its
+   * mailbox for ever. The read is fail-open on what the server does answer: a keyword or
+   * header the server returns but that cannot be parsed counts as not set, and a mail the
+   * server no longer holds at its cached UID is not read and passes (the handler ends it
+   * when it is gone from the cache too).</li>
+   * </ol>
+   * A skip spends no attempt and calls no model; the rule's held actions then run, and the
+   * owner can run the assistant again from the mail's Automations box. The count is exact
+   * on a cluster because the handler is: the background queue hands one mailbox's row to
+   * one claimant at a time, and only that claimant calls the model on the mailbox's mails.
+   *
+   * @param username the owner
+   * @param match the match, about to run
+   * @return null when the assistant may run; otherwise the match as written -- skipped,
+   *         its held actions run, or given back {@code PENDING} when the mailbox must wait
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  public EmailFilterMatch skipIfGuarded(String username, EmailFilterMatch match) throws ObjectNotFoundException {
+    String mailHeaderId = match.getMailHeaderId();
+    boolean inJunk;
+    try {
+      inJunk = emailBoxService.hasOwnEmailInFolder(username, mailHeaderId, MailFolder.JUNK);
+    } catch (IllegalAccessException e) {
+      // The owner may no longer read the mailbox: the handler's own read refuses it too.
+      return null;
+    }
+    if (inJunk) {
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM);
+    }
+    if (isPastDailyCap(username, match)) {
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_CAP, DAILY_LIMIT);
+    }
+    Boolean flagged;
+    try {
+      Email inInbox = emailBoxService.getOwnEmailByMailHeaderId(username, mailHeaderId, MailFolder.INBOX);
+      // A mail gone from the inbox is the handler's to end (MAIL_GONE); there is nothing to read.
+      flagged = inInbox == null || inInbox.getMailRemoteId() == null ? Boolean.FALSE
+                                                                     : emailBoxService.isFlaggedAsSpamOnServer(username,
+                                                                                                               inInbox.getMailRemoteId(),
+                                                                                                               mailHeaderId)
+                                                                                      // Gone at that UID: the handler ends it.
+                                                                                      .orElse(Boolean.FALSE);
+    } catch (IllegalAccessException e) {
+      // The owner may no longer read the mailbox: the handler's own read refuses it too.
+      return null;
+    } catch (RuntimeException e) {
+      return giveBackSpamUnchecked(username, match, e);
+    }
+    if (Boolean.TRUE.equals(flagged)) {
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM);
+    }
+    return null;
+  }
+
+  /**
+   * Whether running the assistant on this match would take the owner's mailbox past its
+   * daily cap: the matches the assistant ran on today, this one left out when it is one
+   * of them -- given back after a run today, it is not a new one.
+   *
+   * @param username the owner
+   * @param match the match, about to run
+   * @return true when the cap is reached
+   */
+  private boolean isPastDailyCap(String username, EmailFilterMatch match) {
+    Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
+    long runs = emailFilterStorage.countAgentRunsSince(username, CALLED_STATUSES, Date.from(startOfDay));
+    boolean countsItself = match.getAgentConversationId() != null && match.getAgentDate() != null
+        && match.getAgentDate() >= startOfDay.toEpochMilli() && CALLED_STATUSES.contains(match.getAgentStatus());
+    return runs - (countsItself ? 1 : 0) >= dailyCap();
+  }
+
+  /**
+   * Gives a match back {@code PENDING} because its spam marks could not be read, counting
+   * the give-backs in a row in its last error ({@value #SPAM_UNCHECKED}); once
+   * {@value #MAX_SPAM_UNCHECKED} of them were counted, skips it instead
+   * ({@value #SPAM_UNCHECKED_LIMIT}), so one mail the server keeps failing to read cannot
+   * hold its mailbox for ever.
+   *
+   * @param username the owner
+   * @param match the match, as read before this run
+   * @param cause why the marks could not be read
+   * @return the match as written: waiting, or skipped with its held actions run
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  private EmailFilterMatch giveBackSpamUnchecked(String username,
+                                                 EmailFilterMatch match,
+                                                 RuntimeException cause) throws ObjectNotFoundException {
+    int givenBack = spamUncheckedCount(match.getLastError());
+    if (givenBack >= MAX_SPAM_UNCHECKED) {
+      LOG.warn("The spam marks of mail filter match {} of user {} could not be read {} times in a row; its assistant is skipped: {}",
+               match.getId(),
+               username,
+               givenBack + 1,
+               cause.getMessage());
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM_UNCHECKED_LIMIT);
+    }
+    LOG.info("The spam marks of mail filter match {} of user {} could not be read; the mail waits: {}",
+             match.getId(),
+             username,
+             cause.getMessage());
+    int count = givenBack + 1;
+    return parkAgentMatch(match.getId(), username, count == 1 ? SPAM_UNCHECKED : SPAM_UNCHECKED + ":" + count);
+  }
+
+  /**
+   * How many times in a row a match was given back because its spam marks could not be
+   * read, from its last error.
+   *
+   * @param lastError the match's last error
+   * @return the count, 0 when its last give-back was for something else
+   */
+  static int spamUncheckedCount(String lastError) {
+    if (SPAM_UNCHECKED.equals(lastError)) {
+      return 1;
+    }
+    if (lastError == null || !lastError.startsWith(SPAM_UNCHECKED + ":")) {
+      return 0;
+    }
+    try {
+      return Math.max(1, Integer.parseInt(lastError.substring(SPAM_UNCHECKED.length() + 1)));
+    } catch (NumberFormatException e) {
+      return 1;
+    }
+  }
+
+  /**
+   * Skips a match's assistant without spending an attempt, then runs the actions the rule
+   * held for it. A failure of those actions is logged and leaves the match skipped, as
+   * the assistant's runner does: the skip is written first, so it is never undone by
+   * them, and the match is never given back to wait for a run it will not get.
+   *
+   * @param username the owner
+   * @param matchId the match
+   * @param status {@code SKIPPED_CAP} or {@code SKIPPED_SPAM}
+   * @param reason why, the match's last error
+   * @return the match after its held actions, or as skipped when they could not run
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  private EmailFilterMatch skipAgent(String username, long matchId, String status, String reason) throws ObjectNotFoundException {
+    EmailFilterMatch match = ownMatch(username, matchId);
+    match.setAgentStatus(status);
+    match.setAgentDate(clock.millis());
+    match.setLastError(reason);
+    EmailFilterMatch skipped = named(username, emailFilterStorage.updateMatch(match, username));
+    if (!EmailFilterMatch.POST_PENDING_AGENT.equals(skipped.getPostActionsState())) {
+      return skipped;
+    }
+    try {
+      return applyPostActions(matchId, username);
+    } catch (IllegalAccessException e) {
+      LOG.info("The held actions of mail filter match {} of user {} cannot run: {}", matchId, username, e.getMessage());
+      return skipped;
+    } catch (RuntimeException e) {
+      LOG.warn("The held actions of mail filter match {} of user {} could not run", matchId, username, e);
+      return skipped;
+    }
+  }
+
+  /**
+   * The owner's matches waiting for the assistant, oldest first: what its handler takes
+   * up in one run.
+   *
+   * @param username the owner
+   * @param limit how many, at most {@value #MAX_LOG}
+   * @return the matches
+   */
+  public List<EmailFilterMatch> listPendingAgentMatches(String username, int limit) {
+    return emailFilterStorage.getMatchesByAgentStatus(username,
+                                                      EmailFilterMatch.AGENT_PENDING,
+                                                      Math.max(1, Math.min(limit, MAX_LOG)));
+  }
+
+  /**
+   * The owner's matches the assistant's handler takes up, oldest first: those waiting,
+   * and those a run left {@code RUNNING} and that no live run can still be writing --
+   * their last write is older than {@code runningBefore}, which the handler sets from
+   * the queue's run ceiling. Without them, a mail whose run died with its node would
+   * wait for ever with its post-actions held.
+   *
+   * @param username the owner
+   * @param limit how many, at most {@value #MAX_LOG}
+   * @param runningBefore the epoch millis before which a running match is abandoned
+   * @return the matches
+   */
+  public List<EmailFilterMatch> listPendingAgentMatches(String username, int limit, long runningBefore) {
+    return emailFilterStorage.getMatchesDueForAgent(username, new Date(runningBefore), Math.max(1, Math.min(limit, MAX_LOG)));
+  }
+
+  /**
+   * The rule of a match, for the assistant's handler: which assistant, which
+   * instruction, which outputs.
+   *
+   * @param username the owner
+   * @param filterId the rule
+   * @return the rule, or empty when it was deleted
+   */
+  public Optional<EmailFilter> getFilterOfMatch(String username, long filterId) {
+    return emailFilterStorage.getFilter(filterId, username);
+  }
+
+  /**
+   * Undoes what a match did to its mail: one action, or every action that can be undone
+   * -- a move put back, a category taken off, a read mark or a star withdrawn, a mail
+   * brought back from Junk or Trash. Nothing is undone twice.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param matchId the match
+   * @param actionType the action to undo, null for every one
+   * @return the match after the undo
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the match is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #UNDO_NOT_YET} when the mail is not yet
+   *           where eXo can see it, {@value #UNDO_UNSUPPORTED} for an action nothing
+   *           undoes, or the mailbox's own code
+   */
+  public EmailFilterMatch undo(String username,
+                               Long delegationId,
+                               long matchId,
+                               String actionType) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilterMatch match = ownMatch(username, matchId);
+    List<AppliedAction> actions = new ArrayList<>(match.getActions() == null ? List.of() : match.getActions());
+    String filedInto = actions.stream()
+                              .filter(action -> action.ok() && !action.undone() && FilterAction.FILING.contains(action.type()))
+                              .map(AppliedAction::folderKey)
+                              .findFirst()
+                              .orElse(null);
+    // The flags and the category first, while the mail is still where the filing put it;
+    // the filing last.
+    List<Integer> order = new ArrayList<>();
+    for (int i = 0; i < actions.size(); i++) {
+      if (!FilterAction.FILING.contains(actions.get(i).type())) {
+        order.add(i);
+      }
+    }
+    for (int i = 0; i < actions.size(); i++) {
+      if (FilterAction.FILING.contains(actions.get(i).type())) {
+        order.add(i);
+      }
+    }
+    boolean undoneAny = false;
+    RuntimeException firstFailure = null;
+    for (int index : order) {
+      AppliedAction action = actions.get(index);
+      if (!action.ok() || action.undone() || actionType != null && !actionType.equals(action.type())) {
+        continue;
+      }
+      try {
+        if (undoOne(username, match, action, filedInto)) {
+          actions.set(index, action.asUndone());
+          undoneAny = true;
+        } else if (actionType != null) {
+          throw new IllegalArgumentException(UNDO_UNSUPPORTED);
+        }
+      } catch (RuntimeException e) {
+        // What was undone before stays recorded; the rest is reported.
+        if (firstFailure == null) {
+          firstFailure = e;
+        }
+      }
+    }
+    if (undoneAny) {
+      match.setActions(actions);
+      match = emailFilterStorage.updateMatch(match, username);
+    }
+    if (firstFailure != null) {
+      throw firstFailure;
+    }
+    if (!undoneAny) {
+      return named(username, match);
+    }
+    LOG.info("Mail filter match {} undone by user {} ({})", matchId, username, actionType == null ? "all" : actionType);
+    return named(username, match);
+  }
+
+  /**
+   * Queues the assistant again on a match whose run is over: "Run again", the one way an
+   * assistant runs twice on one mail. Its post-actions, when they ran, do not run again.
+   * <p>
+   * On a deployment where nothing runs the assistant ({@link #isAgentHandled()} false), the
+   * match is not queued -- it would wait for ever -- but recorded skipped again, and its
+   * post-actions, if they still wait, run now.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param matchId the match
+   * @return the match, queued
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the match is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #INVALID_AGENT} for a match without an
+   *           assistant, or whose assistant is still due
+   */
+  public EmailFilterMatch retry(String username, Long delegationId, long matchId) throws ObjectNotFoundException,
+                                                                                  IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilterMatch match = ownMatch(username, matchId);
+    if (StringUtils.isBlank(match.getAgentNameId()) || !EmailFilterMatch.AGENT_TERMINAL.contains(match.getAgentStatus())) {
+      throw new IllegalArgumentException(INVALID_AGENT);
+    }
+    if (!isAgentHandled()) {
+      match.setAgentStatus(EmailFilterMatch.AGENT_SKIPPED_DISABLED);
+      match.setLastError(null);
+      EmailFilterMatch skipped = emailFilterStorage.updateMatch(match, username);
+      return EmailFilterMatch.POST_PENDING_AGENT.equals(skipped.getPostActionsState()) ? applyPostActions(skipped.getId(), username)
+                                                                                        : named(username, skipped);
+    }
+    match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
+    match.setAgentAttempts(0);
+    match.setLastError(null);
+    EmailFilterMatch queued = emailFilterStorage.updateMatch(match, username);
+    requestAgent(username, List.of(queued.getId()));
+    return named(username, queued);
+  }
+
+  /**
+   * Whether something on this deployment runs the filters' assistant: a bean of the
+   * email-connector Spring context declared as an {@link EmailFilterAgentHandler}. Read at
+   * each call, so the answer never depends on the order the beans were built in.
+   *
+   * @return true when at least one handler is present
+   */
+  public boolean isAgentHandled() {
+    return agentHandlers != null && agentHandlers.stream().findAny().isPresent();
+  }
+
+  /**
+   * Releases, once after boot, the matches left waiting for an assistant that nothing on
+   * this deployment runs -- every user's matches {@code PENDING} or {@code RUNNING}, queued
+   * before the AI add-on was removed or its profile switched off: each is recorded
+   * {@code SKIPPED_DISABLED}, as a match made now would be, and the post-actions it held
+   * run through {@link #applyPostActions}. A no-op when a handler is present.
+   * <p>
+   * Every node of a cluster runs it. A match is claimed first, by moving its status from
+   * the one read to {@code SKIPPED_DISABLED} in one conditional UPDATE: one node wins the
+   * row, the others see 0 rows and leave it, so no post-action runs twice. A match whose
+   * post-actions fail is put back in its status, for the next boot's sweep to try again,
+   * and never stops the sweep: each one is guarded on its own, {@code LinkageError} too.
+   * The read pages by id, so a match left behind is not read twice in one sweep.
+   *
+   * @return how many matches this node released
+   */
+  public int releaseUnansweredAgentMatches() {
+    if (isAgentHandled()) {
+      return 0;
+    }
+    int released = 0;
+    long afterId = 0;
+    List<OwnedMatch> page;
+    do {
+      page = emailFilterStorage.getMatchesByAgentStatuses(WAITING_STATUSES, afterId, SWEEP_BATCH);
+      for (OwnedMatch owned : page) {
+        afterId = Math.max(afterId, owned.match().getId());
+        if (release(owned)) {
+          released++;
+        }
+      }
+    } while (page.size() == SWEEP_BATCH);
+    return released;
+  }
+
+  /**
+   * Ends the held actions of a released match whose owner may no longer read the
+   * mailbox: nothing will run them, and the reason is recorded. Never throws.
+   *
+   * @param matchId the match
+   * @param username its owner
+   */
+  private void closeUnreadable(long matchId, String username) {
+    try {
+      emailFilterStorage.getMatch(matchId, username).ifPresent(match -> {
+        match.setPostActionsState(EmailFilterMatch.POST_DONE);
+        match.setLastError(UNREADABLE);
+        emailFilterStorage.updateMatch(match, username);
+      });
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The held actions of mail filter match {} could not be closed", matchId, e);
+    }
+  }
+
+  /**
+   * Releases one match left waiting for an assistant: claims it, then runs the
+   * post-actions it held. Never throws.
+   *
+   * @param owned the match and its owner
+   * @return true when this call released it
+   */
+  private boolean release(OwnedMatch owned) {
+    long matchId = owned.match().getId();
+    String waiting = owned.match().getAgentStatus();
+    try {
+      if (!emailFilterStorage.updateAgentStatusIf(matchId, waiting, EmailFilterMatch.AGENT_SKIPPED_DISABLED)) {
+        // Another node, or the owner's "Run again", got there first.
+        return false;
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("Mail filter match {} of user {} could not be released from the assistant", matchId, owned.userId(), e);
+      return false;
+    }
+    try {
+      applyPostActions(matchId, owned.userId());
+      return true;
+    } catch (ObjectNotFoundException | IllegalAccessException e) {
+      // The owner may no longer read the mailbox, or the match is gone: that will not
+      // change by the next boot, so the match ends here instead of failing on every one.
+      LOG.info("The held actions of mail filter match {} of user {} cannot run: {}", matchId, owned.userId(), e.getMessage());
+      closeUnreadable(matchId, owned.userId());
+      return true;
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The held actions of mail filter match {} of user {} failed; it waits for the next sweep", matchId, owned.userId(), e);
+      try {
+        emailFilterStorage.updateAgentStatusIf(matchId, EmailFilterMatch.AGENT_SKIPPED_DISABLED, waiting);
+      } catch (RuntimeException | LinkageError revertFailure) {
+        LOG.debug("Mail filter match {} could not be put back in status {}", matchId, waiting, revertFailure);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * What the caller's rules did to one of their mails: its Automations panel.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param emailId the cached mail's id
+   * @return the matches, newest first
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           no such mail
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, the
+   *           caller may not use their connector, or the mail is not theirs
+   */
+  public List<EmailFilterMatch> getMatchesOfMail(String username, Long delegationId, long emailId) throws ObjectNotFoundException,
+                                                                                                   IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    Email email = emailBoxService.getOwnedEmailById(emailId, username);
+    if (email == null || StringUtils.isBlank(email.getMailHeaderId())) {
+      throw new ObjectNotFoundException(MATCH_NOT_FOUND);
+    }
+    return named(username, emailFilterStorage.getMatchesOfMail(username, email.getMailHeaderId()));
+  }
+
+  /**
+   * What the owner's rules did to a batch of their mails: every match of the owner whose
+   * Message-ID is one of those given, with what it did ({@code actions}: each action's
+   * {@code type}, {@code ok}, {@code undone}, {@code categoryId}) and the assistant's
+   * status and output. For a backend caller already acting as the owner -- the enterprise
+   * auto-categoriser, which must not take off a category a rule set: no delegation
+   * parameter, no connector check, and the rule names are not filled in. Safe off a
+   * request: a match's row has no lazy association, and each read is its own transaction.
+   *
+   * @param username the owner
+   * @param mailHeaderIds the mails' Message-IDs
+   * @return the matches; empty, without a query, for no Message-ID
+   */
+  public List<EmailFilterMatch> getMatchesOfMails(String username, Collection<String> mailHeaderIds) {
+    if (mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    List<String> ids = mailHeaderIds.stream().filter(StringUtils::isNotBlank).distinct().toList();
+    return ids.isEmpty() ? List.of() : emailFilterStorage.getMatchesOfMails(username, ids);
+  }
+
+  /**
+   * The newest matches of one of the caller's rules.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the rule
+   * @param limit how many, at most {@value #MAX_LOG}
+   * @return the matches, newest first
+   * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
+   *           the rule is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   */
+  public List<EmailFilterMatch> getLog(String username, Long delegationId, long id, int limit) throws ObjectNotFoundException,
+                                                                                               IllegalAccessException {
+    checkOwnMailbox(username, delegationId);
+    EmailFilter filter = ownFilter(username, id);
+    List<EmailFilterMatch> log = emailFilterStorage.getLog(username, id, Math.max(1, Math.min(limit, MAX_LOG)));
+    log.forEach(match -> match.setFilterName(filter.getName()));
+    return log;
+  }
+
+  /**
+   * Tells the owner that a rule matched their mail: one notification per rule per pass,
+   * or one line of the assistant's for one mail.
+   *
+   * @param username the owner
+   * @param filterName the rule's name
+   * @param count how many mails it matched
+   * @param line the assistant's one line, or null
+   */
+  public void notifyOwner(String username, String filterName, int count, String line) {
+    notifyOwner(username, filterName, count, line, null, null);
+  }
+
+  /**
+   * Tells the owner that a rule matched their mail, naming the one mail a click opens: by
+   * its inbox UID while it is still there, or by the folder the rule filed it into.
+   *
+   * @param username the owner
+   * @param filterName the rule's name
+   * @param count how many mails it matched
+   * @param line the assistant's one line, or null
+   * @param mailRemoteId the mail's inbox UID, or null when it left the inbox
+   * @param mailFolder the folder the rule filed the mail into, or null
+   */
+  public void notifyOwner(String username, String filterName, int count, String line, Long mailRemoteId, String mailFolder) {
+    try {
+      NotificationContext ctx = NotificationContextImpl.cloneInstance()
+                                                       .append(EmailFilterNotificationPlugin.RECEIVER, username)
+                                                       .append(EmailFilterNotificationPlugin.FILTER_NAME, filterName)
+                                                       .append(EmailFilterNotificationPlugin.COUNT, String.valueOf(count))
+                                                       .append(EmailFilterNotificationPlugin.LINE, StringUtils.defaultString(line))
+                                                       .append(EmailFilterNotificationPlugin.MAIL_REMOTE_ID,
+                                                               mailRemoteId == null ? "" : String.valueOf(mailRemoteId))
+                                                       .append(EmailFilterNotificationPlugin.MAIL_FOLDER, StringUtils.defaultString(mailFolder));
+      ctx.getNotificationExecutor()
+         .with(ctx.makeCommand(PluginKey.key(NotificationConstants.EMAIL_FILTER_NOTIFICATION_PLUGIN)))
+         .execute(ctx);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("User {} could not be notified about the mail filter '{}'", username, filterName, e);
+    }
+  }
+
+  /**
+   * Evaluates the rules on one mail, in order, and records each match.
+   *
+   * @param run the pass
+   * @param filters the rules, runnable, in order
+   * @param mail the mail
+   */
+  private void evaluate(Run run, List<EmailFilter> filters, EmailFilterMail mail) {
+    Email email = mail.email();
+    for (EmailFilter filter : filters) {
+      if (run.sync && receivedBefore(email, filter)) {
+        // The sync also caches mail that is not new: the whole window after a reset or a
+        // reconnection. A rule acts at sync on mail that arrived since it became active;
+        // the one-off pass is how it reaches older mail.
+        continue;
+      }
+      if (run.sync && EmailFilter.KIND_HOP.equals(filter.getKind())
+          && !mail.keywords().contains(filter.getTagKeyword().toLowerCase(Locale.ROOT))) {
+        // A hop is triggered by the keyword its server half sets: on new mail, nothing
+        // else runs it.
+        continue;
+      }
+      Result result = FilterConditionEvaluator.evaluate(filter.getConditions(), filter.isMatchAll(), mail);
+      if (result != Result.TRUE) {
+        if (result == Result.UNKNOWN) {
+          run.notApplicable++;
+        }
+        if (run.sync && EmailFilter.KIND_HOP.equals(filter.getKind())) {
+          // The keyword is there and the conditions do not hold: someone else set it.
+          LOG.info("Mail filter {} of user {}: keyword {} found on a mail its conditions do not match; ignored",
+                   filter.getId(),
+                   run.username,
+                   filter.getTagKeyword());
+        }
+        continue;
+      }
+      Optional<EmailFilterMatch> created = emailFilterStorage.createMatch(newMatch(filter, email, run), run.username);
+      if (created.isEmpty()) {
+        run.alreadyHandled++;
+      } else {
+        run.add(filter, created.get(), mail);
+      }
+      if (filter.isStopProcessing() || filter.files()) {
+        break;
+      }
+    }
+  }
+
+  /**
+   * Whether a mail arrived before a rule became active -- created, or switched back on --
+   * allowing for the clocks of eXo and the mail server: such a mail is not new to the
+   * rule. A rename, an edit or a reorder does not move that start.
+   *
+   * @param email the mail
+   * @param filter the rule
+   * @return true when the mail predates the rule's start by more than the grace
+   */
+  static boolean receivedBefore(Email email, EmailFilter filter) {
+    Long saved = filter.getActiveSince() != null ? filter.getActiveSince() : filter.getCreatedDate();
+    return saved != null && email.getReceivedDate() != null && email.getReceivedDate().getTime() < saved - RECEIVED_GRACE_MS;
+  }
+
+  /**
+   * A new match of a rule on a mail, before its post-actions.
+   *
+   * @param filter the rule
+   * @param email the mail
+   * @param run the pass
+   * @return the match
+   */
+  private EmailFilterMatch newMatch(EmailFilter filter, Email email, Run run) {
+    EmailFilterMatch match = new EmailFilterMatch();
+    match.setFilterId(filter.getId());
+    match.setMailHeaderId(email.getMailHeaderId());
+    match.setMailRemoteId(email.getMailRemoteId());
+    match.setFolder(MailFolder.INBOX);
+    match.setSubject(email.getSubject());
+    match.setMatchedDate(run.now.getTime());
+    match.setActions(List.of());
+    match.setPostActionsState(EmailFilterMatch.POST_DONE);
+    match.setAgentStatus(EmailFilterMatch.AGENT_NONE);
+    match.setAgentNameId(filter.getAgentNameId());
+    return match;
+  }
+
+  /**
+   * Where a match's filing action put the mail, when one did: its UID in the inbox then
+   * names nothing, a move giving the mail another UID in its new folder.
+   *
+   * @param match the match, possibly null
+   * @return the folder key the mail was filed into, or null when it is still in the inbox
+   */
+  static String filedInto(EmailFilterMatch match) {
+    if (match == null || match.getActions() == null) {
+      return null;
+    }
+    return match.getActions()
+                .stream()
+                .filter(action -> action.ok() && !action.undone() && FilterAction.FILING.contains(action.type()))
+                .map(AppliedAction::folderKey)
+                .filter(Objects::nonNull)
+                .reduce((first, second) -> second)
+                .orElse(null);
+  }
+
+  /**
+   * Applies what a pass decided: the post-actions of its immediate matches, batched per
+   * rule, the counters, one notification per rule, the assistant's request.
+   *
+   * @param run the pass
+   */
+  private void execute(Run run) {
+    for (Map.Entry<EmailFilter, List<Entry>> group : run.immediate.entrySet()) {
+      EmailFilter filter = group.getKey();
+      List<Entry> entries = group.getValue();
+      Map<Long, List<AppliedAction>> applied = new HashMap<>();
+      entries.forEach(entry -> applied.put(entry.email().getMailRemoteId(), new ArrayList<>()));
+      boolean filed = false;
+      for (FilterAction action : postActions(filter)) {
+        filed = apply(run, filter, action, entries, applied) || filed;
+      }
+      for (Entry entry : entries) {
+        EmailFilterMatch match = entry.match();
+        List<AppliedAction> done = new ArrayList<>(match.getActions() == null ? List.of() : match.getActions());
+        done.addAll(applied.get(entry.email().getMailRemoteId()));
+        match.setActions(done);
+        match.setPostActionsState(EmailFilterMatch.POST_DONE);
+        emailFilterStorage.updateMatch(match, run.username);
+        if (filed) {
+          run.filed.add(entry.email().getMailRemoteId());
+        }
+      }
+    }
+    run.counts.forEach((filterId, count) -> emailFilterStorage.addMatches(filterId, run.username, count, run.now));
+    run.notifications.forEach((name, count) -> {
+      EmailFilterMatch notified = Optional.ofNullable(run.notified.get(name)).map(Entry::match).orElse(null);
+      String filedInto = filedInto(notified);
+      notifyOwner(run.username,
+                  name,
+                  count,
+                  null,
+                  notified == null || filedInto != null ? null : notified.getMailRemoteId(),
+                  filedInto);
+    });
+    requestAgent(run.username, run.queued);
+  }
+
+  /**
+   * The post-actions of a rule, in the order they apply: the ones that address the mail
+   * in the inbox first, the filing last.
+   *
+   * @param filter the rule
+   * @return the actions, the assistant left out
+   */
+  private static List<FilterAction> postActions(EmailFilter filter) {
+    List<FilterAction> ordered = new ArrayList<>();
+    filter.getActions().stream().filter(action -> !FilterAction.AGENT.equals(action.type()) && !action.files()).forEach(ordered::add);
+    filter.getActions().stream().filter(FilterAction::files).forEach(ordered::add);
+    return ordered;
+  }
+
+  /**
+   * Applies one post-action of a rule to a batch of its mails, as the owner, and records
+   * the outcome per mail.
+   *
+   * @param run the pass
+   * @param filter the rule
+   * @param action the action
+   * @param entries the batch
+   * @param applied the outcome, per mail UID
+   * @return true when the action filed every mail of the batch away
+   */
+  private boolean apply(Run run,
+                        EmailFilter filter,
+                        FilterAction action,
+                        List<Entry> entries,
+                        Map<Long, List<AppliedAction>> applied) {
+    String username = run.username;
+    List<Long> uids = entries.stream().map(entry -> entry.email().getMailRemoteId()).toList();
+    try {
+      switch (action.type()) {
+      case FilterAction.ADD_CATEGORY -> {
+        emailBoxService.linkEmailsToCategory(uids, action.categoryId(), username);
+        entries.forEach(entry -> record(applied,
+                                        entry,
+                                        new AppliedAction(action.type(), true, null, null, null, action.categoryId(), null, null, null, false)));
+      }
+      case FilterAction.MARK_READ -> {
+        List<Long> unread = entries.stream().filter(entry -> !entry.email().isRead()).map(entry -> entry.email().getMailRemoteId()).toList();
+        int failures = unread.isEmpty() ? 0 : emailBoxService.updateEmailReadStatus(unread, username, MailFolder.INBOX, true, true);
+        entries.forEach(entry -> record(applied,
+                                        entry,
+                                        new AppliedAction(action.type(),
+                                                          failures == 0,
+                                                          failures == 0 ? null : ACTION_FAILED,
+                                                          null,
+                                                          null,
+                                                          null,
+                                                          entry.email().isRead(),
+                                                          null,
+                                                          null,
+                                                          false)));
+      }
+      case FilterAction.STAR -> {
+        List<Long> unstarred = entries.stream()
+                                      .filter(entry -> !entry.email().isStarred())
+                                      .map(entry -> entry.email().getMailRemoteId())
+                                      .toList();
+        int failures = unstarred.isEmpty() ? 0 : emailBoxService.updateEmailStarredStatus(unstarred, username, MailFolder.INBOX, true, true);
+        entries.forEach(entry -> record(applied,
+                                        entry,
+                                        new AppliedAction(action.type(),
+                                                          failures == 0,
+                                                          failures == 0 ? null : ACTION_FAILED,
+                                                          null,
+                                                          null,
+                                                          null,
+                                                          null,
+                                                          entry.email().isStarred(),
+                                                          null,
+                                                          false)));
+      }
+      case FilterAction.NOTIFY -> {
+        run.notifications.merge(filter.getName(), entries.size(), Integer::sum);
+        // The mail a click on the notification opens: the most recent of the batch, the
+        // highest UID, a UID growing with each arrival in the inbox.
+        entries.stream()
+               .max(Comparator.comparing(entry -> entry.email().getMailRemoteId(), Comparator.nullsFirst(Comparator.naturalOrder())))
+               .ifPresent(entry -> run.notified.put(filter.getName(), entry));
+        entries.forEach(entry -> record(applied, entry, AppliedAction.applied(action.type())));
+      }
+      case FilterAction.MOVE_TO_FOLDER, FilterAction.MARK_JUNK, FilterAction.DELETE -> {
+        return file(username, action, entries, applied);
+      }
+      default -> entries.forEach(entry -> record(applied, entry, AppliedAction.failed(action.type(), ACTION_FAILED)));
+      }
+    } catch (IllegalAccessException | RuntimeException e) {
+      String reason = reasonOf(e);
+      LOG.warn("Mail filter {} of user {}: action {} failed on {} mail(s): {}", filter.getId(), username, action.type(), uids.size(), reason);
+      LOG.debug("Mail filter action failure", e);
+      entries.forEach(entry -> record(applied, entry, AppliedAction.failed(action.type(), reason)));
+    }
+    return false;
+  }
+
+  /**
+   * Files a batch of mails away: a move, a move to Junk or to Trash.
+   *
+   * @param username the owner
+   * @param action the filing action
+   * @param entries the batch
+   * @param applied the outcome, per mail UID
+   * @return true when every mail was filed
+   * @throws IllegalAccessException when the owner may not act on their mailbox
+   */
+  private boolean file(String username,
+                       FilterAction action,
+                       List<Entry> entries,
+                       Map<Long, List<AppliedAction>> applied) throws IllegalAccessException {
+    List<Long> uids = entries.stream().map(entry -> entry.email().getMailRemoteId()).toList();
+    String target;
+    int failures;
+    switch (action.type()) {
+    case FilterAction.MOVE_TO_FOLDER -> {
+      target = action.folderKey();
+      failures = emailBoxService.moveToFolder(uids, username, MailFolder.INBOX, target);
+    }
+    case FilterAction.MARK_JUNK -> {
+      target = MailFolder.JUNK;
+      failures = emailBoxService.markAsJunk(uids, username, MailFolder.INBOX);
+    }
+    default -> {
+      target = MailFolder.TRASH;
+      failures = emailBoxService.deleteEmail(uids, username, MailFolder.INBOX);
+    }
+    }
+    boolean all = failures == 0;
+    boolean none = failures >= entries.size();
+    String folder = target;
+    entries.forEach(entry -> record(applied,
+                                    entry,
+                                    new AppliedAction(action.type(),
+                                                      !none,
+                                                      all ? null : none ? ACTION_FAILED : PARTIAL,
+                                                      folder,
+                                                      MailFolder.INBOX,
+                                                      null,
+                                                      null,
+                                                      null,
+                                                      null,
+                                                      false)));
+    return all;
+  }
+
+  /**
+   * Undoes one action of a match.
+   *
+   * @param username the owner
+   * @param match the match
+   * @param action the action
+   * @param filedInto the folder the match filed the mail into and has not been undone,
+   *          or null
+   * @return true when undone; false for an action nothing undoes
+   * @throws IllegalAccessException when the owner may not act on their mailbox
+   */
+  private boolean undoOne(String username, EmailFilterMatch match, AppliedAction action, String filedInto) throws IllegalAccessException {
+    String headerId = match.getMailHeaderId();
+    switch (action.type()) {
+    case FilterAction.MOVE_TO_FOLDER -> {
+      int failures = emailBoxService.undoMove(List.of(headerId),
+                                              username,
+                                              action.folderKey(),
+                                              StringUtils.defaultIfBlank(action.originFolder(), MailFolder.INBOX));
+      return failures == 0;
+    }
+    case FilterAction.MARK_JUNK -> {
+      Email email = located(username, headerId, MailFolder.JUNK);
+      return emailBoxService.restoreFromJunk(List.of(email.getMailRemoteId()), username) == 0;
+    }
+    case FilterAction.DELETE -> {
+      Email email = located(username, headerId, MailFolder.TRASH);
+      return emailBoxService.restoreEmail(List.of(email.getMailRemoteId()), username) == 0;
+    }
+    case FilterAction.ADD_CATEGORY -> {
+      String folder = filedInto == null ? MailFolder.INBOX : filedInto;
+      Email email = located(username, headerId, folder);
+      emailBoxService.unlinkEmailsFromCategory(List.of(email.getMailRemoteId()), action.categoryId(), username, folder);
+      return true;
+    }
+    case FilterAction.MARK_READ -> {
+      if (!Boolean.FALSE.equals(action.wasRead())) {
+        return true;
+      }
+      String folder = filedInto == null ? MailFolder.INBOX : filedInto;
+      Email email = located(username, headerId, folder);
+      return emailBoxService.updateEmailReadStatus(List.of(email.getMailRemoteId()), username, folder, false, true) == 0;
+    }
+    case FilterAction.STAR -> {
+      if (!Boolean.FALSE.equals(action.wasStarred())) {
+        return true;
+      }
+      String folder = filedInto == null ? MailFolder.INBOX : filedInto;
+      Email email = located(username, headerId, folder);
+      return emailBoxService.updateEmailStarredStatus(List.of(email.getMailRemoteId()), username, folder, false, true) == 0;
+    }
+    default -> {
+      return false;
+    }
+    }
+  }
+
+  /**
+   * The owner's cached row of a mail in a folder.
+   *
+   * @param username the owner
+   * @param headerId the mail's Message-ID
+   * @param folder the folder
+   * @return the row
+   * @throws IllegalAccessException when the owner may not read their mailbox
+   * @throws IllegalArgumentException {@value #UNDO_NOT_YET} when the folder's cache holds
+   *           none yet
+   */
+  private Email located(String username, String headerId, String folder) throws IllegalAccessException {
+    Email email = emailBoxService.getOwnEmailByMailHeaderId(username, headerId, folder);
+    if (email == null || email.getMailRemoteId() == null) {
+      throw new IllegalArgumentException(UNDO_NOT_YET);
+    }
+    return email;
+  }
+
+  /**
+   * Makes the server hold the hops of every live hop rule of the owner's, with a rule's
+   * new version in place of its stored one.
+   *
+   * @param username the owner
+   * @param changed the rule written, live
+   * @param consent as for {@link #createFilter}
+   * @param republish as for {@link #createFilter}
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be written
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold a hop
+   */
+  private void publishHops(String username,
+                           EmailFilter changed,
+                           boolean consent,
+                           boolean republish) throws ObjectNotFoundException,
+                                              IllegalAccessException,
+                                              ServerRuleUnavailableException,
+                                              ServerRuleConflictException,
+                                              ServerRuleUnsupportedException {
+    List<HopRef> hops = hopsBut(username, changed.getId());
+    hops.add(hopOf(changed));
+    emailServerRuleService.reconcileHops(username, hops, republish, consent, true);
+  }
+
+  /**
+   * Removes a rule's hop from the server. A connector that holds no rules, or a deployment
+   * that switched server rules off, holds no hop to remove: the eXo half goes anyway.
+   *
+   * @param username the owner
+   * @param removed the rule whose hop goes
+   * @param republish as for {@link #createFilter}
+   * @throws ObjectNotFoundException when no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be written
+   * @throws ServerRuleConflictException when eXo's script changed outside eXo
+   */
+  private void removeHop(String username, EmailFilter removed, boolean republish) throws ObjectNotFoundException,
+                                                                                  IllegalAccessException,
+                                                                                  ServerRuleUnavailableException,
+                                                                                  ServerRuleConflictException {
+    try {
+      emailServerRuleService.reconcileHops(username, hopsBut(username, removed.getId()), republish, false, false);
+    } catch (ServerRuleUnsupportedException e) {
+      LOG.debug("No hop to remove for rule {} of user {}: {}", removed.getId(), username, e.getMessage());
+    } catch (ObjectNotFoundException e) {
+      if (!EmailServerRuleService.DISABLED.equals(e.getMessage())) {
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * The hops of the owner's live hop rules, but one.
+   *
+   * @param username the owner
+   * @param exceptId the rule left out, or null
+   * @return the hops, modifiable
+   */
+  private List<HopRef> hopsBut(String username, Long exceptId) {
+    List<HopRef> hops = new ArrayList<>();
+    for (EmailFilter filter : emailFilterStorage.getFilters(username)) {
+      if (!Objects.equals(filter.getId(), exceptId) && isLiveHop(filter) && isRunnable(filter)) {
+        hops.add(hopOf(filter));
+      }
+    }
+    return hops;
+  }
+
+  /**
+   * The server half of a hop rule: the rule's conditions, eXo's keyword as its one
+   * action, and never "stop".
+   *
+   * @param filter the rule, named
+   * @return the hop
+   */
+  static HopRef hopOf(EmailFilter filter) {
+    // Never "stop" on the server: the filters the server runs apply first, whatever the
+    // eXo filters' order, and an eXo filter's "stop" stops the eXo filters after it, which
+    // eXo applies after its sync -- a hop that stopped the server would reorder the list.
+    return new HopRef(filter.getServerRuleRef(),
+                      filter.getName(),
+                      filter.isMatchAll(),
+                      filter.getConditions(),
+                      filter.getTagKeyword(),
+                      false);
+  }
+
+  /**
+   * A hop rule with the names of its two halves, both from its id.
+   *
+   * @param filter the rule, with its id
+   * @return the rule, {@code SERVER_RULE_REF} and {@code TAG_KEYWORD} set
+   */
+  static EmailFilter withHopNames(EmailFilter filter) {
+    filter.setServerRuleRef(HopRef.REF_PREFIX + filter.getId());
+    filter.setTagKeyword(ServerRule.TAG_PREFIX + filter.getId());
+    return filter;
+  }
+
+  /**
+   * Whether a rule has a server half the server should hold.
+   *
+   * @param filter the rule
+   * @return true for an enabled hop rule with its names
+   */
+  private static boolean isLiveHop(EmailFilter filter) {
+    return EmailFilter.KIND_HOP.equals(filter.getKind()) && filter.isEnabled() && filter.getTagKeyword() != null
+        && filter.getServerRuleRef() != null;
+  }
+
+  /**
+   * The owner's enabled rules of a mailbox's scope that eXo can run, in order. A stored
+   * rule eXo cannot read any more is switched off, with the reason, once.
+   *
+   * @param username the owner
+   * @param context the mailbox
+   * @return the rules
+   */
+  private List<EmailFilter> runnableFilters(String username, FilterRunContext context) {
+    List<EmailFilter> runnable = new ArrayList<>();
+    for (EmailFilter filter : emailFilterStorage.getFilters(username)) {
+      if (!filter.isEnabled() || !context.mailboxScope().equals(filter.getMailboxScope())) {
+        continue;
+      }
+      if (isRunnable(filter)) {
+        runnable.add(filter);
+      } else {
+        LOG.warn("Mail filter {} of user {} cannot be read; it is switched off", filter.getId(), username);
+        emailFilterStorage.disableWithError(filter.getId(), username, UNREADABLE, now());
+      }
+    }
+    return runnable;
+  }
+
+  /**
+   * Whether a stored rule passes the validation a save applies, its folders and
+   * categories aside (those are checked by the mailbox when the action runs).
+   *
+   * @param filter the rule
+   * @return true when eXo can run it
+   */
+  private static boolean isRunnable(EmailFilter filter) {
+    try {
+      if (filter.getConditions() == null || filter.getActions() == null || filter.getActions().isEmpty()
+          || !EmailFilter.KINDS.contains(filter.getKind())
+          || EmailFilter.KIND_HOP.equals(filter.getKind()) && filter.getTagKeyword() == null) {
+        return false;
+      }
+      validatedConditions(filter.getConditions(), filter.getKind());
+      return true;
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Validates and normalises a rule as the form sent it: its name, kind, scope,
+   * conditions and actions. The ids, counters, names of the server half and the order
+   * are the service's, never the form's.
+   *
+   * @param username the owner, whose folders and categories the actions must name
+   * @param input the rule
+   * @return a new rule, normalised
+   * @throws IllegalArgumentException with a message code
+   */
+  EmailFilter validated(String username, EmailFilter input) {
+    if (input == null) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    String name = StringUtils.trimToEmpty(input.getName());
+    if (name.isEmpty() || name.length() > ServerRule.MAX_NAME_LENGTH || hasControl(name, false)) {
+      throw new IllegalArgumentException(ServerRule.INVALID_NAME);
+    }
+    String kind = StringUtils.defaultIfBlank(input.getKind(), EmailFilter.KIND_EXO).trim().toUpperCase(Locale.ROOT);
+    if (!EmailFilter.KINDS.contains(kind)) {
+      throw new IllegalArgumentException(INVALID_KIND);
+    }
+    if (input.getMailboxScope() != null && !EmailFilter.SCOPE_OWN.equals(input.getMailboxScope())) {
+      throw new IllegalArgumentException(INVALID_SCOPE);
+    }
+    List<FilterAction> actions = validatedActions(username, input.getActions());
+    EmailFilter filter = new EmailFilter();
+    filter.setName(name);
+    filter.setEnabled(input.isEnabled());
+    filter.setKind(kind);
+    filter.setMailboxScope(EmailFilter.SCOPE_OWN);
+    filter.setMatchAll(input.isMatchAll());
+    filter.setConditions(validatedConditions(input.getConditions(), kind));
+    filter.setActions(actions);
+    filter.setStopProcessing(input.isStopProcessing());
+    filter.setAgentNameId(actions.stream()
+                                 .filter(action -> FilterAction.AGENT.equals(action.type()))
+                                 .map(FilterAction::agentNameId)
+                                 .findFirst()
+                                 .orElse(null));
+    return filter;
+  }
+
+  /**
+   * Validates a rule's conditions against the vocabulary of its kind: a rule the server
+   * runs too ({@link EmailFilter#KIND_HOP}, {@link EmailFilter#KIND_SERVER}) takes the
+   * server's vocabulary only; one eXo alone runs takes the body and attachment fields
+   * too, and not the size, which eXo does not keep.
+   *
+   * @param conditions the conditions
+   * @param kind the rule's kind
+   * @return the conditions, normalised
+   * @throws IllegalArgumentException {@value ServerRule#INVALID_CONDITION}
+   */
+  static List<ServerRule.Condition> validatedConditions(List<ServerRule.Condition> conditions, String kind) {
+    if (conditions == null || conditions.isEmpty() || conditions.size() > ServerRule.MAX_CONDITIONS) {
+      throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+    }
+    boolean exoOnly = EmailFilter.KIND_EXO.equals(kind);
+    List<ServerRule.Condition> clean = new ArrayList<>();
+    for (ServerRule.Condition condition : conditions) {
+      if (condition == null || condition.field() == null || condition.operator() == null) {
+        throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+      }
+      String field = condition.field().trim().toUpperCase(Locale.ROOT);
+      String operator = condition.operator().trim().toUpperCase(Locale.ROOT);
+      if (EXO_ONLY_FIELDS.contains(field)) {
+        if (!exoOnly) {
+          throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+        }
+        clean.add(exoCondition(field, operator, condition.value()));
+      } else if (ServerRule.MESSAGE_SIZE.equals(field) && exoOnly) {
+        throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+      } else {
+        // The server's vocabulary, validated by the very rule a server write goes through.
+        ServerRule probe = new ServerRule(null,
+                                          "probe",
+                                          true,
+                                          true,
+                                          List.of(condition),
+                                          List.of(new ServerRule.Action(ServerRule.MARK_READ, null, null, null)),
+                                          false);
+        clean.add(probe.validated().conditions().get(0));
+      }
+    }
+    boolean onCategory = clean.stream().anyMatch(condition -> FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+    if (onCategory && clean.stream().anyMatch(condition -> ServerRule.HEADER.equals(condition.field()))) {
+      // A rule on a category runs when the mail gets it, long after the sync that alone
+      // reads a mail's headers: such a rule could never decide.
+      throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+    }
+    return clean;
+  }
+
+  /**
+   * Validates a condition only eXo evaluates.
+   *
+   * @param field the field, upper-case
+   * @param operator the operator, upper-case
+   * @param value the value
+   * @return the condition, normalised
+   * @throws IllegalArgumentException {@value ServerRule#INVALID_CONDITION}
+   */
+  private static ServerRule.Condition exoCondition(String field, String operator, String value) {
+    if (FilterConditionEvaluator.CATEGORY.equals(field)) {
+      // By the category's stable key: a rename, a translation or a re-import keeps it.
+      String key = StringUtils.trimToEmpty(value);
+      if (!ServerRule.EQUALS.equals(operator) || !EmailBoxService.DEFAULT_EMAIL_CATEGORY_NAME_IDS.contains(key)) {
+        throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+      }
+      return new ServerRule.Condition(field, operator, null, key);
+    }
+    if (FilterConditionEvaluator.HAS_ATTACHMENT.equals(field)) {
+      if (!ServerRule.IS_TRUE.equals(operator) && !ServerRule.IS_FALSE.equals(operator)) {
+        throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+      }
+      return new ServerRule.Condition(field, operator, null, null);
+    }
+    String text = StringUtils.trimToEmpty(value);
+    if (!ServerRule.TEXT_OPERATORS.contains(operator) || text.isEmpty() || text.length() > ServerRule.MAX_VALUE_LENGTH
+        || hasControl(text, false)) {
+      throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+    }
+    return new ServerRule.Condition(field, operator, null, text);
+  }
+
+  /**
+   * Validates a rule's actions: known types, each at most once, one filing at most, the
+   * folder one of the owner's own mirrored folders or Archive, the category one of the
+   * owner's, the assistant named and its instruction bounded. Every post-action of a rule
+   * with an assistant waits for it.
+   *
+   * @param username the owner
+   * @param actions the actions
+   * @return the actions, normalised
+   * @throws IllegalArgumentException with a message code
+   */
+  private List<FilterAction> validatedActions(String username, List<FilterAction> actions) {
+    if (actions == null || actions.isEmpty()) {
+      throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+    }
+    Set<String> types = new LinkedHashSet<>();
+    List<FilterAction> clean = new ArrayList<>();
+    for (FilterAction action : actions) {
+      String type = action == null || action.type() == null ? null : action.type().trim().toUpperCase(Locale.ROOT);
+      if (type == null || !FilterAction.TYPES.contains(type) || !types.add(type)) {
+        throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+      }
+      if (FilterAction.FORWARD.equals(type)) {
+        // eXo never forwards a mail itself: only the mail server does, as it arrives.
+        throw new IllegalArgumentException(EmailForwardingService.SERVER_ONLY);
+      }
+      clean.add(switch (type) {
+      case FilterAction.MOVE_TO_FOLDER -> new FilterAction(type, ownFolder(username, action.folderKey()), null, null, null, null, null);
+      case FilterAction.ADD_CATEGORY -> new FilterAction(type, null, ownCategory(username, action.categoryId()), null, null, null, null);
+      case FilterAction.AGENT -> agentAction(action);
+      default -> new FilterAction(type, null, null, null, null, null, null);
+      });
+    }
+    if (clean.stream().filter(FilterAction::files).count() > 1) {
+      throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+    }
+    String when = types.contains(FilterAction.AGENT) ? FilterAction.AFTER_AGENT : FilterAction.IMMEDIATE;
+    return clean.stream().map(action -> FilterAction.AGENT.equals(action.type()) ? action : action.withWhen(when)).toList();
+  }
+
+  /**
+   * Validates the assistant action.
+   *
+   * @param action the action
+   * @return the action, normalised
+   * @throws IllegalArgumentException {@value #INVALID_AGENT}
+   */
+  private static FilterAction agentAction(FilterAction action) {
+    String agent = StringUtils.trimToEmpty(action.agentNameId());
+    String instruction = StringUtils.trimToEmpty(action.instruction());
+    if (!AGENT_NAME.matcher(agent).matches() || instruction.length() > MAX_INSTRUCTION_LENGTH || hasControl(instruction, true)) {
+      throw new IllegalArgumentException(INVALID_AGENT);
+    }
+    List<String> outputs = new ArrayList<>();
+    for (String output : action.outputs()) {
+      String clean = output == null ? null : output.trim().toUpperCase(Locale.ROOT);
+      if (!FilterAction.AGENT_OUTPUTS.contains(clean)) {
+        throw new IllegalArgumentException(INVALID_AGENT);
+      }
+      if (!outputs.contains(clean)) {
+        outputs.add(clean);
+      }
+    }
+    return new FilterAction(FilterAction.AGENT, null, null, agent, instruction, outputs, null, null, action.suggestActions());
+  }
+
+  /**
+   * The key of a folder a rule may file into: one of the owner's own custom folders they
+   * mirror, or Archive -- never a shared mailbox's folder.
+   *
+   * @param username the owner
+   * @param key the folder's eXo key
+   * @return the key
+   * @throws IllegalArgumentException {@code emailConnector.folder.unknown} or
+   *           {@code emailConnector.folder.notMirrored}
+   */
+  private String ownFolder(String username, String key) {
+    String folderKey = StringUtils.trimToNull(key);
+    if (!MailFolder.ARCHIVE.equals(folderKey)) {
+      requireMirroredCustomFolder(username, folderKey);
+    }
+    return folderKey;
+  }
+
+  /**
+   * Checks that a key names one of the owner's own custom folders that they mirror.
+   *
+   * @param username the owner
+   * @param folderKey the folder's eXo key, trimmed
+   * @throws IllegalArgumentException {@code emailConnector.folder.unknown} or
+   *           {@code emailConnector.folder.notMirrored}
+   */
+  private void requireMirroredCustomFolder(String username, String folderKey) {
+    if (folderKey == null || !MailFolder.isCustom(folderKey)) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    EmailFolder folder = emailFolderService.getFolderByKey(username, folderKey);
+    if (folder.isMissing() || folder.getDelegationId() != null) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    if (!folder.isSyncEnabled()) {
+      throw new IllegalArgumentException(EmailServerRuleService.FOLDER_NOT_MIRRORED);
+    }
+  }
+
+  /**
+   * A category a rule may put on a mail: one of the owner's available ones.
+   *
+   * @param username the owner
+   * @param categoryId the category
+   * @return the id
+   * @throws IllegalArgumentException {@value #UNKNOWN_CATEGORY}
+   */
+  private Long ownCategory(String username, Long categoryId) {
+    if (categoryId == null) {
+      throw new IllegalArgumentException(UNKNOWN_CATEGORY);
+    }
+    List<EmailCategory> available = emailBoxService.getAvailableEmailCategories(username, Locale.ENGLISH);
+    if (available == null || available.stream().noneMatch(category -> category.getId() == categoryId)) {
+      throw new IllegalArgumentException(UNKNOWN_CATEGORY);
+    }
+    return categoryId;
+  }
+
+  /**
+   * Checks, in order, that the feature is on, the request is about the caller's own
+   * mailbox, a mailbox is connected, and the caller may still use its connector.
+   *
+   * @param username the caller
+   * @param delegationId the share the request was made from; any value is refused
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use the connector
+   */
+  void checkOwnMailbox(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
+    if (!isEnabled()) {
+      throw new ObjectNotFoundException(DISABLED);
+    }
+    if (delegationId != null) {
+      throw new IllegalAccessException(EmailServerRuleService.OWN_MAILBOX_ONLY);
+    }
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    if (setting == null || StringUtils.isBlank(setting.getEmailConnectorId())) {
+      throw new ObjectNotFoundException(EmailServerRuleService.NOT_CONNECTED);
+    }
+    if (!userEmailSettingService.canConnect(Long.parseLong(setting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(EmailServerRuleService.NOT_ALLOWED);
+    }
+  }
+
+  /**
+   * One rule of the caller's.
+   *
+   * @param username the caller
+   * @param id the rule
+   * @return the rule
+   * @throws ObjectNotFoundException {@value #NOT_FOUND} when it is not the caller's
+   */
+  private EmailFilter ownFilter(String username, long id) throws ObjectNotFoundException {
+    return emailFilterStorage.getFilter(id, username).orElseThrow(() -> new ObjectNotFoundException(NOT_FOUND));
+  }
+
+  /**
+   * One match of the caller's.
+   *
+   * @param username the caller
+   * @param id the match
+   * @return the match
+   * @throws ObjectNotFoundException {@value #MATCH_NOT_FOUND} when it is not the caller's
+   */
+  private EmailFilterMatch ownMatch(String username, long id) throws ObjectNotFoundException {
+    return emailFilterStorage.getMatch(id, username).orElseThrow(() -> new ObjectNotFoundException(MATCH_NOT_FOUND));
+  }
+
+  /**
+   * A match with its rule's name.
+   *
+   * @param username the owner
+   * @param match the match
+   * @return the match
+   */
+  private EmailFilterMatch named(String username, EmailFilterMatch match) {
+    return named(username, List.of(match)).get(0);
+  }
+
+  /**
+   * Matches with their rules' names; a rule deleted since leaves its name null.
+   *
+   * @param username the owner
+   * @param matches the matches
+   * @return the matches
+   */
+  private List<EmailFilterMatch> named(String username, List<EmailFilterMatch> matches) {
+    Map<Long, String> names = new HashMap<>();
+    emailFilterStorage.getFilters(username).forEach(filter -> names.put(filter.getId(), filter.getName()));
+    matches.forEach(match -> match.setFilterName(names.get(match.getFilterId())));
+    return matches;
+  }
+
+  /**
+   * A cached mail as the conditions read it, loading its whole row only when a condition
+   * needs its recipients or body; its categories read through the keys given.
+   *
+   * @param username the owner
+   * @param email the listed row
+   * @param categoryKeys the stable keys of the default categories by their ids
+   * @return the mail
+   */
+  private EmailFilterMail cachedMail(String username, Email email, Map<Long, String> categoryKeys) {
+    return new EmailFilterMail(email,
+                               () -> emailBoxService.getEmailById(email.getId(), username),
+                               Set.of(),
+                               null,
+                               null,
+                               categoryKeys::get);
+  }
+
+  /**
+   * The stable keys of the default categories by their ids, when a rule's conditions
+   * read a category; none otherwise, and no settings read.
+   *
+   * @param conditions the rule's conditions
+   * @return {@code id -> key}
+   */
+  private Map<Long, String> categoryKeys(List<ServerRule.Condition> conditions) {
+    boolean readsCategory = conditions != null
+        && conditions.stream().anyMatch(condition -> FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+    return readsCategory ? emailBoxService.getDefaultEmailCategoryNameIds() : Map.of();
+  }
+
+  /**
+   * Whether a rule has a condition on a category: it runs when a mail gets one, never at
+   * sync.
+   *
+   * @param filter the rule
+   * @return true with a category condition
+   */
+  static boolean onCategory(EmailFilter filter) {
+    return filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+  }
+
+  /**
+   * Whether adding a category to a mail runs a rule: an eXo rule with a condition on that
+   * very category.
+   *
+   * @param filter the rule
+   * @param key the category's stable key
+   * @return true when the rule is on that category
+   */
+  static boolean onCategory(EmailFilter filter, String key) {
+    return EmailFilter.KIND_EXO.equals(filter.getKind()) && filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && FilterConditionEvaluator.CATEGORY.equals(condition.field())
+                     && key.equals(condition.value()));
+  }
+
+  /**
+   * Asks for the assistant on the given matches: a request, answered by the glue that
+   * declared itself as an {@link EmailFilterAgentHandler}. Only called when one did: a
+   * deployment without one never queues a match (see {@link #agentStatus(Run)}).
+   *
+   * @param username the owner
+   * @param matchIds the matches queued
+   */
+  private void requestAgent(String username, List<Long> matchIds) {
+    if (matchIds.isEmpty()) {
+      return;
+    }
+    try {
+      listenerService.broadcast(EmailConnectorUtils.FILTER_AGENT_REQUESTED, username, List.copyOf(matchIds));
+    } catch (Exception e) {
+      LOG.warn("The assistant could not be asked for {} mail filter match(es) of user {}", matchIds.size(), username, e);
+    }
+  }
+
+  /**
+   * Deletes the owner's matches past the retention.
+   *
+   * @param username the owner
+   */
+  private void prune(String username) {
+    int days = intProperty(RETENTION_PROPERTY, 90);
+    if (days > 0) {
+      emailFilterStorage.pruneMatches(username, Date.from(clock.instant().minus(days, ChronoUnit.DAYS)));
+    }
+  }
+
+  /**
+   * Whether the assistant may be queued on one more match of the owner's: switched on,
+   * run by something on this deployment, on a mail that is not spam, and under the
+   * mailbox's caps. A match skipped for spam or a cap carries the reason as its last
+   * error ({@value #SPAM}, {@value #PENDING_LIMIT}, {@value #DAILY_LIMIT}).
+   *
+   * @param run the pass
+   * @param match the new match, whose reason is set when skipped
+   * @param mail the mail, whose spam marks the sync read
+   * @return the status of the new match: pending, or skipped
+   */
+  private String agentStatus(Run run, EmailFilterMatch match, FilterMail mail) {
+    if (!Boolean.parseBoolean(System.getProperty(AGENT_ENABLED_PROPERTY, "true").trim())) {
+      return EmailFilterMatch.AGENT_SKIPPED_DISABLED;
+    }
+    if (!isAgentHandled()) {
+      // Nothing would answer the request: the AI add-on is not installed, or its profile
+      // is off. Skipped as when the assistant is switched off, so the rule's other
+      // actions run in this pass instead of waiting for ever.
+      return EmailFilterMatch.AGENT_SKIPPED_DISABLED;
+    }
+    if (SpamSignals.isFlagged(mail)) {
+      match.setLastError(SPAM);
+      return EmailFilterMatch.AGENT_SKIPPED_SPAM;
+    }
+    if (run.pendingBefore < 0) {
+      run.pendingBefore = emailFilterStorage.countByAgentStatus(run.username, EmailFilterMatch.AGENT_PENDING);
+      run.runsToday = countRunsToday(run.username);
+    }
+    long queuedNow = run.queued.size();
+    if (run.pendingBefore + queuedNow >= intProperty(MAX_PENDING_PROPERTY, DEFAULT_MAX_PENDING)) {
+      match.setLastError(PENDING_LIMIT);
+      return EmailFilterMatch.AGENT_SKIPPED_CAP;
+    }
+    // The waiting mails run today too: they are counted with the matches run today, so a
+    // mail is never queued only to be skipped by the handler. Each once: a match given
+    // back waiting after a run today is among the waiting, not among those run.
+    if (run.runsToday + run.pendingBefore + queuedNow >= dailyCap()) {
+      match.setLastError(DAILY_LIMIT);
+      return EmailFilterMatch.AGENT_SKIPPED_CAP;
+    }
+    return EmailFilterMatch.AGENT_PENDING;
+  }
+
+  /**
+   * How many of the owner's matches the assistant ran on today and that no longer wait
+   * for it: the matches holding a run's conversation, written by the assistant since the
+   * start of the UTC day, running, done or failed. The ones given back {@code PENDING}
+   * are left out: the sync counts them with the waiting ones.
+   *
+   * @param username the owner
+   * @return the count
+   */
+  private long countRunsToday(String username) {
+    Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
+    return emailFilterStorage.countAgentRunsSince(username, RAN_STATUSES, Date.from(startOfDay));
+  }
+
+  /**
+   * The mailbox's daily cap on the matches the assistant runs on ({@value #DAILY_CAP_PROPERTY}).
+   *
+   * @return the cap, 0 or more
+   */
+  static int dailyCap() {
+    return Math.max(0, intProperty(DAILY_CAP_PROPERTY, DEFAULT_DAILY_CAP));
+  }
+
+  /**
+   * An integer system property.
+   *
+   * @param name the property
+   * @param defaultValue its default
+   * @return the value, the default when unset or unreadable
+   */
+  private static int intProperty(String name, int defaultValue) {
+    try {
+      return Integer.parseInt(System.getProperty(name, String.valueOf(defaultValue)).trim());
+    } catch (NumberFormatException e) {
+      return defaultValue;
+    }
+  }
+
+  /**
+   * Whether eXo rules are switched on.
+   *
+   * @return the deployment's switch
+   */
+  private static boolean isEnabled() {
+    return Boolean.parseBoolean(System.getProperty(ENABLED_PROPERTY, "true").trim());
+  }
+
+  /**
+   * The message code of a refusal, or the generic one.
+   *
+   * @param e the refusal
+   * @return a code
+   */
+  private static String reasonOf(Exception e) {
+    String message = e.getMessage();
+    return message != null && message.startsWith("emailConnector.") && message.length() < 200 ? message : ACTION_FAILED;
+  }
+
+  /**
+   * Records an action's outcome for one mail.
+   *
+   * @param applied the outcomes, per UID
+   * @param entry the mail
+   * @param action the outcome
+   */
+  private static void record(Map<Long, List<AppliedAction>> applied, Entry entry, AppliedAction action) {
+    applied.computeIfAbsent(entry.email().getMailRemoteId(), key -> new ArrayList<>()).add(action);
+  }
+
+  /**
+   * Whether a text holds a control character, a line break allowed or not.
+   *
+   * @param text the text
+   * @param lineBreaks whether line breaks and tabs are allowed
+   * @return true when one is found
+   */
+  private static boolean hasControl(String text, boolean lineBreaks) {
+    return text.chars()
+               .anyMatch(c -> (Character.isISOControl(c) && !(lineBreaks && (c == '\n' || c == '\r' || c == '\t')))
+                   || Character.getType(c) == Character.LINE_SEPARATOR || Character.getType(c) == Character.PARAGRAPH_SEPARATOR);
+  }
+
+  /**
+   * Now.
+   *
+   * @return the date
+   */
+  private Date now() {
+    return Date.from(clock.instant());
+  }
+
+  /**
+   * One match and the mail it matched.
+   *
+   * @param match the match
+   * @param email the mail, as cached
+   */
+  private record Entry(EmailFilterMatch match, Email email) {
+  }
+
+  /**
+   * One pass of rules over some mails: what was matched, what must be applied, and what
+   * must be told.
+   */
+  private final class Run {
+
+    /** The owner. */
+    private final String                        username;
+
+    /** The pass's date. */
+    private final Date                          now;
+
+    /** True for the sync's pass over new mail, false for a pass over cached mail. */
+    private final boolean                       sync;
+
+    /** Whether the assistant may be queued in this pass. */
+    private final boolean                       withAgent;
+
+    /** The matches whose post-actions apply in this pass, per rule, in rule order. */
+    private final Map<EmailFilter, List<Entry>> immediate     = new LinkedHashMap<>();
+
+    /** The new matches per rule, for the counters. */
+    private final Map<Long, Long>               counts        = new LinkedHashMap<>();
+
+    /** How many mails each notifying rule matched, by rule name. */
+    private final Map<String, Integer>          notifications = new LinkedHashMap<>();
+
+    /** The mail each notifying rule's notification opens, by rule name. */
+    private final Map<String, Entry>            notified      = new HashMap<>();
+
+    /** The matches queued for the assistant. */
+    private final List<Long>                    queued        = new ArrayList<>();
+
+    /** The UIDs a rule filed away. */
+    private final Set<Long>                     filed         = new HashSet<>();
+
+    /** How many new matches. */
+    private int                                 matched;
+
+    /** How many matches a rule had handled before. */
+    private int                                 alreadyHandled;
+
+    /** How many mails a condition could not decide. */
+    private int                                 notApplicable;
+
+    /** How many of the assistant's runs the pass offered, for the one-off cap. */
+    private int                                 agentOffered;
+
+    /** The owner's pending matches before the pass; -1 until read. */
+    private long                                pendingBefore = -1;
+
+    /** The owner's assistant runs today before the pass. */
+    private long                                runsToday;
+
+    /**
+     * A pass.
+     *
+     * @param username the owner
+     * @param now the pass's date
+     * @param sync true for the sync's pass
+     * @param withAgent whether the assistant may be queued
+     */
+    private Run(String username, Date now, boolean sync, boolean withAgent) {
+      this.username = username;
+      this.now = now;
+      this.sync = sync;
+      this.withAgent = withAgent;
+    }
+
+    /**
+     * Takes a new match into the pass: queued for the assistant, its post-actions waiting
+     * for it, or its post-actions applied in this pass.
+     *
+     * @param filter the rule
+     * @param match the match, stored
+     * @param mail the mail, with the marks the sync read on it
+     */
+    private void add(EmailFilter filter, EmailFilterMatch match, EmailFilterMail mail) {
+      Email email = mail.email();
+      matched++;
+      counts.merge(filter.getId(), 1L, Long::sum);
+      if (filter.hasAgent() && withAgent && (sync || agentOffered++ < intProperty(RETROACTIVE_MAX_PROPERTY, 50))) {
+        String status = agentStatus(this, match, mail);
+        match.setAgentStatus(status);
+        if (EmailFilterMatch.AGENT_PENDING.equals(status)) {
+          match.setPostActionsState(EmailFilterMatch.POST_PENDING_AGENT);
+          queued.add(emailFilterStorage.updateMatch(match, username).getId());
+          return;
+        }
+      }
+      immediate.computeIfAbsent(filter, key -> new ArrayList<>()).add(new Entry(match, email));
+    }
+  }
+}

@@ -52,7 +52,7 @@ export const SCHEDULED_PAGE_SIZE = 20;
  * have gone, and are said as "Couldn't confirm it was sent".
  */
 export const NOT_SENT_REASONS = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE',
-  'DISCONNECTED', 'REFUSED', 'INTERNAL'];
+  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED'];
 
 /**
  * Turns a refused response into an Error carrying the server's message code, when it
@@ -108,6 +108,40 @@ export function scheduleDraft(draftLocalId, draft, scheduledDate, timeZone) {
     method: 'POST',
     body: JSON.stringify({ draft, scheduledDate, timeZone }),
   }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when scheduling the email')));
+}
+
+/**
+ * Sends a draft with an Undo (POST /drafts/{id}/send-undoable, EXO-90837): the server
+ * saves the composer's text onto the draft, freezes it, and holds it for the user's Undo
+ * wait before sending it. The draft is the composer's text, as a schedule carries it.
+ *
+ * @param {String} draftLocalId the draft's local id
+ * @param {Object} draft the composed draft, as scheduleDraft sends it
+ * @returns {Promise<Object>} {draftLocalId, sendDate, delaySeconds}
+ */
+export function sendDraftUndoable(draftLocalId, draft) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send-undoable`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft),
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when sending the email')));
+}
+
+/**
+ * Takes back a mail sent with an Undo while it has not started to go
+ * (POST /drafts/{id}/undo-send, EXO-90837).
+ *
+ * @param {String} draftLocalId the draft's local id
+ * @returns {Promise<Object>} the draft as it was frozen, for the composer to reopen
+ */
+export function undoSend(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/undo-send`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when undoing the send')));
 }
 
 /**
@@ -258,7 +292,8 @@ export function formatScheduledTime(scheduledDate) {
  */
 export function scheduledStateLine(scheduled) {
   const status = scheduled?.status;
-  if (status === 'SENDING') {
+  // A mail sent with an Undo (EXO-90837) is on its way as far as its sender is concerned.
+  if (status === 'SENDING' || status === 'HELD') {
     return { key: 'emailConnector.mailBox.scheduled.sending', color: 'primary--text' };
   }
   if (status === 'UNCERTAIN') {
@@ -284,9 +319,11 @@ export function scheduledStateLine(scheduled) {
  * @returns {Array<String>} the action names
  */
 export function scheduledActions(scheduled) {
+  // HELD, sent with an Undo (EXO-90837): its own snackbar offers the one action it has.
   switch (scheduled?.status) {
   case 'SENDING':
   case 'SENT':
+  case 'HELD':
     return [];
   case 'FAILED':
     return ['retry', 'edit', 'reschedule', 'moveToDrafts', 'discard'];
@@ -295,6 +332,35 @@ export function scheduledActions(scheduled) {
   default:
     return ['edit', 'reschedule', 'sendNow', 'cancel', 'discard'];
   }
+}
+
+/**
+ * The line naming the shared mailbox a draft or a scheduled mail was written in
+ * (EXO-90595), from the mailbox the server named: "From Anne's mailbox", with "no longer
+ * shared with you" once the share has ended; nothing for the user's own mailbox. In the
+ * owner's name, the line says which (EXO-90584): "From Anne's mailbox, on their behalf",
+ * "..., as them". One rule for the Drafts folder and the Scheduled view.
+ *
+ * @param {Object} mailbox the mailbox ({ownerFullName, ownerMailbox, shared}), may be null
+ * @param {Object} vm the component, for $t
+ * @param {String} sendMode the name the mail goes out in: ON_BEHALF, AS, or anything else
+ *          for the user's own
+ * @returns {String} the line, or an empty string
+ */
+export function draftMailboxLabel(mailbox, vm, sendMode) {
+  if (!mailbox) {
+    return '';
+  }
+  const owner = mailbox.ownerFullName || mailbox.ownerMailbox;
+  if (!owner) {
+    return vm.$t('emailConnector.mailBox.scheduled.mailbox.unknown');
+  }
+  if (!mailbox.shared) {
+    return vm.$t('emailConnector.mailBox.scheduled.mailbox.unshared', { 0: owner });
+  }
+  const inOwnersName = sendMode === 'ON_BEHALF' || sendMode === 'AS';
+  return vm.$t(inOwnersName ? `emailConnector.mailBox.scheduled.mailbox.${sendMode}` : 'emailConnector.mailBox.scheduled.mailbox',
+    { 0: owner });
 }
 
 /**

@@ -44,8 +44,12 @@ import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 @Component
 public class EmailScheduledSendStorage {
 
-  /** The statuses the owner never sees listed nor counted against the limit. */
-  public static final Set<ScheduledSendStatus> NOT_LISTED        = Set.of(ScheduledSendStatus.SENT);
+  /**
+   * The statuses the owner never sees listed nor counted against the limit: a mail sent,
+   * and a mail sent with an Undo still in its wait (EXO-90837), which the Undo snackbar
+   * speaks for.
+   */
+  public static final Set<ScheduledSendStatus> NOT_LISTED        = Set.of(ScheduledSendStatus.SENT, ScheduledSendStatus.HELD);
 
   /** The statuses that need the owner: the view's warning. */
   public static final Set<ScheduledSendStatus> ATTENTION         = Set.of(ScheduledSendStatus.FAILED,
@@ -63,6 +67,19 @@ public class EmailScheduledSendStorage {
   /** The statuses a cancel may not remove: the mail is going, or gone. */
   public static final Set<ScheduledSendStatus> NOT_CANCELLABLE   = Set.of(ScheduledSendStatus.SENDING,
                                                                           ScheduledSendStatus.SENT);
+
+  /**
+   * The statuses an Undo may not take back (EXO-90837): the mail is going, gone, or may
+   * have gone. An UNCERTAIN mail is the owner's to decide in the "Scheduled" view, not
+   * an Undo's to turn back into a draft.
+   */
+  public static final Set<ScheduledSendStatus> NOT_UNDOABLE      = Set.of(ScheduledSendStatus.SENDING,
+                                                                          ScheduledSendStatus.SENT,
+                                                                          ScheduledSendStatus.UNCERTAIN);
+
+  /** The states a row waits in before any run claims it. */
+  public static final Set<ScheduledSendStatus> WAITING           = Set.of(ScheduledSendStatus.SCHEDULED,
+                                                                          ScheduledSendStatus.HELD);
 
   // An id no row has: the NOT IN of the recovery statements must never be given an
   // empty list, which some vendors reject as SQL.
@@ -143,12 +160,27 @@ public class EmailScheduledSendStorage {
   }
 
   /**
-   * Removes one row by id: the compensation of a scheduling that could not complete.
+   * Removes one row by id while it still waits, SCHEDULED or HELD: the compensation of
+   * a scheduling that could not complete, which never takes a claimed row away from the
+   * run sending it.
    *
    * @param id the row id
+   * @return true when removed; false when it was claimed meanwhile, or is gone
    */
-  public void delete(long id) {
-    emailScheduledSendDAO.deleteById(id);
+  public boolean deleteWaiting(long id) {
+    return emailScheduledSendDAO.deleteWaiting(id, WAITING) == 1;
+  }
+
+  /**
+   * Starts the Undo wait of a held mail once its draft is frozen (EXO-90837).
+   *
+   * @param id the row id
+   * @param due the end of the wait
+   * @param now the write instant
+   * @return true when started; false when the row is gone or no longer held
+   */
+  public boolean startHeldWait(long id, Date due, Date now) {
+    return emailScheduledSendDAO.startHeldWait(id, due, now, ScheduledSendStatus.HELD) == 1;
   }
 
   /**
@@ -207,6 +239,21 @@ public class EmailScheduledSendStorage {
   }
 
   /**
+   * HELD rows whose Undo wait is over (EXO-90837), the longest waiting first: what the
+   * node that held a mail would have sent, had it not stopped or missed its timer.
+   *
+   * @param now the reference instant
+   * @param limit the bound; nothing is read below one
+   * @return the due ids
+   */
+  public List<Long> findDueHeld(Date now, int limit) {
+    if (limit < 1) {
+      return List.of();
+    }
+    return emailScheduledSendDAO.findDueIds(ScheduledSendStatus.HELD, now, PageRequest.of(0, limit));
+  }
+
+  /**
    * UNCERTAIN rows whose Sent-folder check is due.
    *
    * @param now the reference instant
@@ -243,7 +290,22 @@ public class EmailScheduledSendStorage {
    * @return true when the caller now holds the claim
    */
   public boolean claim(long id, String node, Date now) {
-    return emailScheduledSendDAO.claim(id, node, now, ScheduledSendStatus.SCHEDULED, ScheduledSendStatus.SENDING) == 1;
+    return claim(id, node, now, ScheduledSendStatus.SCHEDULED);
+  }
+
+  /**
+   * The claim on a due row waiting in a given state: SCHEDULED, or HELD for a mail sent
+   * with an Undo (EXO-90837). The same conditional statement, so of every node's
+   * dispatcher, the holding node's timer and the sender's Undo, exactly one lands.
+   *
+   * @param id the row id
+   * @param node the claiming node
+   * @param now the claim instant, a whole second
+   * @param from the state the row waits in
+   * @return true when the caller now holds the claim
+   */
+  public boolean claim(long id, String node, Date now, ScheduledSendStatus from) {
+    return emailScheduledSendDAO.claim(id, node, now, from, ScheduledSendStatus.SENDING) == 1;
   }
 
   /**
@@ -302,6 +364,18 @@ public class EmailScheduledSendStorage {
    */
   public boolean cancel(String userId, String draftLocalId) {
     return emailScheduledSendDAO.cancel(userId, draftLocalId, NOT_CANCELLABLE) == 1;
+  }
+
+  /**
+   * The Undo of a mail sent with one (EXO-90837): removes its schedule unless it is
+   * going, gone or may have gone, which puts its draft back in Drafts.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @return true when removed
+   */
+  public boolean cancelUndoable(String userId, String draftLocalId) {
+    return emailScheduledSendDAO.cancel(userId, draftLocalId, NOT_UNDOABLE) == 1;
   }
 
   /**

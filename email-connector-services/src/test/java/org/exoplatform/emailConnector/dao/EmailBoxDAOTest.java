@@ -37,6 +37,7 @@ import org.springframework.test.context.TestPropertySource;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 
 /**
  * Real-database coverage of the cached message's IS_HTML column, on in-memory HSQLDB.
@@ -217,6 +218,28 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * EXO-90555 -- the (UID, id) pairs a search result page is decorated with, run on
+   * HSQLDB: the cached UIDs of the page in THAT folder of THAT user, each with its own
+   * row's id -- never the row of another folder numbered alike, never another user's.
+   */
+  @Test
+  void theCachedIdsOfAPageAreScopedToTheirFolderAndOwner() {
+    Long inInbox = persistEmail(8L, MailFolder.INBOX, "b", Boolean.FALSE);
+    persistEmail(8L, MailFolder.SENT, "b", Boolean.FALSE);
+    EmailBoxEntity someoneElses = entityManager.find(EmailBoxEntity.class, persistEmail(9L, MailFolder.INBOX, "b", Boolean.FALSE));
+    someoneElses.setUserId("bob");
+    entityManager.persist(someoneElses);
+    entityManager.flush();
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findCachedIdsByMailRemoteIds(USERNAME, MailFolder.INBOX, List.of(8L, 9L, 10L));
+
+    assertEquals(1, rows.size());
+    assertEquals(8L, rows.get(0)[0]);
+    assertEquals(inInbox, rows.get(0)[1]);
+  }
+
+  /**
    * The sweep's query, run on HSQLDB: the distinct custom and
    * shared-mailbox folder keys of one user's cache, never a built-in folder, never
    * somebody else's.
@@ -254,6 +277,50 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * The listed read of the "Suggestions" view (EXO-90851), run by the engine: the owner's
+   * copies carrying one of the Message-IDs, outside the excluded folders, never a draft,
+   * newest first, as the nine columns it projects -- the sender column as stored.
+   */
+  @Test
+  void theListedReadByMessageIdsIsScopedNewestFirstAndLeavesOutExcludedFoldersAndDrafts() {
+    Long older = persistEmailCarrying(30L, MailFolder.INBOX, "<a@host>");
+    Long newer = persistEmailCarrying(31L, "CUSTOM:1", "<b@host>");
+    persistEmailCarrying(32L, MailFolder.TRASH, "<a@host>");
+    persistEmailCarrying(33L, MailFolder.INBOX, "<other@host>");
+    Long draft = persistEmailCarrying(34L, "CUSTOM:2", "<b@host>");
+    Long bobs = persistEmailCarrying(35L, MailFolder.INBOX, "<a@host>");
+    EmailBoxEntity olderRow = entityManager.find(EmailBoxEntity.class, older);
+    olderRow.setReceivedDate(new Date(1_000L));
+    olderRow.setSubject("Older");
+    olderRow.setRead(true);
+    EmailBoxEntity newerRow = entityManager.find(EmailBoxEntity.class, newer);
+    newerRow.setReceivedDate(new Date(2_000L));
+    newerRow.setStarred(true);
+    entityManager.find(EmailBoxEntity.class, draft).setDraftLocalId("draft-1");
+    entityManager.find(EmailBoxEntity.class, bobs).setUserId("bob");
+    entityManager.flush();
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findListedByUserIdAndMailHeaderIds(USERNAME,
+                                                                         List.of("<a@host>", "<b@host>"),
+                                                                         List.of(MailFolder.TRASH, MailFolder.JUNK));
+
+    assertEquals(List.of(newer, older), rows.stream().map(row -> (Long) row[0]).toList(),
+                 "the owner's two listable copies, newest first; Trash, the draft, another Message-ID and bob's left out");
+    Object[] olderProjected = rows.get(1);
+    assertEquals(MailFolder.INBOX, olderProjected[1]);
+    assertEquals("<a@host>", olderProjected[2]);
+    assertEquals(30L, olderProjected[3]);
+    assertEquals("Older", olderProjected[4]);
+    assertEquals("Bob Smith,bob@example.org", olderProjected[5]);
+    assertEquals(1_000L, ((Date) olderProjected[6]).getTime());
+    assertEquals(Boolean.TRUE, olderProjected[7]);
+    assertEquals(Boolean.FALSE, olderProjected[8]);
+    assertEquals(Boolean.FALSE, rows.get(0)[7]);
+    assertEquals(Boolean.TRUE, rows.get(0)[8]);
+  }
+
+  /**
    * The slice read of a consumer working through new mail (EXO-90418): UIDs strictly
    * between the bounds, highest first, scoped to the owner and the folder, bounded by
    * the page; and the folder's highest UID, null on an empty folder.
@@ -274,6 +341,110 @@ public class EmailBoxDAOTest {
     assertEquals(11L, emailBoxDAO.findMaxUid(USERNAME, MailFolder.INBOX));
     assertEquals(8L, emailBoxDAO.findMaxUid(USERNAME, MailFolder.SENT));
     assertNull(emailBoxDAO.findMaxUid(USERNAME, MailFolder.ARCHIVE));
+  }
+
+  /**
+   * The "/mail" link picker's read (EXO-90715): the owner's rows only, matched on
+   * the subject or on either half of the sender, case-insensitively, newest first,
+   * with Drafts, Trash and Junk never offered.
+   */
+  @Test
+  void theLinkPickerReadIsOwnedAndLeavesOutDraftsTrashAndJunk() {
+    long oldest = persistLinkable(MailFolder.INBOX, USERNAME, "Invoice 1", "Contoso Billing,billing@contoso.com", 1_000L);
+    long newest = persistLinkable(MailFolder.ARCHIVE, USERNAME, "Re: INVOICE 2", "Bob,bob@example.org", 3_000L);
+    long bySender = persistLinkable(MailFolder.SENT, USERNAME, "Payment", "Contoso,invoice@contoso.com", 2_000L);
+    persistLinkable(MailFolder.INBOX, "bob", "Invoice of bob", "Contoso,invoice@contoso.com", 4_000L);
+    persistLinkable(MailFolder.DRAFTS, USERNAME, "Invoice draft", "Alice,alice@example.com", 5_000L);
+    persistLinkable(MailFolder.TRASH, USERNAME, "Invoice deleted", "Contoso,invoice@contoso.com", 6_000L);
+    persistLinkable(MailFolder.JUNK, USERNAME, "Invoice spam", "Spammer,invoice@spam.test", 7_000L);
+    persistLinkable(MailFolder.INBOX, USERNAME, "Lunch", "Carol,carol@example.org", 8_000L);
+    entityManager.clear();
+
+    assertEquals(List.of(newest, bySender, oldest), linkIds("invoice", 0, 20),
+                 "subject or sender, any case, newest first; bob's row and the draft, trash and junk rows are never offered");
+    assertEquals(List.of(bySender, oldest), linkIds("CONTOSO", 0, 20), "the sender's name and address both match");
+    assertEquals(List.of(), linkIds("invoice of bob", 0, 20), "another user's mail is never returned");
+  }
+
+  /**
+   * The page is cut in SQL: the limit bounds it and the offset skips the newest.
+   */
+  @Test
+  void theLinkPickerReadHonoursOffsetAndLimit() {
+    long first = persistLinkable(MailFolder.INBOX, USERNAME, "report 1", "Bob,bob@example.org", 1_000L);
+    long second = persistLinkable(MailFolder.INBOX, USERNAME, "report 2", "Bob,bob@example.org", 2_000L);
+    long third = persistLinkable(MailFolder.INBOX, USERNAME, "report 3", "Bob,bob@example.org", 3_000L);
+    entityManager.clear();
+
+    assertEquals(List.of(third, second), linkIds("report", 0, 2));
+    assertEquals(List.of(second, first), linkIds("report", 1, 2));
+    assertEquals(List.of(first), linkIds("report", 2, 2));
+  }
+
+  /**
+   * A {@code %}, a {@code _} or the escape character typed by the user is matched
+   * as itself, never as a wildcard.
+   */
+  @Test
+  void theLinkPickerKeywordIsMatchedLiterally() {
+    long percent = persistLinkable(MailFolder.INBOX, USERNAME, "Discount 50% now", "Bob,bob@example.org", 1_000L);
+    persistLinkable(MailFolder.INBOX, USERNAME, "Discount 500 now", "Bob,bob@example.org", 2_000L);
+    long underscore = persistLinkable(MailFolder.INBOX, USERNAME, "file a_b.pdf", "Bob,bob@example.org", 3_000L);
+    persistLinkable(MailFolder.INBOX, USERNAME, "file axb.pdf", "Bob,bob@example.org", 4_000L);
+    long bang = persistLinkable(MailFolder.INBOX, USERNAME, "Hello!% there", "Bob,bob@example.org", 5_000L);
+    persistLinkable(MailFolder.INBOX, USERNAME, "Hello% there", "Bob,bob@example.org", 6_000L);
+    entityManager.clear();
+
+    assertEquals(List.of(percent), linkIds("50%", 0, 20));
+    assertEquals(List.of(underscore), linkIds("a_b", 0, 20));
+    assertEquals(List.of(bang), linkIds("o!%", 0, 20));
+    assertFalse(linkIds("%", 0, 20).contains(underscore), "a lone percent sign is a character, not match-all");
+  }
+
+  /**
+   * The ids the link picker's read answers for a keyword, through the storage's
+   * own pattern builder.
+   *
+   * @param keyword the typed keyword
+   * @param offset how many matches to skip
+   * @param limit how many matches at most
+   * @return the matching row ids, in the order the read answers them
+   */
+  private List<Long> linkIds(String keyword, int offset, int limit) {
+    return emailBoxDAO.findLinkCandidatesByUserId(USERNAME,
+                                                  EmailBoxStorage.LINK_EXCLUDED_FOLDERS,
+                                                  EmailBoxStorage.toContainsPattern(keyword),
+                                                  offset,
+                                                  limit)
+                      .stream()
+                      .map(row -> (Long) row[0])
+                      .toList();
+  }
+
+  /**
+   * Persists one cached message the link picker could offer.
+   *
+   * @param folder the {@link MailFolder} discriminator
+   * @param owner the mailbox owner
+   * @param subject the subject
+   * @param sender the stored {@code name,address} sender
+   * @param receivedAt the reception time, in epoch milliseconds
+   * @return the row's generated id
+   */
+  private long persistLinkable(String folder, String owner, String subject, String sender, long receivedAt) {
+    EmailBoxEntity email = new EmailBoxEntity();
+    email.setMailRemoteId(receivedAt);
+    email.setUserId(owner);
+    email.setFolder(folder);
+    email.setSubject(subject);
+    email.setSender(sender);
+    email.setTo("Alice,alice@example.com");
+    email.setCc("");
+    email.setReceivedDate(new Date(receivedAt));
+    email.setBody("body");
+    entityManager.persist(email);
+    entityManager.flush();
+    return email.getId();
   }
 
   /**

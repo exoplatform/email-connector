@@ -47,17 +47,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-shared-mailbox-confirm-popup />
     <!-- The settings' "Mailbox sharing" drawer, reused whole, opened on its "Shared with
          me" tab by the mailbox switcher's "Manage shared mailboxes" (plan 7.3), with the
-         invite drawer its other tab's Share button opens; both registered by the
-         user-setting bundle, like the folders drawers above. -->
+         invite drawer its other tab's Share button opens and the "Folders and access"
+         drawer its rows open (EXO-90556); all registered by the user-setting bundle,
+         like the folders drawers above. -->
     <email-connector-user-setting-mailbox-sharing-drawer />
     <email-connector-user-setting-sharing-invite-drawer />
+    <email-connector-user-setting-folder-access-drawer />
+    <!-- The settings' automatic reply drawer, reused whole, opened by the mailbox band's
+         Edit (EXO-90642); registered by the user-setting bundle, like the drawers above. -->
+    <email-connector-user-setting-absence-drawer />
+    <!-- The settings' forwarding drawer, reused whole, opened by the mailbox band's
+         Manage (EXO-90656); registered by the user-setting bundle. -->
+    <email-connector-user-setting-forwarding-drawer />
+    <!-- The settings' filters drawer, reused whole, opened by a mail's "Create a filter
+         from this mail" with the rule the mail suggests (EXO-90654); registered by the
+         user-setting bundle, like the drawers above. -->
+    <email-connector-user-setting-filters-drawer />
+    <!-- A filter's matched mails, stacked over the filters drawer; mounted after it. -->
+    <email-connector-user-setting-filter-log-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
+    <email-connector-mail-box-source-drawer />
+    <!-- The mailbox's advanced search (EXO-90838), opened from the list's chips row and
+         from the search's own chips. -->
+    <email-connector-mail-box-advanced-search-drawer />
+    <!-- "Import mail..." (EXO-90846), opened from the actions menu and by files dropped on
+         a folder of the full-screen column. -->
+    <email-connector-mail-box-import-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </v-app>
 </template>
 
 <script>
+import { OPEN_FORWARDING_DRAWER_EVENT } from '../../email-connector-user-setting/js/EmailConnectorForwarding.js';
+
 export default {
   data() {
     return {
@@ -84,7 +107,15 @@ export default {
     openDrawer(event) {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
-        if (this.userEmailSetting.connected) {
+        if (this.userEmailSetting.connected && event?.detail?.forwarding) {
+          // The forwarding drawer alone, as the band's Manage opens it: a forwarding
+          // notification's click (EXO-90656).
+          this.$root.$emit(OPEN_FORWARDING_DRAWER_EVENT);
+        } else if (this.userEmailSetting.connected && event?.detail?.sharedWithMe) {
+          // The sharing drawer alone, on "Shared with me", as the switcher's "Manage
+          // shared mailboxes" opens it: a shared-mailbox invitation's click (EXO-90830).
+          this.$root.$emit('open-email-shared-with-me-drawer');
+        } else if (this.userEmailSetting.connected) {
           this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
         else {

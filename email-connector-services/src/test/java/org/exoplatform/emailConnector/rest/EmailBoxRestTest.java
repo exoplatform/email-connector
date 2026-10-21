@@ -20,6 +20,9 @@ package org.exoplatform.emailConnector.rest;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -31,6 +34,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -38,9 +42,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,6 +85,9 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.model.SendMode;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -86,19 +95,24 @@ import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
@@ -148,6 +162,9 @@ public class EmailBoxRestTest {
   @MockitoBean
   private ReadReceiptService    readReceiptService;
 
+  @MockitoBean
+  private EmailSecurityService  emailSecurityService;
+
   @Autowired
   private SecurityFilterChain   filterChain;
 
@@ -184,8 +201,8 @@ public class EmailBoxRestTest {
 
   /**
    * A write the mail server does not let the caller make in a shared mailbox answers
-   * <b>401 with the missing right's code</b>, not a bare refusal: this add-on maps
-   * {@code IllegalAccessException} to 401 by its own convention, and what the delegated
+   * <b>403 with the missing right's code</b>, not a bare refusal: the REST layer maps
+   * {@code IllegalAccessException} to 403 (EXO-90627), and what the delegated
    * subclass adds is the message the interface needs to say WHICH right is missing and
    * to correct chrome that went stale (EXO-90499).
    *
@@ -223,6 +240,160 @@ public class EmailBoxRestTest {
            .andExpect(status().reason(DelegationRevokedException.REVOKED));
   }
 
+  /**
+   * EXO-90590 -- the mail drawer's search box in a shared mailbox whose share was
+   * withdrawn meanwhile is <b>410 Gone</b> with the share's code, as the listing is, so
+   * the drawer leaves that mailbox and says why rather than showing a failed search.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aSearchInAWithdrawnShareAnswersGone() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "budget").param("folder", "CUSTOM:8").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
+  }
+
+  /**
+   * EXO-90838 -- every criterion of the advanced search reaches the service as sent,
+   * the days read as yyyy-MM-dd, and a day in any other form reaches it marked invalid:
+   * the service refuses it once the caller's access is checked, so a refusal answers
+   * first (RestRefusalStatusTest).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theAdvancedSearchCriteriaReachTheService() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenReturn(new EmailSearchResultPage(List.of(), 0));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report")
+                                                   .param("from", "carol")
+                                                   .param("to", "dave")
+                                                   .param("words", "budget")
+                                                   .param("after", "2026-10-01")
+                                                   .param("before", "2026-10-31")
+                                                   .param("attachment", "true")
+                                                   .param("unread", "true")
+                                                   .param("favorites", "true")
+                                                   .param("sinceDays", "30")
+                                                   .param("folder", "SENT")
+                                                   .param("limit", "7")
+                                                   .with(testSimpleUser()))
+           .andExpect(status().isOk());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    EmailSearchCriteria criteria = sent.getValue();
+    assertEquals("report", criteria.getQuery());
+    assertEquals("carol", criteria.getFrom());
+    assertEquals("dave", criteria.getTo());
+    assertEquals("budget", criteria.getWords());
+    assertEquals(LocalDate.of(2026, 10, 1), criteria.getAfter());
+    assertEquals(LocalDate.of(2026, 10, 31), criteria.getBefore());
+    assertTrue(criteria.isAttachmentsOnly());
+    assertTrue(criteria.isUnreadOnly());
+    assertTrue(criteria.isFavoritesOnly());
+    assertEquals(30, criteria.getSinceDays());
+
+    assertFalse(criteria.isInvalidDay());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").param("before", "01/10/2026").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService, times(1)).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    assertTrue(sent.getValue().isInvalidDay(), "a day that is not one is marked for the service to refuse");
+    assertNull(sent.getValue().getBefore());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").param("after", "2026-13-01").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService, times(2)).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    assertTrue(sent.getValue().isInvalidDay(), "the first day too");
+    assertNull(sent.getValue().getAfter());
+  }
+
+  /**
+   * EXO-90838 -- the search of eXo's copy of one folder takes every criterion the server
+   * search takes and hands them to the service as sent, the cached-search route of the
+   * platform's unified search untouched; a refusal answers 403, a withdrawn share 410, a
+   * folder that cannot be searched 400 with its code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theCachedFolderSearchTakesEveryCriterion() throws Exception {
+    EmailSearchResultPage answer = new EmailSearchResultPage(List.of(), 0);
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt())).thenReturn(answer);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("query", "report")
+                                                         .param("from", "carol")
+                                                         .param("to", "dave")
+                                                         .param("words", "budget")
+                                                         .param("after", "2026-10-01")
+                                                         .param("before", "nope")
+                                                         .param("attachment", "true")
+                                                         .param("unread", "true")
+                                                         .param("favorites", "true")
+                                                         .param("sinceDays", "30")
+                                                         .param("folder", "SENT")
+                                                         .param("limit", "7")
+                                                         .with(testSimpleUser()))
+           .andExpect(status().isOk());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchCachedFolder(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    EmailSearchCriteria criteria = sent.getValue();
+    assertEquals("report", criteria.getQuery());
+    assertEquals("carol", criteria.getFrom());
+    assertEquals("dave", criteria.getTo());
+    assertEquals("budget", criteria.getWords());
+    assertEquals(LocalDate.of(2026, 10, 1), criteria.getAfter());
+    assertNull(criteria.getBefore());
+    assertTrue(criteria.isInvalidDay(), "a malformed day is left to the service to refuse, after the access check");
+    assertTrue(criteria.isAttachmentsOnly());
+    assertTrue(criteria.isUnreadOnly());
+    assertTrue(criteria.isFavoritesOnly());
+    assertEquals(30, criteria.getSinceDays());
+    verify(emailBoxService, never()).searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt());
+    verify(emailBoxService, never()).searchCachedEmails(anyString(), any(), anyBoolean(), anyInt());
+
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("CUSTOM:9"), anyInt()))
+                                                                                                          .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "CUSTOM:9").with(testSimpleUser()))
+           .andExpect(status().isGone());
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("TRASH"), anyInt()))
+                                                                                                       .thenThrow(new IllegalArgumentException("emailConnector.folder.notBrowsable"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "TRASH").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("ARCHIVE"), anyInt()))
+                                                                                                         .thenThrow(new IllegalAccessException("no"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "ARCHIVE").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /**
+   * EXO-90838 -- the search the unified search and the drawer's search box already send
+   * carries no advanced criterion: none of them is set by default.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aPlainSearchCarriesNoAdvancedCriterion() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenReturn(new EmailSearchResultPage(List.of(), 0));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").with(testSimpleUser())).andExpect(status().isOk());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    EmailSearchCriteria expected = new EmailSearchCriteria();
+    expected.setQuery("report");
+    assertEquals(expected, sent.getValue());
+  }
+
   @Test
   void synchronizeUserEmails() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()));
@@ -256,7 +427,7 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailBoxService).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, false);
 
-    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER) + "\"";
+    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
     verify(emailBoxService, never()).broadcastOpenEmail(anyString());
@@ -264,6 +435,41 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
     verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+  }
+
+  /**
+   * EXO-90841: every read the reader renders is prepared for display -- cleaned, its
+   * remote content held back unless asked for -- and asking for it is explicit. A copy
+   * cached with remote content held back is not confirmed once the caller asked for it,
+   * or changed their choices (the setting fingerprint is part of the validator).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void readsArePreparedForDisplayAndRemoteContentIsAskedForExplicitly() throws Exception {
+    Email email = new Email();
+    email.setId(7L);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean()))
+      .thenReturn(email);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(email, SIMPLE_USER, false);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(email, SIMPLE_USER, true);
+
+    String blockedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").header("If-None-Match", blockedTag).with(testSimpleUser()))
+           .andExpect(status().isOk());
+    when(emailSecurityService.settingsFingerprint(SIMPLE_USER)).thenReturn(42);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", blockedTag).with(testSimpleUser()))
+           .andExpect(status().isOk());
+    String trustedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 42) + "\"";
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", trustedTag).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+
+    List<Email> thread = List.of(email);
+    when(emailBoxService.getThread("t-1", SIMPLE_USER, null)).thenReturn(thread);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/t-1").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(thread, SIMPLE_USER, false);
   }
 
   /**
@@ -278,7 +484,7 @@ public class EmailBoxRestTest {
     verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
 
     doThrow(new IllegalAccessException("not allowed")).when(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
-    mockMvc.perform(post(EMAIL_BOX_PATH + "/open/broadcast").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/open/broadcast").with(testSimpleUser())).andExpect(status().isForbidden());
   }
 
   @Test
@@ -341,7 +547,7 @@ public class EmailBoxRestTest {
   /**
    * EXO-90550 -- the folder travels to the service, and its refusals keep their codes:
    * a shared folder the star is not offered in (its Trash, Spam or Drafts) is a 400, a
-   * missing right a 401, a share gone a 410.
+   * missing right a 403, a share gone a 410.
    */
   @Test
   void aStarInAFolderIsAddressedThereAndItsRefusalsKeepTheirCodes() throws Exception {
@@ -386,19 +592,19 @@ public class EmailBoxRestTest {
   void aSendFromASharedMailboxAnswersTheOwnersCopy() throws Exception {
     Email email = new Email();
     email.setTo(List.of(new EmailRecipient()));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), isNull())).thenReturn(OwnerCopy.FILED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON)
                                                                  .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").value("FILED"));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L))).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L), isNull())).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isNotFound());
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L), isNull())).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON))
@@ -410,18 +616,61 @@ public class EmailBoxRestTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").doesNotExist());
     // The composer's draft path answers the same (EXO-90551).
-    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.SKIPPED);
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L), isNull())).thenReturn(OwnerCopy.SKIPPED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=5").with(testSimpleUser())
                                                                            .content(asJsonString(email))
                                                                            .contentType(MediaType.APPLICATION_JSON)
                                                                            .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").value("SKIPPED"));
-    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L), isNull())).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=7").with(testSimpleUser())
                                                                            .content(asJsonString(email))
                                                                            .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isGone());
+  }
+
+  /**
+   * EXO-90583 -- the shape asked for a mail in the owner's name travels to the service
+   * as the request spells it, beside the share; the guard's refusals come back with
+   * their codes: 403 naming the shape the consent does not cover, 400 for a shape that
+   * cannot be used -- the owner's server's refusal included -- on both send endpoints.
+   */
+  @Test
+  void aSendInTheOwnersNameCarriesItsShapeAndItsRefusals() throws Exception {
+    Email email = new Email();
+    email.setTo(List.of(new EmailRecipient()));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), eq("ON_BEHALF"))).thenReturn(OwnerCopy.FILED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5&sendMode=ON_BEHALF").with(testSimpleUser())
+                                                                                    .content(asJsonString(email))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("FILED"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L), eq("AS"))).thenThrow(new SendModeMissingException(SendMode.AS));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6&sendMode=AS").with(testSimpleUser())
+                                                                             .content(asJsonString(email))
+                                                                             .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L), eq("AS"))).thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7&sendMode=AS").with(testSimpleUser())
+                                                                             .content(asJsonString(email))
+                                                                             .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), isNull(), eq("AS"))).thenThrow(new SendModeMissingException(SendMode.AS));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?sendMode=AS").with(testSimpleUser())
+                                                                        .content(asJsonString(email))
+                                                                        .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(8L), eq("ON_BEHALF"))).thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=8&sendMode=ON_BEHALF").with(testSimpleUser())
+                                                                                              .content(asJsonString(email))
+                                                                                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
   }
 
   @Test
@@ -477,11 +726,12 @@ public class EmailBoxRestTest {
                                                               .content(asJsonString(emailIds))
                                                               .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.crossMailbox"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.crossMailbox"));
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=CUSTOM:8").with(testSimpleUser())
                                                                       .content(asJsonString(emailIds))
                                                                       .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isBadRequest());
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.crossMailbox"));
   }
 
   /**
@@ -763,7 +1013,7 @@ public class EmailBoxRestTest {
 
     // A mailbox the caller cannot connect, and a mail server that cannot be reached.
     doThrow(IllegalAccessException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
-    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isForbidden());
     doThrow(IllegalStateException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isInternalServerError());
 
@@ -789,7 +1039,7 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
     // The path names the draft, whatever the body claims.
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull());
+    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull(), isNull());
     org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
   }
 
@@ -798,7 +1048,7 @@ public class EmailBoxRestTest {
     Email draft = new Email();
     draft.setTo(List.of(mock(EmailRecipient.class)));
     doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
-                                                                          .sendDraft(any(Email.class), anyString(), isNull());
+                                                                          .sendDraft(any(Email.class), anyString(), isNull(), isNull());
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
                                                                                       .content(asJsonString(draft))
                                                                                       .contentType(MediaType.APPLICATION_JSON)
@@ -824,7 +1074,7 @@ public class EmailBoxRestTest {
   @Test
   void searchCachedEmails() throws Exception {
     // The unified search bar's read. Its novel behaviour is the refusal: every other
-    // caught IllegalAccessException in this controller becomes a 401, this one becomes
+    // caught IllegalAccessException in this controller becomes a 403, this one becomes
     // an EMPTY PAGE, because most users have no mailbox connected and the platform
     // asks every connector on every search.
     EmailSearchResult hit = new EmailSearchResult(121L,
@@ -851,7 +1101,7 @@ public class EmailBoxRestTest {
            .andExpect(status().isOk());
     verify(emailBoxService).searchCachedEmails(SIMPLE_USER, "budget", true, 5);
 
-    // No mailbox connected: an empty section, not a 401.
+    // No mailbox connected: an empty section, not a 403.
     doThrow(IllegalAccessException.class).when(emailBoxService).searchCachedEmails(anyString(), anyString(), anyBoolean(), anyInt());
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=budget").with(testSimpleUser()));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.totalMatches").value(0)).andExpect(jsonPath("$.results").isEmpty());
@@ -876,7 +1126,7 @@ public class EmailBoxRestTest {
 
     doThrow(IllegalAccessException.class).when(emailBoxService).getEmailCategories(anyString(), any());
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/categories").with(testSimpleUser()));
-    response.andExpect(status().isUnauthorized());
+    response.andExpect(status().isForbidden());
   }
 
   @Test
@@ -919,7 +1169,7 @@ public class EmailBoxRestTest {
                                                                      .content(asJsonString(List.of(123L)))
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isUnauthorized());
+    response.andExpect(status().isForbidden());
   }
 
   /**
@@ -947,7 +1197,7 @@ public class EmailBoxRestTest {
                                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isBadRequest())
-            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+            .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
   }
 
   @Test
@@ -969,7 +1219,7 @@ public class EmailBoxRestTest {
                                                                        .content(asJsonString(List.of(123L)))
                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                        .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isUnauthorized());
+    response.andExpect(status().isForbidden());
   }
 
   /**
@@ -996,7 +1246,7 @@ public class EmailBoxRestTest {
                                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                                        .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isBadRequest())
-            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+            .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
   }
 
 
@@ -1085,19 +1335,19 @@ public class EmailBoxRestTest {
 
   /**
    * A mailbox the user may not read answers neither its summaries nor requests for
-   * them, and answers the same 401 the conversation read itself answers.
+   * them, and answers the same 403 the conversation read itself answers.
    *
    * @throws Exception when the mocked plumbing misbehaves
    */
   @Test
-  void anUnreadableMailboxAnswersUnauthorizedOnBothSummaryEndpoints() throws Exception {
+  void anUnreadableMailboxAnswersForbiddenOnBothSummaryEndpoints() throws Exception {
     when(emailBoxService.getThreadAiSummary(anyString(), anyString())).thenThrow(new IllegalAccessException());
     doThrow(new IllegalAccessException()).when(emailBoxService).requestThreadAiSummary(anyString(), anyString());
 
     mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
     mockMvc.perform(post(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary/refresh").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   private RequestPostProcessor testSimpleUser() {
@@ -1123,7 +1373,8 @@ public class EmailBoxRestTest {
 
   /**
    * The opt-in is a PATCH on the folder's id, and the cap's refusal reaches the client
-   * as a 400 carrying the message code the screen shows.
+   * as a 400 carrying the message code the screen shows -- in the BODY, under
+   * {@code message}, where the Folders drawer reads it (EXO-90849).
    */
   @Test
   void setFolderSync() throws Exception {
@@ -1137,7 +1388,8 @@ public class EmailBoxRestTest {
                                                                           .setCustomFolderSync(SIMPLE_USER, 6L, true);
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/6").param("sync", "true").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.tooMany"));
+           .andExpect(jsonPath("$.status").value(400))
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.tooMany"));
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser())).andExpect(status().isBadRequest());
   }
 
@@ -1195,7 +1447,89 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON)
                                                   .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.unknown"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.unknown"));
+  }
+
+  /**
+   * Every folder endpoint's 400 carries its folder code in the body, where the Folders
+   * drawer and the folder name drawer read it (EXO-90849): create and rename with the
+   * name codes, delete with {@code notEmpty}, the on-demand refresh with
+   * {@code notMirrored}.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void everyFolderEndpointAnswersItsCodeInTheBody() throws Exception {
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Inbox", null)).thenThrow(new IllegalArgumentException("emailConnector.folder.name.reserved"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").param("name", "Inbox").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.name.reserved"));
+
+    when(emailBoxService.renameCustomFolder(SIMPLE_USER, 5L, "Taken")).thenThrow(new IllegalArgumentException("emailConnector.folder.name.duplicate"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5/name").param("name", "Taken").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.name.duplicate"));
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notEmpty")).when(emailBoxService).deleteCustomFolder(SIMPLE_USER, 5L, false);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notEmpty"));
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notMirrored")).when(emailBoxService)
+                                                                              .synchronizeCustomFolder(SIMPLE_USER, 7L);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders/7/synchronization").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notMirrored"));
+  }
+
+  /**
+   * Only a folder code is written into a body. A folder endpoint's 403, a 400 whose
+   * reason is not a folder code, and another endpoint's 500 carrying an engine's text
+   * all go on to Spring's own resolver untouched: the reason is the status line's, and
+   * nothing is written into the body -- which on the platform's error page means no
+   * {@code message} either (EXO-90849).
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void anyOtherRefusalKeepsItsReasonOutOfTheBody() throws Exception {
+    when(emailBoxService.setCustomFolderSync(SIMPLE_USER, 8L, true)).thenThrow(new IllegalAccessException("refused"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/8").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(content().string(""));
+
+    when(emailBoxService.setCustomFolderSync(SIMPLE_USER, 9L, true)).thenThrow(new IllegalArgumentException("For input string: \"x\""));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/9").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("For input string: \"x\""))
+           .andExpect(content().string(""));
+
+    when(emailBoxService.renameCustomFolder(SIMPLE_USER, 8L, "Projects")).thenThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/8/name").param("name", "Projects").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + MailboxRights.DELETE_MAILBOX))
+           .andExpect(content().string(""));
+
+    doThrow(new IllegalStateException("A1 NO [ALERT] /var/mail/simple locked")).when(emailBoxService).synchronize(SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()))
+           .andExpect(status().isInternalServerError())
+           .andExpect(content().string(""));
+  }
+
+  /**
+   * The status half of the guard: a folder code is written into a body on a 400 only.
+   * No service raises a folder code as anything but an {@code IllegalArgumentException}
+   * today, so this 500 is constructed rather than observed: it pins that a reason which
+   * merely looks like a folder code, on another status, still never reaches a body.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void aFolderCodeOnAnotherStatusStaysOutOfTheBody() throws Exception {
+    doThrow(new IllegalStateException("emailConnector.folder.notBrowsable")).when(emailBoxService).synchronize(SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()))
+           .andExpect(status().isInternalServerError())
+           .andExpect(content().string(""));
   }
 
   /**
@@ -1238,7 +1572,7 @@ public class EmailBoxRestTest {
                                                        .contentType(MediaType.APPLICATION_JSON)
                                                        .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.notMirrored"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notMirrored"));
     doThrow(new IllegalAccessException("not yours")).when(emailBoxService)
                                                     .undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:7", MailFolder.INBOX);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:7")
@@ -1246,7 +1580,7 @@ public class EmailBoxRestTest {
                                                        .content(asJsonString(mailHeaderIds))
                                                        .contentType(MediaType.APPLICATION_JSON)
                                                        .accept(MediaType.APPLICATION_JSON))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   // ---------------------------------------------------------------------------------
@@ -1283,8 +1617,84 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * A send with an Undo (EXO-90837) is the caller's, for the draft the path names, and
+   * answers when it goes; each refusal has its status, the Undo turned off included.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aSendWithAnUndoIsTheCallersAndAnswersEachRefusalItsStatus() throws Exception {
+    when(emailScheduledSendService.sendUndoable(any(Email.class), eq(SIMPLE_USER))).thenReturn(new UndoableSend("draft-1",
+                                                                                                                1_900_000_000_000L,
+                                                                                                                10));
+    Email draft = new Email();
+    draft.setDraftLocalId("another-draft");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                                          .content(asJsonString(draft)))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.draftLocalId").value("draft-1"))
+           .andExpect(jsonPath("$.sendDate").value(1_900_000_000_000L))
+           .andExpect(jsonPath("$.delaySeconds").value(10));
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailScheduledSendService).sendUndoable(sent.capture(), eq(SIMPLE_USER));
+    assertEquals("draft-1", sent.getValue().getDraftLocalId(), "the path names the draft");
+
+    Object[][] cases = { { new IllegalArgumentException(EmailScheduledSendService.UNDO_SEND_OFF), 400 },
+        { new IllegalAccessException("no"), 403 }, { new SendModeMissingException(SendMode.AS), 403 },
+        { new ObjectNotFoundException("gone"), 404 },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED), 409 },
+        { new DelegationRevokedException(DelegationRevokedException.REVOKED), 410 },
+        { new IllegalStateException("emailConnector.scheduled.serverCopyRemains"), 500 } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService).sendUndoable(any(Email.class), anyString());
+      mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                            .contentType(MediaType.APPLICATION_JSON)
+                                                                            .content(asJsonString(new Email())))
+             .andExpect(status().is((int) testCase[1]));
+    }
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                                          .content(asJsonString(new Email())))
+           .andExpect(status().is(500))
+           .andExpect(status().reason("emailConnector.scheduled.serverCopyRemains"));
+  }
+
+  /**
+   * The Undo (EXO-90837) is the caller's: it answers the draft taken back, 404 for a
+   * mail the caller holds no such draft under, 409 with the code once the mail is on its
+   * way or may have gone, 403 for a mailbox the caller may not use.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void anUndoAnswersTheDraftOrWhyNot() throws Exception {
+    Email draft = new Email();
+    draft.setDraftLocalId("draft-1");
+    draft.setSubject("See you tomorrow");
+    when(emailScheduledSendService.undoSend("draft-1", SIMPLE_USER)).thenReturn(draft);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/undo-send").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.draftLocalId").value("draft-1"))
+           .andExpect(jsonPath("$.subject").value("See you tomorrow"));
+
+    Object[][] cases = { { new IllegalAccessException("no"), 403, null }, { new ObjectNotFoundException("draft-1"), 404, null },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.SENDING), 409, ScheduledSendConflictException.SENDING },
+        { new ScheduledSendConflictException(EmailScheduledSendService.UNCERTAIN_CONFLICT), 409,
+            EmailScheduledSendService.UNCERTAIN_CONFLICT } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService).undoSend(anyString(), anyString());
+      ResultActions result = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/undo-send").with(testSimpleUser()))
+                                    .andExpect(status().is((int) testCase[1]));
+      if (testCase[2] != null) {
+        result.andExpect(status().reason((String) testCase[2]));
+      }
+    }
+  }
+
+  /**
    * Each refusal of a scheduling has its status: 400 with the code for a bad request,
-   * 401 for a mailbox the caller may not use, 404 for a draft they do not have, 409 for
+   * 403 for a mailbox the caller may not use, 404 for a draft they do not have, 409 for
    * one already scheduled or being sent, 500 for a server copy that would not go.
    *
    * @throws Exception if a request fails
@@ -1293,7 +1703,7 @@ public class EmailBoxRestTest {
   void aRefusedSchedulingAnswersItsStatus() throws Exception {
     String body = asJsonString(new ScheduleRequest(new Email(), 1_900_000_000_000L, "UTC"));
     Object[][] cases = { { new IllegalArgumentException("emailConnector.scheduled.date.tooSoon"), 400 },
-        { new IllegalAccessException("no"), 401 }, { new ObjectNotFoundException("gone"), 404 },
+        { new IllegalAccessException("no"), 403 }, { new ObjectNotFoundException("gone"), 404 },
         { new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED), 409 },
         { new IllegalStateException("emailConnector.scheduled.serverCopyRemains"), 500 } };
     for (Object[] testCase : cases) {
@@ -1307,6 +1717,49 @@ public class EmailBoxRestTest {
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .content(asJsonString(new ScheduleRequest(new Email(), null, "UTC"))))
            .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * EXO-90584 -- a scheduling, or an edit of a scheduled mail, in the shared mailbox
+   * owner's name that her consent does not cover answers 403 WITH the code naming the
+   * shape, so the composer can say why and fall back to the caller's own name; a name
+   * that cannot be used answers 400 with its code; an edit whose mailbox is no longer
+   * shared answers 410.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aSchedulingInANameTheConsentDoesNotCoverAnswersItsCode() throws Exception {
+    String body = asJsonString(new ScheduleRequest(new Email(), 1_900_000_000_000L, "UTC"));
+    doThrow(new SendModeMissingException(SendMode.AS)).when(emailScheduledSendService)
+                                                      .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(body))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    doThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER)).when(emailScheduledSendService)
+                                                                                             .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(body))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
+
+    String edit = asJsonString(new ScheduleRequest(new Email(), null, null, List.of()));
+    doThrow(new SendModeMissingException(SendMode.ON_BEHALF)).when(emailScheduledSendService)
+                                                             .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(edit))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.sendMode.missing.ON_BEHALF"));
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailScheduledSendService)
+                                                                               .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(edit))
+           .andExpect(status().isGone());
   }
 
   /**
@@ -1330,7 +1783,7 @@ public class EmailBoxRestTest {
     assertEquals("New subject", sent.getValue().getSubject());
 
     Object[][] cases = { { new IllegalArgumentException("emailConnector.scheduled.recipientsMandatory"), 400 },
-        { new IllegalAccessException("no"), 401 }, { new ObjectNotFoundException("gone"), 404 },
+        { new IllegalAccessException("no"), 403 }, { new ObjectNotFoundException("gone"), 404 },
         { new ScheduledSendConflictException(ScheduledSendConflictException.SENDING), 409 } };
     for (Object[] testCase : cases) {
       doThrow((Exception) testCase[0]).when(emailScheduledSendService)
@@ -1397,6 +1850,46 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * EXO-90595 -- the mailbox a draft belongs to reaches the composer as statuses: a first
+   * save naming a share that is not the caller's answers 400 with its code (never the
+   * "draft gone" 404), a schedule of a draft whose mailbox is no longer shared 410, a
+   * send naming another mailbox than the draft's 400 with its code; and the draft's
+   * mailbox reads 200 with its owner, or 204 for the caller's own.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aDraftsMailboxRefusalsAnswerTheirStatuses() throws Exception {
+    doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_NOT_FOUND_CODE)).when(emailBoxService)
+                                                                                 .saveDraft(any(Email.class), anyString(), anyBoolean());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content(asJsonString(new Email())))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailBoxService.MAILBOX_NOT_FOUND_CODE));
+    when(emailBoxService.getDraftMailbox("draft-1", SIMPLE_USER)).thenReturn(new DraftMailbox(100L, "Anne", "anne@example.org", false));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/drafts/draft-1/mailbox").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delegationId").value(100))
+           .andExpect(jsonPath("$.shared").value(false));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/drafts/draft-2/mailbox").with(testSimpleUser())).andExpect(status().isNoContent());
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailScheduledSendService)
+                                                                               .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(asJsonString(new ScheduleRequest(new Email(), 1L, "UTC"))))
+           .andExpect(status().isGone());
+    Email draft = new Email();
+    draft.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+    doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_MISMATCH_CODE)).when(emailBoxService)
+                                                                                .sendDraft(any(Email.class), anyString(), eq(101L), isNull());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send?delegationId=101").with(testSimpleUser())
+                                                                                   .contentType(MediaType.APPLICATION_JSON)
+                                                                                   .content(asJsonString(draft)))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
    * A scheduled draft's lock reaches the composer as 409 on its save, and a draft being
    * sent refuses its discard with 409.
    *
@@ -1419,7 +1912,7 @@ public class EmailBoxRestTest {
    * The answer to a read-receipt request reaches the service for the authenticated
    * caller -- never a user named in the request -- and each refusal gets its status:
    * 204 answered, 404 unknown or not the caller's, 400 not requested / not allowed /
-   * no action, 409 already answered, 401 no usable connector, 500 not sent.
+   * no action, 409 already answered, 403 no usable connector, 500 not sent.
    *
    * @throws Exception when the request cannot be performed
    */
@@ -1449,7 +1942,7 @@ public class EmailBoxRestTest {
     expectAnswer(EMAIL_BOX_PATH + "/14/read-receipt", "SEND").andExpect(status().isConflict());
 
     doThrow(IllegalAccessException.class).when(readReceiptService).respond(15L, SIMPLE_USER, ReadReceiptAction.SEND, false);
-    expectAnswer(EMAIL_BOX_PATH + "/15/read-receipt", "SEND").andExpect(status().isUnauthorized());
+    expectAnswer(EMAIL_BOX_PATH + "/15/read-receipt", "SEND").andExpect(status().isForbidden());
 
     doThrow(new IllegalStateException(ReadReceiptService.SEND_FAILED)).when(readReceiptService)
                                                                      .respond(16L, SIMPLE_USER, ReadReceiptAction.SEND, false);
@@ -1508,7 +2001,7 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull());
+    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull(), isNull());
     org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());
@@ -1518,7 +2011,7 @@ public class EmailBoxRestTest {
 
   /**
    * Every verb that can act in a shared mailbox answers its two delegation refusals the
-   * same way: a right the share does not give is 401 with the missing right's code, a
+   * same way: a right the share does not give is 403 with the missing right's code, a
    * share withdrawn meanwhile is 410 with its own (EXO-90499). The trash and junk
    * restores also answer a refusal of the request itself -- a move between two mailboxes
    * -- as 400 with its code.
@@ -1529,7 +2022,7 @@ public class EmailBoxRestTest {
   void everySharedMailboxVerbAnswersTheDelegationRefusals() throws Exception {
     MailboxRightMissingException missing = new MailboxRightMissingException(MailboxRights.KEEP_SEEN);
     DelegationRevokedException revoked = new DelegationRevokedException(DelegationRevokedException.REVOKED);
-    IllegalArgumentException crossMailbox = new IllegalArgumentException("emailConnector.move.crossMailbox");
+    IllegalArgumentException crossMailbox = new IllegalArgumentException("emailConnector.folder.crossMailbox");
     String ids = "[1212]";
 
     when(emailBoxService.getEmailBox(anyString(), anyString(), anyBoolean())).thenThrow(missing, revoked);
@@ -1541,8 +2034,11 @@ public class EmailBoxRestTest {
     when(emailBoxService.renameCustomFolder(anyString(), anyLong(), anyString())).thenThrow(missing, revoked);
     expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8/name").param("name", "Projects"));
 
-    doThrow(missing).doThrow(revoked).when(emailBoxService).deleteCustomFolder(anyString(), anyLong());
+    doThrow(missing).doThrow(revoked).when(emailBoxService).deleteCustomFolder(anyString(), anyLong(), anyBoolean());
     expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH + "/folders/8"));
+
+    when(emailBoxService.moveCustomFolder(anyString(), anyLong(), any(), any())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8/parent").param("parentId", "9"));
 
     doThrow(missing).doThrow(revoked).when(emailBoxService).synchronizeCustomFolder(anyString(), anyLong());
     expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/folders/8/synchronization"));
@@ -1587,7 +2083,7 @@ public class EmailBoxRestTest {
                                                   .content(ids)
                                                   .with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason(crossMailbox.getMessage()));
+           .andExpect(jsonPath("$.message").value(crossMailbox.getMessage()));
 
     for (String restore : List.of(MailFolder.TRASH, MailFolder.JUNK)) {
       String path = EMAIL_BOX_PATH + (MailFolder.TRASH.equals(restore) ? "/trash/restore" : "/junk/restore");
@@ -1595,7 +2091,7 @@ public class EmailBoxRestTest {
       expectDelegationRefusals(() -> post(path).contentType(MediaType.APPLICATION_JSON).content(ids));
       mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(ids).with(testSimpleUser()))
              .andExpect(status().isBadRequest())
-             .andExpect(status().reason(crossMailbox.getMessage()));
+             .andExpect(jsonPath("$.message").value(crossMailbox.getMessage()));
     }
   }
 
@@ -1627,5 +2123,77 @@ public class EmailBoxRestTest {
     return mockMvc.perform(post(path).with(testSimpleUser())
                                      .content("{\"action\":\"" + action + "\"}")
                                      .contentType(MediaType.APPLICATION_JSON));
+  }
+
+  /**
+   * EXO-90839: a folder is created inside one of the caller's folders when a parent is
+   * named, at the top level otherwise; a parent of a mailbox shared with the caller is
+   * refused with 403, one that cannot hold a folder with 400 and its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void createFolderPassesTheParentAndAnswersItsRefusals() throws Exception {
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 4L)).thenReturn(new MailFolderView());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "4"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).createCustomFolder(SIMPLE_USER, "Acme", 4L);
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Top", null)).thenReturn(new MailFolderView());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Top")).andExpect(status().isOk());
+    verify(emailBoxService).createCustomFolder(SIMPLE_USER, "Top", null);
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 8L)).thenThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "8"))
+           .andExpect(status().isForbidden());
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 5L)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "5"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.parent.invalid"));
+  }
+
+  /**
+   * EXO-90839: a move names its parent, or none for the top level, and an optional new
+   * name; a parent inside the folder is refused with 400 and its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void moveFolderPassesTheParentAndTheNameAndAnswersAnInvalidParent() throws Exception {
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, 4L, "Renamed")).thenReturn(new MailFolderView());
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser())
+                                                               .param("parentId", "4")
+                                                               .param("name", "Renamed"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).moveCustomFolder(SIMPLE_USER, 7L, 4L, "Renamed");
+
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, null, null)).thenReturn(new MailFolderView());
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).moveCustomFolder(SIMPLE_USER, 7L, null, null);
+
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, 9L, null)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser()).param("parentId", "9"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.parent.invalid"));
+  }
+
+  /**
+   * EXO-90839: a delete takes the folders inside it only when the caller says so; the
+   * default is not to, and a folder with sub-folders is then refused with its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void deleteFolderTakesItsSubFoldersOnlyWhenAsked() throws Exception {
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/7").with(testSimpleUser()).param("subFolders", "true"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).deleteCustomFolder(SIMPLE_USER, 7L, true);
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.hasSubFolders")).when(emailBoxService)
+                                                                              .deleteCustomFolder(SIMPLE_USER, 8L, false);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/8").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.hasSubFolders"));
   }
 }

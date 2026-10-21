@@ -90,9 +90,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
       + "include index mailbox mailboxid mboxmetadata mime reject regex relational replace servermetadata "
       + "spamtest spamtestplus special-use subaddress vacation vacation-seconds variables virustest";
 
-  /** The receive buffer of a server that stops reading, in octets. */
-  private static final int     STALLED_RECEIVE_BUFFER = 4096;
-
   private final ServerSocket   serverSocket;
 
   private final SSLContext     tls;
@@ -123,15 +120,14 @@ public final class FakeManageSieveServer implements AutoCloseable {
 
   private volatile String      sieveExtensions   = STALWART_SIEVE;
 
+  /** The {@code MAXREDIRECTS} value advertised, or null for none. */
+  private volatile Integer     maxRedirects;
+
   private volatile String      password          = PASSWORD;
 
   private volatile String      rawGetScriptAnswer;
 
   private volatile long        trickleMillis;
-
-  private volatile long        handshakeTrickleMillis;
-
-  private volatile boolean     stopReadingAfterAuthentication;
 
   /** Released when the server stops, ending every paced wait at once. */
   private final CountDownLatch stopped           = new CountDownLatch(1);
@@ -231,6 +227,17 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
+   * Advertises {@code MAXREDIRECTS}, or nothing.
+   *
+   * @param value the value, null to advertise none
+   * @return this server
+   */
+  public FakeManageSieveServer maxRedirects(Integer value) {
+    this.maxRedirects = value;
+    return this;
+  }
+
+  /**
    * The {@code SIEVE} capability line.
    *
    * @param extensions the space-separated extensions
@@ -320,32 +327,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
-   * Makes the server answer {@code STARTTLS} with OK, wait for the first octet of the
-   * client's ClientHello, then, instead of a TLS handshake, send the header of a 16 KiB
-   * handshake record followed by its body one octet per interval, forever: each of the
-   * client's handshake reads succeeds, the record never completes.
-   *
-   * @param intervalMillis the pause between two octets
-   * @return this server
-   */
-  public FakeManageSieveServer trickleHandshake(long intervalMillis) {
-    this.handshakeTrickleMillis = intervalMillis;
-    return this;
-  }
-
-  /**
-   * Makes the server stop reading once it has accepted the credentials, its receive
-   * buffer cut to a few kilobytes: a large enough write from the client then blocks, as
-   * against a server that stalled.
-   *
-   * @return this server
-   */
-  public FakeManageSieveServer stopReadingAfterAuthentication() {
-    this.stopReadingAfterAuthentication = true;
-    return this;
-  }
-
-  /**
    * Makes a command answer a fixed line instead of executing.
    *
    * @param command the command, e.g. {@code CHECKSCRIPT}
@@ -369,6 +350,20 @@ public final class FakeManageSieveServer implements AutoCloseable {
     scripts.put(name, content);
     if (makeActive) {
       active = name;
+    }
+    return this;
+  }
+
+  /**
+   * Removes a script as another client would, active or not.
+   *
+   * @param name the name
+   * @return this server
+   */
+  public synchronized FakeManageSieveServer removeScript(String name) {
+    scripts.remove(name);
+    if (name.equals(active)) {
+      active = null;
     }
     return this;
   }
@@ -449,9 +444,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
     while (!serverSocket.isClosed()) {
       try {
         Socket socket = serverSocket.accept();
-        if (stopReadingAfterAuthentication) {
-          socket.setReceiveBufferSize(STALLED_RECEIVE_BUFFER);
-        }
         synchronized (connections) {
           connections.add(socket);
         }
@@ -525,21 +517,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
           continue;
         }
         send(out, "OK \"Begin TLS negotiation now\"\r\n" + (injectAfterStarttls ? "OK \"injected\"\r\n" : ""));
-        if (handshakeTrickleMillis > 0) {
-          // The client sends its ClientHello only once it has checked that nothing came
-          // after the OK: a record header sent before it would meet that check instead.
-          if (in.read() < 0) {
-            return;
-          }
-          out.write(new byte[] { 0x16, 0x03, 0x03, 0x40, 0x00 });
-          while (true) {
-            out.write(0);
-            out.flush();
-            if (stopped.await(handshakeTrickleMillis, TimeUnit.MILLISECONDS)) {
-              return;
-            }
-          }
-        }
         SSLSocket upgraded = (SSLSocket) tls.getSocketFactory().createSocket(plain, null, plain.getPort(), false);
         upgraded.setUseClientMode(false);
         connection.current = upgraded;
@@ -558,10 +535,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
       case "AUTHENTICATE" -> {
         authenticated = secure && authenticate(args);
         send(out, authenticated ? "OK \"Authenticated\"\r\n" : "NO \"Authentication failed\"\r\n");
-        if (authenticated && stopReadingAfterAuthentication) {
-          stopped.await();
-          return;
-        }
       }
       case "LOGOUT" -> {
         send(out, "OK \"Bye\"\r\n");
@@ -679,6 +652,9 @@ public final class FakeManageSieveServer implements AutoCloseable {
     StringBuilder lines = new StringBuilder("\"IMPLEMENTATION\" \"Fake ManageSieve\"\r\n");
     lines.append("\"SASL\" ").append(quote(secure ? postTlsSasl : "OAUTHBEARER")).append("\r\n");
     lines.append("\"SIEVE\" ").append(quote(sieveExtensions)).append("\r\n");
+    if (maxRedirects != null) {
+      lines.append("\"MAXREDIRECTS\" ").append(quote(String.valueOf(maxRedirects))).append("\r\n");
+    }
     if (!secure && offerStarttls) {
       lines.append("\"STARTTLS\"\r\n");
     }

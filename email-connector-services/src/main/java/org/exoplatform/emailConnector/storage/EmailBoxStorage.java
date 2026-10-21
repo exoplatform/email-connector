@@ -106,6 +106,21 @@ public class EmailBoxStorage {
 
   private static final String DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
 
+  /** The most matches the "/mail" link picker is given in one page. */
+  public static final int           MAX_LINK_RESULTS        = 20;
+
+  /** The longest keyword the "/mail" link picker searches, longer ones are cut. */
+  public static final int           MAX_LINK_KEYWORD_LENGTH = 100;
+
+  /**
+   * The folders the "/mail" link picker never offers: a draft is not a mail yet,
+   * and Trash and Junk are the mail the user or the server threw away.
+   */
+  public static final List<String>  LINK_EXCLUDED_FOLDERS   = List.of(MailFolder.DRAFTS, MailFolder.TRASH, MailFolder.JUNK);
+
+  /** The escape character of the link picker's {@code LIKE} pattern. */
+  private static final String       LIKE_ESCAPE             = "!";
+
   private static final Log    LOG                          = ExoLogger.getLogger(EmailBoxStorage.class);
 
   /**
@@ -299,6 +314,11 @@ public class EmailBoxStorage {
     // mutates the row column by column, so a column left out here would only ever be
     // written by the first save (EXO-90435).
     entity.setReadReceiptRequested(draft.isReadReceiptRequested());
+    // DRAFT_DELEGATION_ID is deliberately not written here (EXO-90595): the mailbox a
+    // draft belongs to is settled by its first save, and an edit never moves it.
+    // DRAFT_SEND_MODE is (EXO-90584): the name the draft goes out in is the writer's to
+    // change until it is sent, and the service hands over the one to keep.
+    entity.setDraftSendMode(draft.getSendMode());
     return saveDraftRow(entity, draft.getUserId());
   }
 
@@ -1123,21 +1143,27 @@ public class EmailBoxStorage {
   }
 
   /**
-   * Of the given IMAP UIDs, the ones already cached in a folder — the bulk
-   * lookup behind the search results' {@code cached} flag: one IN query for the
-   * whole hit list, never a per-hit statement. No-op on an empty list.
+   * Of the given IMAP UIDs, the ones already cached in a folder of the user's, each with
+   * its row's local id (EXO-90555): what a search hit is decorated with -- "openable
+   * locally", and the email_id the agent tools name a mail by. One IN statement for the
+   * whole result list.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the candidate IMAP UIDs
-   * @return the subset of {@code mailRemoteIds} present in the local cache,
-   *         never null
+   * @return the cached ones' local ids by UID, empty when none
    */
-  public List<Long> getCachedMailRemoteIds(String userId, String folder, List<Long> mailRemoteIds) {
+  public Map<Long, Long> getCachedEmailIds(String userId, String folder, List<Long> mailRemoteIds) {
     if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
-      return List.of();
+      return Map.of();
     }
-    return emailBoxDao.findCachedMailRemoteIds(userId, folder, mailRemoteIds);
+    Map<Long, Long> ids = new HashMap<>();
+    for (Object[] row : emailBoxDao.findCachedIdsByMailRemoteIds(userId, folder, mailRemoteIds)) {
+      // One row per UID in a folder; were there two, the first stands -- either names a
+      // copy of that very message, never another one.
+      ids.putIfAbsent((Long) row[0], (Long) row[1]);
+    }
+    return ids;
   }
 
   /**
@@ -1395,11 +1421,129 @@ public class EmailBoxStorage {
   public List<Email> getEmailsForSearch(String userId, List<String> alsoExcluded) {
     List<String> excluded = new ArrayList<>(MailFolder.HIDDEN_FOLDERS);
     excluded.addAll(alsoExcluded == null ? List.of() : alsoExcluded);
-    return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(this::fromEntityForSearch).toList();
+    return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(entity -> fromEntityForSearch(entity, false)).toList();
   }
 
+  /**
+   * The cached messages of some folders, as the search over cached mail needs them --
+   * the folders of the mailboxes shared with the user that the unified search reads
+   * (EXO-90554). One query for all of them.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @return their cached messages, newest first, carrying only what a search reads
+   */
+  public List<Email> getEmailsForSearchInFolders(String userId, Collection<String> folders) {
+    return getEmailsForSearchInFolders(userId, folders, false);
+  }
+
+  /**
+   * The same read, with the To and Cc recipients of each message when asked: the search
+   * of a shared mailbox's copy needs them for its recipient criterion (EXO-90838), and
+   * only then -- the unified search, which reads every row, never matches on them.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @param withRecipients whether to read the To and Cc recipients of each message
+   * @return their cached messages, newest first, carrying only what a search reads
+   */
+  public List<Email> getEmailsForSearchInFolders(String userId, Collection<String> folders, boolean withRecipients) {
+    if (folders == null || folders.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findByUserIdAndFoldersForSearch(userId, folders)
+                      .stream()
+                      .map(entity -> fromEntityForSearch(entity, withRecipients))
+                      .toList();
+  }
+
+  /**
+   * The ids of the cached messages of some folders that carry an attachment, for the
+   * search of eXo's copy of a shared mailbox (EXO-90838). One query, ids only.
+   *
+   * @param userId the user whose copy it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @return the ids, never null
+   */
+  public Set<Long> getEmailIdsWithAttachmentsInFolders(String userId, Collection<String> folders) {
+    if (folders == null || folders.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(emailAttachmentDAO.findEmailIdsWithAttachmentsByUserIdAndFolders(userId, folders));
+  }
+
+  /**
+   * The owner's cached messages whose subject or sender (name or address) contains
+   * a keyword, newest first, for the editors' "/mail" link picker.
+   * <p>
+   * One query on the mailbox cache, bounded in SQL, reading four columns: the
+   * picker fires on every pause in the typing, so it never loads the mailbox, never
+   * calls the IMAP server and never reads a row per result. Drafts, Trash and Junk
+   * are never offered ({@link #LINK_EXCLUDED_FOLDERS}). The keyword is trimmed,
+   * capped to {@link #MAX_LINK_KEYWORD_LENGTH} characters and matched literally:
+   * a {@code %} or a {@code _} typed by the user is not a wildcard.
+   *
+   * @param userId the mailbox owner, whose rows only are read
+   * @param keyword the searched text
+   * @param offset how many matches to skip, negative read as 0
+   * @param limit how many matches at most, capped to {@link #MAX_LINK_RESULTS}
+   * @return light {@link Email}s carrying id, owner, subject, sender and date;
+   *         empty for a blank owner, a blank keyword or a non-positive limit
+   */
+  public List<Email> searchEmailsForLink(String userId, String keyword, int offset, int limit) {
+    String pattern = toContainsPattern(keyword);
+    if (StringUtils.isBlank(userId) || pattern == null || limit <= 0) {
+      return Collections.emptyList();
+    }
+    List<Object[]> rows = emailBoxDao.findLinkCandidatesByUserId(userId,
+                                                                 LINK_EXCLUDED_FOLDERS,
+                                                                 pattern,
+                                                                 Math.max(0, offset),
+                                                                 Math.min(limit, MAX_LINK_RESULTS));
+    return rows.stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setUserId(userId);
+      email.setSubject((String) row[1]);
+      email.setSender(toLightSender((String) row[2]));
+      email.setReceivedDate((Date) row[3]);
+      return email;
+    }).toList();
+  }
+
+  /**
+   * The case-insensitive {@code LIKE} pattern matching a keyword anywhere, the
+   * keyword taken literally.
+   * <p>
+   * The escape character ({@code !}) is escaped first, then {@code %} and
+   * {@code _}, so that none of the three keeps a meaning in the pattern.
+   *
+   * @param keyword the searched text, untrusted
+   * @return {@code %keyword%} lower-cased and escaped, or {@code null} for a blank
+   *         keyword
+   */
+  public static String toContainsPattern(String keyword) {
+    String text = StringUtils.trim(keyword);
+    if (StringUtils.isEmpty(text)) {
+      return null;
+    }
+    text = StringUtils.left(text, MAX_LINK_KEYWORD_LENGTH).toLowerCase(Locale.ROOT);
+    String escaped = text.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+                         .replace("%", LIKE_ESCAPE + "%")
+                         .replace("_", LIKE_ESCAPE + "_");
+    return "%" + escaped + "%";
+  }
+
+  /**
+   * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
+   * and sender, and its To and Cc recipients when asked -- never its attachments.
+   *
+   * @param emailBoxEntity the row, may be null
+   * @param withRecipients whether to parse the To and Cc recipients
+   * @return the light message, or null for no row
+   */
   @SneakyThrows
-  private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity) {
+  private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity, boolean withRecipients) {
     if (emailBoxEntity == null) {
       return null;
     }
@@ -1418,6 +1562,16 @@ public class EmailBoxStorage {
     // The raw body: the caller matches on its text and cuts its own excerpt around the
     // hit, so reducing it to text here would only do the work twice.
     email.setContent(new EmailContent(emailBoxEntity.getBody()));
+    if (withRecipients) {
+      // The To and Cc recipients, for the recipient criterion of the search of a shared
+      // mailbox's copy (EXO-90838): parsed from the row already read, with no profile.
+      email.setTo(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getTo()),
+                                                         emailBoxEntity.getUserId(),
+                                                         false));
+      email.setCc(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getCc()),
+                                                         emailBoxEntity.getUserId(),
+                                                         false));
+    }
     String[] emailSenderParts = emailBoxEntity.getSender().split(",");
     email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(emailSenderParts[1], emailSenderParts[0]), false));
     return email;
@@ -1507,6 +1661,54 @@ public class EmailBoxStorage {
    */
   public List<Email> getStarredCopyKeys(String userId, String mailHeaderId, List<String> excludedFolders) {
     return toStarredKeys(emailBoxDao.findStarredKeysByUserIdAndMailHeaderIdExcludingFolders(userId, mailHeaderId, excludedFolders));
+  }
+
+  /**
+   * The owner's cached copies of some messages, by their Message-IDs, outside the given
+   * folders, as light rows: id, folder, Message-ID, UID, subject, sender, date, read and
+   * starred, nothing else -- what the mailbox's "Suggestions" view lists (EXO-90851).
+   * Drafts are never among them. One query, whatever the number of Message-IDs.
+   *
+   * @param userId the mailbox owner, whose rows only are read
+   * @param mailHeaderIds the Message-IDs; nothing is read when there is none
+   * @param excludedFolders the folders left out, not empty
+   * @return every copy found, newest first
+   */
+  public List<Email> getListedEmailsByMailHeaderIds(String userId, Collection<String> mailHeaderIds, Collection<String> excludedFolders) {
+    if (StringUtils.isBlank(userId) || mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findListedByUserIdAndMailHeaderIds(userId, mailHeaderIds, excludedFolders)
+                      .stream()
+                      .map(EmailBoxStorage::toListedEmail)
+                      .toList();
+  }
+
+  /**
+   * A light listed row out of the projection {@code [id, folder, mailHeaderId,
+   * mailRemoteId, subject, sender, receivedDate, read, starred]}, the sender read
+   * through {@link #splitStoredPerson} as {@link #toLightSender} reads it: named by its
+   * address when the column carries no name.
+   *
+   * @param row the projected row
+   * @return the row as an email carrying those fields only
+   */
+  private static Email toListedEmail(Object[] row) {
+    Email email = new Email();
+    email.setId((Long) row[0]);
+    email.setFolder((String) row[1]);
+    email.setMailHeaderId((String) row[2]);
+    email.setMailRemoteId((Long) row[3]);
+    email.setSubject((String) row[4]);
+    String sender = (String) row[5];
+    if (StringUtils.isNotBlank(sender)) {
+      String[] parts = splitStoredPerson(sender);
+      email.setSender(new EmailSender(StringUtils.isBlank(parts[0]) ? parts[1] : parts[0], parts[1], null, null));
+    }
+    email.setReceivedDate((Date) row[6]);
+    email.setRead(Boolean.TRUE.equals(row[7]));
+    email.setStarred(Boolean.TRUE.equals(row[8]));
+    return email;
   }
 
   /**
@@ -2191,11 +2393,22 @@ public class EmailBoxStorage {
                                                          false,
                                                          null,
                                                          null,
-                                                         false);
+                                                         false,
+                                                         // The draft's mailbox and name, set by name below.
+                                                         null,
+                                                         null,
+                                                         // The authentication verdict, set by name below.
+                                                         null);
       emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
       emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
       emailBoxEntity.setReadReceiptState(email.getReadReceiptState());
       emailBoxEntity.setReadReceiptReturnPathMatch(email.isReadReceiptReturnPathMatch());
+      // A draft's mailbox is written by its first save, which is this path (EXO-90595);
+      // saveDraft's edit path leaves the column alone, so no later save can move it.
+      emailBoxEntity.setDraftDelegationId(email.getSendDelegationId());
+      // And the name it is to go out in (EXO-90584), which every later save rewrites.
+      emailBoxEntity.setDraftSendMode(email.getSendMode());
+      emailBoxEntity.setAuthFailure(email.getContent() != null ? email.getContent().getAuthFailure() : null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -2304,6 +2517,7 @@ public class EmailBoxStorage {
       boolean listedWithoutBody = isExcerpt && StringUtils.isBlank(emailBoxEntity.getDraftLocalId());
       EmailContent content = new EmailContent(listedWithoutBody ? null : body, excerpt, attachments);
       content.setHtml(isHtmlBody(emailBoxEntity));
+      content.setAuthFailure(emailBoxEntity.getAuthFailure());
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       String linkedObjectId = String.valueOf(emailBoxEntity.getId());
@@ -2351,11 +2565,17 @@ public class EmailBoxStorage {
                               // the draft's own files to the message builder.
                               null, false, null, null, null,
                               // The read-receipt fields, set below by name.
-                              false, null, null, false, null, null, null);
+                              false, null, null, false, null, null, null,
+                              // The draft's mailbox (EXO-90595) and name (EXO-90584), set by name below.
+                              null, null, null);
       email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
       email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
       email.setReadReceiptState(emailBoxEntity.getReadReceiptState());
       email.setReadReceiptReturnPathMatch(emailBoxEntity.isReadReceiptReturnPathMatch());
+      // The mailbox a draft was written in (EXO-90595), on every read of it.
+      email.setSendDelegationId(emailBoxEntity.getDraftDelegationId());
+      // And the name it is to go out in (EXO-90584).
+      email.setSendMode(emailBoxEntity.getDraftSendMode());
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //

@@ -39,9 +39,12 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
+import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -217,6 +220,10 @@ public class EmailConnectorService {
 
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
+
+  /** The engines the administration screen chose per connector. */
+  @Autowired
+  private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
   private EmailManagedModeService   emailManagedModeService;
@@ -692,6 +699,7 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    trimServerFields(emailConnector);
     // Before the insert, not after: a setting key carries the connector id, so the
     // configuration can only be written once the connector exists - and a refusal then
     // would leave a connector created with nothing configured, which an administrator
@@ -743,6 +751,7 @@ public class EmailConnectorService {
     // connector and its configuration are two writes, and a refusal on the second
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
+    trimServerFields(emailConnector);
     validateProviderConfig(emailConnector);
     // The managed connector may not move to a provider that asks each user for
     // something: designating it refused exactly that, and an edit must not be the way
@@ -796,6 +805,76 @@ public class EmailConnectorService {
     String previousProvider = previousEmailConnector.getAuthProviderName();
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     return !StringUtils.equals(StringUtils.defaultIfBlank(previousProvider, null), StringUtils.defaultIfBlank(newProvider, null));
+  }
+
+  /**
+   * Whether users of a connector may forward their mail from eXo, and to which domains,
+   * as the administration screen shows it: the value that applies, whether the screen
+   * was ever saved (until then the deployment's properties apply), and whether the
+   * deployment's kill switch overrides it.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user asking, checked against the administration ACL
+   * @return the settings that apply
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists
+   */
+  public ConnectorForwarding getForwarding(Long emailConnectorId, String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * Saves whether users of a connector may forward their mail from eXo, and to which
+   * domains, in the global settings only administrators can write. It applies at once;
+   * the deployment's kill switch still wins. Switching it off keeps the forwards already
+   * on: users can still remove them, and no new one is accepted.
+   *
+   * @param emailConnectorId the connector
+   * @param forwarding the switch and the domains, each a plain domain
+   * @param username the user saving, checked against the administration ACL
+   * @return the settings that apply after the save
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists, or a domain is not a
+   *           plain domain ({@value ForwardingGuard#INVALID_DOMAIN})
+   */
+  public ConnectorForwarding saveForwarding(Long emailConnectorId,
+                                            ConnectorForwarding forwarding,
+                                            String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    if (forwarding == null) {
+      throw new IllegalArgumentException(ForwardingGuard.INVALID_DOMAIN);
+    }
+    ForwardingGuard.save(settingService, connector.getId(), forwarding.isAuthoringEnabled(), forwarding.getAllowedDomains());
+    LOG.info("Forwarding of connector {} set by {}: authoring {}, allowed domains {}",
+             connector.getId(),
+             username,
+             forwarding.isAuthoringEnabled(),
+             forwarding.getAllowedDomains());
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * A connector an administrator acts on.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user, checked against the administration ACL
+   * @return the connector
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when the id is missing or names no connector
+   */
+  private EmailConnector administeredConnector(Long emailConnectorId, String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE, username, emailConnectorId));
+    }
+    EmailConnector connector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (connector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    return connector;
   }
 
   /**
@@ -985,8 +1064,24 @@ public class EmailConnectorService {
       providerConfigStorage.delete(providerConfigContext(emailConnectorId, storedEmailConnector.getAuthProviderName()));
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+    forgetEngineChoices(emailConnectorId);
     activateEmailApp();
     eventPublisher.publishEvent(new UserEmailSettingCleanupEvent(emailConnectorId));
+  }
+
+  /**
+   * Forgets the engines the administration screen chose for a deleted connector. Its
+   * id is never given again, so an entry left behind is only clutter: a failure is said
+   * and does not fail the deletion.
+   *
+   * @param emailConnectorId the deleted connector
+   */
+  private void forgetEngineChoices(Long emailConnectorId) {
+    try {
+      connectorEngineChoiceStorage.removeChoices(emailConnectorId);
+    } catch (RuntimeException e) {
+      LOG.warn("The engines chosen for deleted connector {} could not be forgotten", emailConnectorId, e);
+    }
   }
 
   /**
@@ -1014,6 +1109,22 @@ public class EmailConnectorService {
       logProviderConfigRefusal(emailConnector, values, e);
       throw new IllegalArgumentException(e.getMessage(), e);
     }
+  }
+
+  /**
+   * Trims the server fields of a connector preset as it is saved: the IMAP and SMTP hosts
+   * and ports and the SMTP security type. JavaMail resolves a host verbatim, so a value
+   * typed with surrounding whitespace is an unknown host, a failure no screen shows. The
+   * provider configuration, which may carry secrets, is left as it came.
+   *
+   * @param emailConnector the preset being saved
+   */
+  private static void trimServerFields(EmailConnector emailConnector) {
+    emailConnector.setImapUrl(StringUtils.trim(emailConnector.getImapUrl()));
+    emailConnector.setImapPort(StringUtils.trim(emailConnector.getImapPort()));
+    emailConnector.setSmtpUrl(StringUtils.trim(emailConnector.getSmtpUrl()));
+    emailConnector.setSmtpPort(StringUtils.trim(emailConnector.getSmtpPort()));
+    emailConnector.setSmtpSecurityType(StringUtils.trim(emailConnector.getSmtpSecurityType()));
   }
 
   /**

@@ -63,15 +63,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :value="rail && dropTarget === entry.value"
           right>
           <template #activator="{ on, attrs }">
-            <div :style="dropStyle(entry)" v-on="dropListeners(entry)">
+            <!-- A label (below) takes no pointer event: its name on hover -- the title, or
+                 the rail's tooltip -- rides this wrapper instead. -->
+            <div
+              :style="dropStyle(entry)"
+              :title="!rail && entry.labelOnly ? entry.tooltip : null"
+              v-bind="rail && entry.labelOnly ? attrs : {}"
+              v-on="wrapperListeners(entry, rail && entry.labelOnly ? on : {})">
+              <!-- A folder inside another is indented under it (EXO-90839); a rail has no room. -->
+              <!-- A folder the user may only see is a label its folders nest under: never
+                   listed, never a drop target (EXO-90839). -->
               <v-list-item
                 :value="entry.value"
                 :aria-label="entry.ariaLabel"
                 :aria-selected="String(entry.value === activeKey)"
+                :disabled="entry.labelOnly"
                 :title="rail ? null : entry.tooltip"
+                :style="rail ? null : indent(entry)"
                 role="option"
-                v-bind="rail ? attrs : {}"
-                v-on="rail ? on : {}"
+                v-bind="rail && !entry.labelOnly ? attrs : {}"
+                v-on="rail && !entry.labelOnly ? on : {}"
                 @click="entry.select">
                 <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
                   <v-badge
@@ -94,6 +105,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                     class="text-body-2">
                     {{ $emailConnectorMailBoxService.formatCount(entry.count) }}
                   </v-list-item-action-text>
+                  <!-- Collapses or expands the folders inside it, without listing it. -->
+                  <v-btn
+                    v-if="entry.hasChildren"
+                    :title="toggleLabel(entry)"
+                    :aria-label="toggleLabel(entry)"
+                    :aria-expanded="String(!collapsed[entry.folderKey])"
+                    class="ms-1"
+                    icon
+                    x-small
+                    @click.stop="toggle(entry.folderKey)">
+                    <v-icon size="12" class="icon-default-color">
+                      {{ collapsed[entry.folderKey] ? 'fa-chevron-right' : 'fa-chevron-down' }}
+                    </v-icon>
+                  </v-btn>
                 </template>
               </v-list-item>
             </div>
@@ -109,10 +134,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 // The first row sits on the list's chips row (the FOLDERS header, or the rail's first entry).
 import { LIST_TOP_ROW_HEIGHT as TOP_ROW_HEIGHT, RAIL_TOP_PADDING } from '../../js/EmailConnectorMailBoxService.js';
 import folderDropMixin from '../../js/EmailConnectorMailBoxFolderDropMixin.js';
+import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
 
 export default {
   mixins: [folderDropMixin],
-  data: () => ({ TOP_ROW_HEIGHT, RAIL_TOP_PADDING }),
+  data: () => ({ TOP_ROW_HEIGHT, RAIL_TOP_PADDING, collapsed: readCollapsedFolders() }),
   props: {
     // The menu's folders, categories, listed folder, open view; counts by key / id.
     folders: { type: Array, default: () => [{ key: 'INBOX', type: 'BUILT_IN' }] },
@@ -122,6 +148,9 @@ export default {
     folderCounts: { type: Object, default: () => ({}) },
     categoryUnreadCounts: { type: Object, default: () => ({}) },
     rail: { type: Boolean, default: false },
+    // Every folder of the user's, mirrored or not: what decides whether INBOX is the
+    // namespace their folders live under (EXO-90839). The listed folders when not given.
+    namespaceFolders: { type: Array, default: null },
   },
   computed: {
     /**
@@ -138,13 +167,31 @@ export default {
      * @returns {Array} the entries
      */
     folderEntries() {
-      return this.folders.map(folder => {
+      // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
+      // a collapsed one's folders left out.
+      return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.expandableCollapsed).map(row => {
+        const folder = row.folder;
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
+        const label = row.showPath ? row.pathLabel
+          : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
-          this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)), count, !!(count && counted.unread),
-          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key };
+          label, count, !!(count && counted.unread),
+          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key, depth: row.depth,
+        // A label only cannot be clicked, so it never collapses: its folders always show.
+        hasChildren: row.hasChildren && folder.readable !== false, labelOnly: folder.readable === false };
       });
+    },
+    /**
+     * The collapsed folders, without those the user may only see: a label never
+     * collapses, so its folders are never hidden behind it.
+     *
+     * @returns {Object} the collapsed folders, by key
+     */
+    expandableCollapsed() {
+      const collapsed = Object.assign({}, this.collapsed);
+      this.folders.filter(folder => folder.readable === false).forEach(folder => delete collapsed[folder.key]);
+      return collapsed;
     },
     /** @returns {Array} the categories, each with its unread mail */
     categoryEntries() {
@@ -187,6 +234,47 @@ export default {
         described = this.$t('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described });
       }
       return { value, icon, label, count, unread, select, attention, ariaLabel: described, tooltip: described };
+    },
+    /**
+     * The listeners of an entry's wrapper: the drop zone's, and for a label the rail
+     * tooltip's activator, which the label itself cannot carry (it takes no pointer
+     * event).
+     *
+     * @param {Object} entry the entry
+     * @param {Object} tooltipListeners the tooltip activator's listeners, or none
+     * @returns {Object} the listeners
+     */
+    wrapperListeners(entry, tooltipListeners) {
+      return Object.assign({}, tooltipListeners, this.dropListeners(entry));
+    },
+    /**
+     * Indents a folder under the folder it is inside.
+     *
+     * @param {Object} entry the entry
+     * @returns {Object} the style, nothing at the top
+     */
+    indent(entry) {
+      return entry.depth ? { paddingInlineStart: `${8 + Math.min(entry.depth, 6) * 12}px` } : null;
+    },
+    /**
+     * What the collapse button of a folder says: the action it takes, with the folder's name.
+     *
+     * @param {Object} entry the entry
+     * @returns {String} the label
+     */
+    toggleLabel(entry) {
+      const key = this.collapsed[entry.folderKey] ? 'emailConnector.mailBox.list.drawer.navigation.expandFolder'
+        : 'emailConnector.mailBox.list.drawer.navigation.collapseFolder';
+      return this.$t(key, { 0: entry.label });
+    },
+    /**
+     * Collapses or expands the folders inside a folder.
+     *
+     * @param {String} key the folder's key
+     * @returns {void}
+     */
+    toggle(key) {
+      this.collapsed = toggleCollapsedFolder(this.collapsed, key);
     },
     /**
      * Lists a folder with the menu's event, the listed one too (the way out of a view).

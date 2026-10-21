@@ -218,13 +218,16 @@ export function setMailFolderMirror(id, enabled) {
  * write to the account's real mailbox, done only on this explicit call. A refusal
  * carries the server's message code as the error message
  * ("emailConnector.folder.name.duplicate", ".nested", ".reserved", ".blank",
- * ".tooLong" or ".createFailed"), so the screen can say why in the user's words.
+ * ".tooLong", "emailConnector.folder.parent.invalid" or ".createFailed"), so the
+ * screen can say why in the user's words.
  *
  * @param {String} name the folder name, as typed
+ * @param {Number} parentId the registry id of the folder to create it in; the top level when omitted
  * @returns {Promise<Object>} the folder as registered
  */
-export function createMailFolder(name) {
-  return fetch(`/email-connector/rest/email-box/folders?name=${encodeURIComponent(name)}`, {
+export function createMailFolder(name, parentId) {
+  const parent = parentId ? `&parentId=${encodeURIComponent(parentId)}` : '';
+  return fetch(`/email-connector/rest/email-box/folders?name=${encodeURIComponent(name)}${parent}`, {
     credentials: 'include',
     method: 'POST'
   }).then(resp => {
@@ -265,15 +268,53 @@ export function renameMailFolder(id, name) {
 }
 
 /**
- * Deletes one of the user's own folders, on the mail server and in the registry --
- * permanently, and refused by the server while the folder still holds mail
- * ("emailConnector.folder.notEmpty").
+ * Moves one of the user's own folders, with the folders inside it, inside another of
+ * their folders or to the top level, optionally under a new name in the same step
+ * (EXO-90839). A refusal carries the server's message code the same way
+ * {@link createMailFolder} does ("emailConnector.folder.parent.invalid" for a folder
+ * it cannot go into).
  *
  * @param {Number} id the folder's registry id
+ * @param {Number} parentId the registry id of the folder to move it into; the top level when omitted
+ * @param {String} name the name it takes there, as typed; its own when omitted
+ * @returns {Promise<Object>} the folder as it now stands
+ */
+export function moveMailFolder(id, parentId, name) {
+  const params = new URLSearchParams();
+  if (parentId) {
+    params.append('parentId', parentId);
+  }
+  if (name) {
+    params.append('name', name);
+  }
+  return fetch(`/email-connector/rest/email-box/folders/${id}/parent?${params}`, {
+    credentials: 'include',
+    method: 'PATCH'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when moving the mail folder');
+      });
+  });
+}
+
+/**
+ * Deletes one of the user's own folders, on the mail server and in the registry --
+ * permanently, and refused by the server while the folder, or one inside it, still
+ * holds mail ("emailConnector.folder.notEmpty", "emailConnector.folder.subFolderNotEmpty"),
+ * or while it has folders inside it the caller did not say it deletes
+ * ("emailConnector.folder.hasSubFolders").
+ *
+ * @param {Number} id the folder's registry id
+ * @param {Boolean} subFolders whether the folders inside it are deleted too
  * @returns {Promise<void>} resolved once the folder and its mirror are gone
  */
-export function deleteMailFolder(id) {
-  return fetch(`/email-connector/rest/email-box/folders/${id}`, {
+export function deleteMailFolder(id, subFolders) {
+  return fetch(`/email-connector/rest/email-box/folders/${id}${subFolders ? '?subFolders=true' : ''}`, {
     credentials: 'include',
     method: 'DELETE'
   }).then(resp => {
@@ -343,16 +384,22 @@ export function getReceivedDelegations(discover) {
  *
  * @param {String} granteeUsername the eXo username to share with
  * @param {String} preset READER or EDITOR
+ * @param {Object} folderAccess optionally, the owner's choice for Sent, Archive, Trash
+ *        and Spam, by role -- {TRASH: 'NONE'} (EXO-90556); a role absent follows the preset
  * @returns {Promise<Object>} the delegation as created
  */
-export function inviteDelegation(granteeUsername, preset) {
+export function inviteDelegation(granteeUsername, preset, folderAccess) {
+  const body = {granteeUsername, preset};
+  if (folderAccess && Object.keys(folderAccess).length) {
+    body.folderAccess = folderAccess;
+  }
   return fetch('/email-connector/rest/user-email-setting/delegations', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
     method: 'POST',
-    body: JSON.stringify({granteeUsername, preset})
+    body: JSON.stringify(body)
   }).then(resp => {
     if (resp?.ok) {
       return resp.json();
@@ -362,6 +409,76 @@ export function inviteDelegation(granteeUsername, preset) {
       .then(body => {
         throw new Error(body?.message || 'Error when sharing your mailbox');
       });
+  });
+}
+
+/**
+ * The caller's own folders that can be shared one by one, for the invitation's folder
+ * choice (EXO-90556): INBOX first, then Sent, Archive, Trash and Spam, then the caller's
+ * other folders as a tree; never Drafts. No access is read.
+ *
+ * @returns {Promise<Object>} {folders, truncated}; rejects with the server's message code
+ */
+export function getShareableFolders() {
+  return fetch('/email-connector/rest/user-email-setting/delegations/folders', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when reading your folders');
+    });
+  });
+}
+
+/**
+ * The caller's folders with the access one person holds in each, as the mail server
+ * says it now (EXO-90556).
+ *
+ * @param {Number} id the delegation id
+ * @returns {Promise<Object>} {folders, truncated}; rejects with the server's message code
+ */
+export function getDelegationFolders(id) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/folders`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when reading what you share');
+    });
+  });
+}
+
+/**
+ * Sets the access one person holds in some of the caller's folders, on the mail server
+ * (EXO-90556). Each folder is its own write: the answer says what became of each.
+ *
+ * @param {Number} id the delegation id
+ * @param {Array} folders the changes, [{folder, access}] with access READER, EDITOR or NONE
+ * @returns {Promise<Object>} {delegation, results}; rejects with the server's message code
+ */
+export function setDelegationFolders(id, folders) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/folders`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({folders}),
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when changing what you share');
+    });
   });
 }
 
@@ -440,6 +557,35 @@ export function changeDelegationPreset(id, preset) {
 }
 
 /**
+ * Sets, changes or withdraws the caller's consent to one grantee writing mail in the
+ * caller's name (EXO-90582). Recorded on the share; nothing is sent. A refusal carries
+ * the server's message code as the error message.
+ *
+ * @param {Number} id the delegation id
+ * @param {String} sendMode NONE, ON_BEHALF or AS
+ * @returns {Promise<Object>} the delegation as it now stands
+ */
+export function setDelegationSendMode(id, sendMode) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/send-mode`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({sendMode}),
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when changing who may write mail in your name');
+      });
+  });
+}
+
+/**
  * Answers a share: accept it, decline it, or leave one already accepted. Three verbs
  * on one path because the server decides what each means for the row — and none of
  * them touches the access itself, which stays the owner's to remove.
@@ -468,7 +614,7 @@ export function answerDelegation(id, answer) {
  * The caller's own toggles on one shared mailbox. A field left out stays as it is.
  *
  * @param {Number} id the delegation id
- * @param {Object} preferences {badgeIncluded, notifyNewMail}
+ * @param {Object} preferences {badgeIncluded, notifyNewMail, searchIncluded}
  * @returns {Promise<Object>} the delegation as it now stands
  */
 export function updateDelegationPreferences(id, preferences) {
@@ -489,4 +635,344 @@ export function updateDelegationPreferences(id, preferences) {
         throw new Error(body?.message || 'Error when saving your preferences on a shared mailbox');
       });
   });
+}
+
+/**
+ * Turns a refused request of the filters into an Error carrying the server's message
+ * code as its message and, for a 409, the name of the script the conflict is about as
+ * `scriptName`, with the answer's status as `status`.
+ *
+ * @param {Response} resp - the refused answer
+ * @param {string} fallback - the message when the answer carries no code
+ * @returns {Promise<never>} rejected with the error
+ */
+function filtersError(resp, fallback) {
+  return resp.json()
+    .catch(() => ({}))
+    .then(body => {
+      const error = new Error(body?.message || fallback);
+      error.status = resp?.status;
+      error.scriptName = body?.scriptName;
+      throw error;
+    });
+}
+
+/**
+ * The server group of the user's filters, read live from their mail server: what the
+ * engine can do, the rules eXo manages there in the order the server applies them, their
+ * state (OWN, INACTIVE, MODIFIED or NONE), another client's script the server also runs,
+ * and whether the user already agreed that eXo manages rules on their server.
+ *
+ * @returns {Promise<object>} {capabilities, engine, rules, state, foreignScriptName, consented}
+ */
+export function getServerFilters() {
+  return fetch('/email-connector/rest/email-box/filters/server', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when reading the filters')));
+}
+
+/**
+ * Creates, or replaces, one filter the mail server runs at delivery.
+ *
+ * @param {object} rule - {name, enabled, matchAll, conditions, actions, stop}; a move names its folder by key
+ * @param {string} [ref] - the filter to replace; none to create one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function saveServerFilter(rule, ref, options) {
+  const params = new URLSearchParams();
+  if (options?.consent) {
+    params.set('consent', 'true');
+  }
+  if (options?.republish) {
+    params.set('republish', 'true');
+  }
+  const query = params.toString();
+  const path = ref ? `/server/${encodeURIComponent(ref)}` : '/server';
+  return fetch(`/email-connector/rest/email-box/filters${path}${query ? `?${query}` : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: ref ? 'PUT' : 'POST',
+    body: JSON.stringify(rule)
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when saving the filter')));
+}
+
+/**
+ * Deletes one filter the mail server runs at delivery.
+ *
+ * @param {string} ref - the filter
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function deleteServerFilter(ref, republish) {
+  return fetch(`/email-connector/rest/email-box/filters/server/${encodeURIComponent(ref)}${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when deleting the filter')));
+}
+
+/**
+ * Writes the filters eXo manages again and makes the server run them: Re-activate, or,
+ * with republish, Re-publish over an edit made outside eXo.
+ *
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function publishServerFilters(republish) {
+  return fetch(`/email-connector/rest/email-box/filters/server/publish${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when publishing the filters')));
+}
+
+/**
+ * The query string of the eXo group's writes: consent and republish when set.
+ *
+ * @param {object} [options] - {consent, republish, withAgent, action, limit}
+ * @returns {string} the query, with its leading "?", or empty
+ */
+function filterQuery(options) {
+  const params = new URLSearchParams();
+  Object.entries(options || {}).forEach(([key, value]) => {
+    if (typeof value !== 'undefined' && value !== null && value !== false && value !== '') {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+/**
+ * Sends a request of the eXo group and reads its answer; a refusal becomes the Error
+ * filtersError makes of it.
+ *
+ * @param {string} path - the path under /email-box/filters, from its first "/"
+ * @param {string} method - the HTTP method
+ * @param {object} body - the JSON body, null for none
+ * @param {string} fallback - the message when the refusal carries no code
+ * @returns {Promise<object>} the answer, or null when it has no body
+ */
+function filterRequest(path, method, body, fallback) {
+  return fetch(`/email-connector/rest/email-box/filters${path}`, {
+    headers: body === null ? {} : { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    cache: 'no-store',
+    method,
+    ...(body === null ? {} : { body: JSON.stringify(body) }),
+  }).then(resp => {
+    if (!resp?.ok) {
+      return filtersError(resp, fallback);
+    }
+    return resp.status === 204 ? null : resp.json().catch(() => null);
+  });
+}
+
+/**
+ * The eXo group of the user's filters: the rules eXo runs after each sync of their own
+ * inbox, in the order they run. Never reads the mail server.
+ *
+ * @returns {Promise<object[]>} the rules
+ */
+export function getExoFilters() {
+  return filterRequest('', 'GET', null, 'Error when reading the filters');
+}
+
+/**
+ * What the user decided on each of their rules' suggestions: per rule, how many were
+ * approved, rejected, expired unanswered, continued in the chat, and how many wait.
+ *
+ * @returns {Promise<object[]>} the counts, {filterId, approved, rejected, expired, handedOver, waiting}
+ */
+export function getFilterSuggestionCounts() {
+  return filterRequest('/proposals/counts', 'GET', null, 'Error when reading the suggestions counts');
+}
+
+/**
+ * Creates, or replaces, one rule eXo runs after each sync. A rule of kind HOP also runs
+ * at delivery: its server half is written first, and nothing is stored when the server
+ * refuses (409 {message, scriptName}, 502).
+ *
+ * @param {object} filter - {name, enabled, kind, matchAll, conditions, actions, stopProcessing}
+ * @param {number} [id] - the rule to replace; none to create one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the rule as stored
+ */
+export function saveExoFilter(filter, id, options) {
+  const query = filterQuery({ consent: options?.consent, republish: options?.republish });
+  return filterRequest(id ? `/${id}${query}` : query, id ? 'PUT' : 'POST', filter, 'Error when saving the filter');
+}
+
+/**
+ * Saves a filter of the drawer's one list, wherever it runs: the server decides from what
+ * the mail server can do -- a server rule, a rule the server marks and eXo applies after
+ * its sync, or a rule eXo alone runs -- and moves a filter that changes where it runs,
+ * the server first.
+ *
+ * @param {object} filter - {name, enabled, matchAll, conditions, actions, stopProcessing}
+ * @param {object} [origin] - {ref} for the server filter it replaces, {id} for the eXo one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the filter as saved: an eXo rule, or {kind: SERVER, ...}
+ */
+export function saveRoutedFilter(filter, origin, options) {
+  const query = filterQuery({
+    ref: origin?.ref,
+    id: origin?.id,
+    consent: options?.consent,
+    republish: options?.republish,
+  });
+  return filterRequest(`/routed${query}`, 'POST', filter, 'Error when saving the filter');
+}
+
+/**
+ * Deletes one rule eXo runs after each sync, and its server half first when it has one.
+ *
+ * @param {number} id - the rule
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<void>} resolved once deleted
+ */
+export function deleteExoFilter(id, republish) {
+  return filterRequest(`/${id}${filterQuery({ republish })}`, 'DELETE', null, 'Error when deleting the filter');
+}
+
+/**
+ * Orders the rules eXo runs after each sync.
+ *
+ * @param {number[]} ids - every rule's id, once, in the new order
+ * @returns {Promise<object[]>} the rules, in their new order
+ */
+export function reorderExoFilters(ids) {
+  return filterRequest('/order', 'PUT', ids, 'Error when ordering the filters');
+}
+
+/**
+ * What a rule would match among the mail eXo keeps of the user's inbox.
+ *
+ * @param {object} draft - {kind (EXO, HOP or SERVER), matchAll, conditions}
+ * @returns {Promise<object>} {total, scanned, sample, notPreviewable, approximate}
+ */
+export function previewFilter(draft) {
+  return filterRequest('/preview', 'POST', draft, 'Error when previewing the filter');
+}
+
+/**
+ * Runs a rule once over the mail already in the user's inbox.
+ *
+ * @param {number} id - the rule
+ * @param {boolean} [withAgent] - queue its assistant on the newest matches too
+ * @returns {Promise<object>} {scanned, matched, alreadyHandled, queued, notApplicable}
+ */
+export function applyExoFilter(id, withAgent) {
+  return filterRequest(`/${id}/apply${filterQuery({ withAgent })}`, 'POST', null, 'Error when applying the filter');
+}
+
+/**
+ * Publishes a rule's server half again, after it was removed or changed on the server.
+ *
+ * @param {number} id - the rule
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the rule
+ */
+export function republishExoFilter(id, options) {
+  const query = filterQuery({ consent: options?.consent, republish: options?.republish });
+  return filterRequest(`/${id}/republish${query}`, 'POST', null, 'Error when publishing the filter');
+}
+
+/**
+ * What a rule did lately.
+ *
+ * @param {number} id - the rule
+ * @param {number} [limit] - how many, at most 100
+ * @returns {Promise<object[]>} the matches, newest first
+ */
+export function getExoFilterLog(id, limit) {
+  return filterRequest(`/${id}/log${filterQuery({ limit })}`, 'GET', null, 'Error when reading the log');
+}
+
+/**
+ * What the user's rules did to one of their mails: its Automations panel.
+ *
+ * @param {number} emailId - the cached mail's id
+ * @returns {Promise<object[]>} the matches, newest first
+ */
+export function getMailAutomations(emailId) {
+  return filterRequest(`/mail/${emailId}`, 'GET', null, 'Error when reading the automations');
+}
+
+/**
+ * The user's own mails with a suggestion of an assistant still waiting for them: what
+ * the mailbox list marks.
+ *
+ * @returns {Promise<string[]>} the mails' Message-IDs
+ */
+export function getWaitingSuggestionMails() {
+  return filterRequest('/proposals/waiting', 'GET', null, 'Error when reading the waiting suggestions');
+}
+
+/**
+ * The user's own mails with a suggestion of an assistant still waiting for them, as the
+ * mailbox's "Suggestions" view lists them (EXO-90851): one cached copy per mail, newest
+ * first, shaped like a search hit, with how many suggestions wait on it.
+ *
+ * @returns {Promise<object[]>} the mails: {emailId, mailRemoteId, folder, mailHeaderId,
+ *   subject, sender, receivedDate, read, starred, cached, waitingCount}
+ */
+export function getWaitingSuggestionEmails() {
+  return filterRequest('/proposals/waiting/emails', 'GET', null, 'Error when reading the mails with waiting suggestions');
+}
+
+/**
+ * Undoes what a rule did to a mail: one action, or every one.
+ *
+ * @param {number} matchId - the match
+ * @param {string} [action] - the action type; every one when absent
+ * @returns {Promise<object>} the match after the undo
+ */
+export function undoAutomation(matchId, action) {
+  return filterRequest(`/matches/${matchId}/undo${filterQuery({ action })}`, 'POST', null, 'Error when undoing');
+}
+
+/**
+ * Runs a rule's assistant again on a mail.
+ *
+ * @param {number} matchId - the match
+ * @returns {Promise<object>} the match, queued
+ */
+export function retryAutomation(matchId) {
+  return filterRequest(`/matches/${matchId}/retry`, 'POST', null, 'Error when running the assistant again');
+}
+
+/**
+ * Approves a tool call a rule's assistant proposed; the call runs, as the user, and the
+ * answer waits for it.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal once run: DONE or FAILED
+ */
+export function approveProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/approve`, 'POST', null, 'Error when approving the proposal');
+}
+
+/**
+ * Rejects a tool call a rule's assistant proposed; it never runs.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal, REJECTED
+ */
+export function rejectProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/reject`, 'POST', null, 'Error when rejecting the proposal');
+}
+
+/**
+ * Hands a tool call a rule's assistant proposed to the AI chat; it never runs from the
+ * proposal again.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal, HANDED_OVER
+ */
+export function handOverProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/handover`, 'POST', null, 'Error when handing the proposal over');
 }

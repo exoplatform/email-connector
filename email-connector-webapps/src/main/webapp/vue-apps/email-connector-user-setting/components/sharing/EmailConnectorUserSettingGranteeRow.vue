@@ -69,8 +69,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :disabled="disabled"
           :can-extend="canExtend"
           :extend-label="extendLabel"
+          :can-choose-folders="canChooseFolders"
+          :current-send-mode="currentSendMode"
+          :send-modes="sendModes"
+          :can-set-send-mode="canSetSendMode"
           @change-preset="$emit('change-preset', $event)"
+          @change-send-mode="$emit('change-send-mode', $event)"
           @extend="$emit('extend')"
+          @folders="$emit('folders')"
           @revoke="$emit('revoke')" />
       </div>
       <div class="caption text-sub-title text-truncate">
@@ -80,6 +86,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- What the grant covers beside the Inbox (EXO-90548). -->
       <div v-if="inboxOnlyShare" class="caption text-sub-title">{{ $t('UserSettings.emailConnector.sharing.inboxOnly') }}</div>
       <div v-if="notShared" class="caption warning--text text-wrap">{{ notShared }}</div>
+      <!-- The owner's own choices on the role folders (EXO-90556); the owner's other
+           folders are listed, read live, in "Folders and access". -->
+      <div v-if="folderExceptions" class="caption text-sub-title text-wrap">{{ folderExceptions }}</div>
+      <!-- Whether they may write mail in the owner's name (EXO-90582), and what stands in
+           the way when the mail server does not follow. -->
+      <div v-if="sendModeCaption" class="caption text-sub-title text-wrap">{{ sendModeCaption }}</div>
+      <div v-if="sendModeWarning" class="caption warning--text text-wrap">{{ sendModeWarning }}</div>
       <!-- Where the access was written: a small marker, not the chip -- a share made
            in the mail server's own interface is the server's, and says so. -->
       <div v-if="discovered" class="caption text-sub-title text-wrap">
@@ -97,14 +110,21 @@ import EmailConnectorUserSettingGranteeRowMenu from './EmailConnectorUserSetting
 // The presets the owner can set from here.
 const PRESETS = ['READER', 'EDITOR'];
 
+// The role folders a grant covers beside the Inbox, in the order they are said.
+const ROLES = ['SENT', 'ARCHIVE', 'TRASH', 'JUNK'];
+
 export default {
   components: {
     'email-connector-user-setting-grantee-row-menu': EmailConnectorUserSettingGranteeRowMenu,
   },
   props: {
-    // One entry of the owner's ACL: {identifier, granteeId, delegation, preset, rights, nativeRights, affordances}.
+    // One entry of the owner's ACL: {identifier, granteeId, delegation, preset, rights, nativeRights, affordances, scope}.
     grantee: { type: Object, required: true },
     disabled: { type: Boolean, default: false },
+    // Whether the owner's mail server shares folder by folder (EXO-90556).
+    perFolder: { type: Boolean, default: false },
+    // The shapes of writing in the owner's name her mail server is declared to accept (EXO-90582).
+    sendModes: { type: Array, default: () => [] },
   },
   computed: {
     /**
@@ -183,6 +203,17 @@ export default {
       return !!delegation?.id && delegation.status !== 'REVOKED' && delegation.status !== 'GONE';
     },
     /**
+     * Whether the owner can choose this person's folders one by one: on a server that
+     * shares folder by folder, for a share that does not stand on the whole mailbox --
+     * a folder's access adds to a whole-mailbox access and never narrows it (EXO-90816).
+     *
+     * @returns {Boolean} true when "Folders and access" is offered
+     */
+    canChooseFolders() {
+      const wholeMailbox = this.grantee.scope === 'MAILBOX' || this.grantee.delegation?.grantedRoles === 'MAILBOX';
+      return this.actionable && this.perFolder && !wholeMailbox;
+    },
+    /**
      * Whether eXo may extend the share: the owner's mailbox has role folders (Sent,
      * Archive, Trash, Spam) the share does not cover yet -- the server says which
      * (extendableRoles), and only for a share eXo wrote, accepted or still on offer
@@ -221,6 +252,84 @@ export default {
      */
     inboxOnlyShare() {
       return this.actionable && !this.discovered && !!this.grantee.delegation?.inboxOnly;
+    },
+    /**
+     * The owner's per-folder exceptions to the preset on the role folders, said on the
+     * row -- "Trash: Reader · Spam: Not shared" -- or nothing (EXO-90556).
+     *
+     * @returns {String} the sentence, or empty
+     */
+    folderExceptions() {
+      const exceptions = this.actionable ? this.grantee.delegation.folderAccess || {} : {};
+      return ROLES.filter(role => exceptions[role])
+        .map(role => this.$t('UserSettings.emailConnector.sharing.folders.exception', {
+          0: this.$t(`UserSettings.emailConnector.sharing.role.${role}`),
+          1: exceptions[role] === 'NONE'
+            ? this.$t('UserSettings.emailConnector.sharing.folders.none')
+            : this.$t(`UserSettings.emailConnector.sharing.preset.${exceptions[role]}`),
+        }))
+        .join(' · ');
+    },
+    /**
+     * Whether the share is on offer or in use: the only states a consent to writing in
+     * the owner's name lives in (EXO-90582).
+     *
+     * @returns {Boolean} true for a pending or accepted share
+     */
+    live() {
+      const status = this.grantee.delegation?.status;
+      return this.actionable && (status === 'PENDING' || status === 'ACCEPTED');
+    },
+    /**
+     * The owner's consent to this person writing mail in her name, as recorded.
+     *
+     * @returns {String} NONE, ON_BEHALF or AS
+     */
+    currentSendMode() {
+      const mode = this.live ? this.grantee.delegation.sendMode : null;
+      return mode === 'ON_BEHALF' || mode === 'AS' ? mode : 'NONE';
+    },
+    /**
+     * Whether the menu offers the consent: a live share eXo made, on a server declared to
+     * accept a shape -- or one that carries a consent, which can always be withdrawn.
+     *
+     * @returns {Boolean} true when the section is offered
+     */
+    canSetSendMode() {
+      return this.live && !this.discovered && (this.sendModes.length > 0 || this.currentSendMode !== 'NONE');
+    },
+    /**
+     * "May send mail on your behalf" / "as you", or nothing.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeCaption() {
+      return this.currentSendMode === 'NONE' ? '' : this.$t(`UserSettings.emailConnector.sharing.sendMode.caption.${this.currentSendMode}`);
+    },
+    /**
+     * What stands in the way of a consent: the mail server refused a mail in the owner's
+     * name since she set it -- as her only, which leaves on her behalf usable
+     * (EXO-90626), or on her behalf, which blocks both -- or no longer is declared to
+     * accept that shape.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeWarning() {
+      if (this.currentSendMode === 'NONE') {
+        return '';
+      }
+      const refused = this.grantee.delegation.sendRefusedDate;
+      if (refused) {
+        const language = window.eXo?.env?.portal?.language || 'en';
+        // "They can still write on your behalf" only while the server is declared to
+        // accept it, the administrator's switch included.
+        const key = this.grantee.delegation.sendRefusedMode === 'AS' && this.currentSendMode === 'AS'
+            && this.sendModes.includes('ON_BEHALF')
+          ? 'UserSettings.emailConnector.sharing.sendMode.refused.AS'
+          : 'UserSettings.emailConnector.sharing.sendMode.refused';
+        return this.$t(key, { 0: new Date(refused).toLocaleDateString(language) });
+      }
+      return this.sendModes.includes(this.currentSendMode) ? '' : this.$t('UserSettings.emailConnector.sharing.sendMode.unavailable');
     },
     /**
      * The owner's folders the grant found but the server refused to share, said on the

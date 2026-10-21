@@ -115,6 +115,11 @@ public class EmailDelegationEntity {
   @Column(name = "NOTIFY_NEW_MAIL")
   private boolean notifyNewMail;
 
+  // Whether the unified search returns this shared mailbox's mirror (EXO-90554); on by
+  // default, added by changeset 1.0.0-85.
+  @Column(name = "SEARCH_INCLUDED")
+  private boolean searchIncluded = true;
+
   // When the grantee last opened this mailbox: the sync-tier signal, per delegation.
   @Column(name = "LAST_ACTIVITY_DATE")
   private Date    lastActivityDate;
@@ -146,4 +151,32 @@ public class EmailDelegationEntity {
   // (JSON): a delegate may see no special-use attribute on a shared folder (Dovecot).
   @Column(name = "OWNER_ROLE_FOLDERS")
   private String  ownerRoleFolders;
+
+  // The owner's per-folder exceptions to the preset on the role folders (EXO-90556):
+  // ROLE=ACCESS pairs, null when every role folder follows the preset. Added by
+  // changeset 1.0.0-86.
+  @Column(name = "FOLDER_ACCESS")
+  private String  folderAccess;
+
+  // The owner's consent to the grantee writing mail in the owner's name (EXO-90582):
+  // ON_BEHALF or AS, null for none. Written only by the owner's targeted update and
+  // cleared when the share ends. Added by changeset 1.0.0-88.
+  @Column(name = "SEND_MODE")
+  private String  sendMode;
+
+  // When the owner last set the consent. Added by changeset 1.0.0-88.
+  @Column(name = "SEND_MODE_DATE")
+  private Date    sendModeDate;
+
+  // When the owner's mail server last refused a mail in the owner's name for this
+  // grantee, null for never; cleared when the owner sets the consent again. Added by
+  // changeset 1.0.0-88.
+  @Column(name = "SEND_REFUSED_DATE")
+  private Date    sendRefusedDate;
+
+  // The shape that refusal was in (EXO-90626): ON_BEHALF or AS; null with a date for a
+  // refusal recorded before the shape was, read as every shape refused. Written and
+  // cleared with the date. Added by changeset 1.0.0-90.
+  @Column(name = "SEND_REFUSED_MODE")
+  private String  sendRefusedMode;
 }

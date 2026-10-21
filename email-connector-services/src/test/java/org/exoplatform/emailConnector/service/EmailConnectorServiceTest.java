@@ -21,15 +21,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,6 +47,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -57,8 +62,10 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
@@ -109,6 +116,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private EmailManagedModeService  emailManagedModeService;
+
+  @MockitoBean
+  private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
   private ApplicationEvents         events;
@@ -163,6 +173,57 @@ public class EmailConnectorServiceTest {
     verify(emailConnectorStorage).updateEmailConnector(emailConnector);
   }
 
+  /**
+   * EXO-90555 -- a preset is saved with its server fields trimmed, on create and on
+   * update: a host typed " 127.0.0.1" was stored so, and every send through it failed.
+   */
+  @Test
+  @SneakyThrows
+  void aPresetIsSavedWithItsServerFieldsTrimmed() {
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    lenient().when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    ArgumentCaptor<EmailConnector> created = ArgumentCaptor.forClass(EmailConnector.class);
+    ArgumentCaptor<EmailConnector> updated = ArgumentCaptor.forClass(EmailConnector.class);
+
+    emailConnectorService.createEmailConnector(spacedPreset(), TEST_USER);
+    // An update names an existing preset: the service refuses one with no id, or whose
+    // row is gone, before writing anything (EXO-89648).
+    EmailConnector spacedUpdate = spacedPreset();
+    spacedUpdate.setId(1L);
+    EmailConnector stored = emailConnector();
+    stored.setId(1L);
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(stored);
+    emailConnectorService.updateEmailConnector(spacedUpdate, TEST_USER);
+
+    verify(emailConnectorStorage).createEmailConnector(created.capture());
+    verify(emailConnectorStorage).updateEmailConnector(updated.capture());
+    for (EmailConnector saved : List.of(created.getValue(), updated.getValue())) {
+      assertEquals("127.0.0.1", saved.getSmtpUrl());
+      assertEquals("1465", saved.getSmtpPort());
+      assertEquals("ssl", saved.getSmtpSecurityType());
+      assertEquals("imap.example.org", saved.getImapUrl());
+      assertEquals("993", saved.getImapPort());
+    }
+  }
+
+  /**
+   * A preset whose server fields were typed with stray spaces.
+   *
+   * @return the preset
+   */
+  private EmailConnector spacedPreset() {
+    EmailConnector spaced = emailConnector();
+    spaced.setId(null);
+    spaced.setSmtpUrl(" 127.0.0.1");
+    spaced.setSmtpPort("1465 ");
+    spaced.setSmtpSecurityType(" ssl ");
+    spaced.setImapUrl(" imap.example.org ");
+    spaced.setImapPort(" 993");
+    return spaced;
+  }
+
   @Test
   @SneakyThrows
   void activateEmailConnector() {
@@ -197,6 +258,27 @@ public class EmailConnectorServiceTest {
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
     verify(applicationCenterService).getApplications(0, 0, null);
+  }
+
+  /**
+   * A deleted connector's engine choices are forgotten; one that cannot be forgotten
+   * does not fail the deletion, which already happened.
+   */
+  @Test
+  @SneakyThrows
+  void deletingAConnectorForgetsItsEngineChoices() {
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+
+    emailConnectorService.deleteEmailConnector(1L, TEST_USER);
+    verify(connectorEngineChoiceStorage).removeChoices(1L);
+
+    doThrow(new IllegalStateException("settings down")).when(connectorEngineChoiceStorage).removeChoices(1L);
+    emailConnectorService.deleteEmailConnector(1L, TEST_USER);
+    verify(emailConnectorStorage, times(2)).deleteEmailConnector(1L);
   }
 
   /**
@@ -1412,5 +1494,42 @@ public class EmailConnectorServiceTest {
     connector.setId(id);
     connector.setAuthProviderName(providerName);
     return connector;
+  }
+
+  /**
+   * The connector screen's forwarding settings: only an administrator reads or saves
+   * them; a save is kept in the global settings, which only administrators can write,
+   * with each domain checked and lower-cased, and answers what applies at once.
+   */
+  @Test
+  @SneakyThrows
+  void forwardingSettingsAreAdministrators() {
+    EmailConnector connector = emailConnector();
+    connector.setId(7L);
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(connector);
+    ConnectorForwarding forwarding = new ConnectorForwarding(true, List.of("Partner.com", "@other.org"), false, false);
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveForwarding(7L, forwarding, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.getForwarding(7L, TEST_USER));
+    verify(settingService, never()).set(any(), any(), any(), any());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    java.util.Map<String, String> stored = new java.util.HashMap<>();
+    doAnswer(invocation -> {
+      stored.put(invocation.getArgument(2, String.class), invocation.getArgument(3, SettingValue.class).getValue().toString());
+      return null;
+    }).when(settingService).set(eq(Context.GLOBAL), any(), anyString(), any(SettingValue.class));
+    when(settingService.get(eq(Context.GLOBAL), any(), anyString())).thenAnswer(invocation -> {
+      String value = stored.get(invocation.getArgument(2, String.class));
+      return value == null ? null : SettingValue.create(value);
+    });
+    ConnectorForwarding saved = emailConnectorService.saveForwarding(7L, forwarding, TEST_USER);
+    assertTrue(saved.isAuthoringEnabled());
+    assertTrue(saved.isSaved());
+    assertEquals(List.of("partner.com", "other.org"), saved.getAllowedDomains());
+    assertEquals(saved, emailConnectorService.getForwarding(7L, TEST_USER));
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailConnectorService.saveForwarding(7L, new ConnectorForwarding(true, List.of("not a domain"), false, false), TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveForwarding(8L, forwarding, TEST_USER));
   }
 }

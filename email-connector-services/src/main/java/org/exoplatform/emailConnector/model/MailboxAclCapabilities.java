@@ -16,6 +16,10 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.Set;
+
 /**
  * What one connected mail server can do about sharing, probed live rather than
  * assumed -- and probed by <b>attempting the command</b>, never by reading the
@@ -50,6 +54,25 @@ package org.exoplatform.emailConnector.model;
  *          delegate's LIST immediately). When true, accepting in eXo also calls the
  *          engine's subscribe hook; when false, "Accept" is purely eXo-side
  * @param reasonCode the message code saying why sharing is unsupported, null when it is
+ * @param sendModes the shapes of writing in the owner's name the server accepts from a
+ *          delegate, as the engine knows them (EXO-90582): declared by the administrator
+ *          on an IMAP engine ({@link SendMode#declaredFor(Long)}), read from the server's
+ *          own verbs on a vendor engine that has them. Empty where nothing is declared,
+ *          which hides the owner's control. Never null, never {@link SendMode#NONE}
+ * @param sendModeOnServer whether the engine writes the owner's consent on the server
+ *          too ({@link org.exoplatform.emailConnector.service.acl.MailboxAclEngine#grantSendMode});
+ *          false on an IMAP engine, where eXo alone holds and enforces it -- an ACL
+ *          letter cannot say "send"
+ * @param mailboxScope whether a server that grants per folder also keeps entries on the
+ *          owner's whole mailbox beside them (BlueMind), so that an entry listed on a folder
+ *          may stand on the whole mailbox ({@link MailboxAce#scope()}) and is then changed or
+ *          removed only at that scope; false on an RFC 4314 server, whose every entry stands
+ *          on one folder
+ * @param editorExpungesTrash whether an Editor's access lets them delete mail for good in
+ *          the owner's Trash: false on an IMAP engine, which never grants {@code e} there
+ *          (EXO-90548, PO decision Q-1); true on a server whose Editor level has no
+ *          narrower form there (BlueMind's {@code Write}), so the interface never promises
+ *          what the server does not hold
  */
 public record MailboxAclCapabilities(boolean supported,
                                      boolean aclAdvertised,
@@ -57,7 +80,103 @@ public record MailboxAclCapabilities(boolean supported,
                                      GrantGranularity grantGranularity,
                                      boolean serverNotifiesOwner,
                                      boolean subscriptionRequired,
-                                     String reasonCode) {
+                                     String reasonCode,
+                                     Set<SendMode> sendModes,
+                                     boolean sendModeOnServer,
+                                     boolean mailboxScope,
+                                     boolean editorExpungesTrash) {
+
+  /**
+   * Normalises the declared shapes: never null, never {@link SendMode#NONE}, and a copy
+   * nobody can change afterwards.
+   *
+   * @param supported whether shares can be read and written at all
+   * @param aclAdvertised whether CAPABILITY listed ACL
+   * @param namespaceAdvertised whether CAPABILITY listed NAMESPACE
+   * @param grantGranularity the unit a grant is written on
+   * @param serverNotifiesOwner whether the server notifies the owner itself
+   * @param subscriptionRequired whether the grantee must accept on the server
+   * @param reasonCode why sharing is unsupported, null when it is
+   * @param sendModes the shapes of writing in the owner's name the server accepts
+   * @param sendModeOnServer whether the engine writes the consent on the server
+   * @param mailboxScope whether the server also keeps whole-mailbox entries beside
+   *          per-folder ones
+   * @param editorExpungesTrash whether an Editor can delete mail for good in the owner's
+   *          Trash
+   */
+  public MailboxAclCapabilities {
+    Set<SendMode> modes = EnumSet.noneOf(SendMode.class);
+    if (sendModes != null) {
+      sendModes.stream().filter(mode -> mode != null && mode != SendMode.NONE).forEach(modes::add);
+    }
+    sendModes = Collections.unmodifiableSet(modes);
+  }
+
+  /**
+   * The capabilities of a server whose every entry stands on one folder and whose Editor
+   * never deletes for good in the owner's Trash -- every caller written before EXO-90816.
+   *
+   * @param supported whether shares can be read and written at all
+   * @param aclAdvertised whether CAPABILITY listed ACL
+   * @param namespaceAdvertised whether CAPABILITY listed NAMESPACE
+   * @param grantGranularity the unit a grant is written on
+   * @param serverNotifiesOwner whether the server notifies the owner itself
+   * @param subscriptionRequired whether the grantee must accept on the server
+   * @param reasonCode why sharing is unsupported, null when it is
+   * @param sendModes the shapes of writing in the owner's name the server accepts
+   * @param sendModeOnServer whether the engine writes the consent on the server
+   */
+  public MailboxAclCapabilities(boolean supported,
+                                boolean aclAdvertised,
+                                boolean namespaceAdvertised,
+                                GrantGranularity grantGranularity,
+                                boolean serverNotifiesOwner,
+                                boolean subscriptionRequired,
+                                String reasonCode,
+                                Set<SendMode> sendModes,
+                                boolean sendModeOnServer) {
+    this(supported,
+         aclAdvertised,
+         namespaceAdvertised,
+         grantGranularity,
+         serverNotifiesOwner,
+         subscriptionRequired,
+         reasonCode,
+         sendModes,
+         sendModeOnServer,
+         false,
+         false);
+  }
+
+  /**
+   * The capabilities of a server that accepts no writing in the owner's name -- every
+   * caller written before EXO-90582.
+   *
+   * @param supported whether shares can be read and written at all
+   * @param aclAdvertised whether CAPABILITY listed ACL
+   * @param namespaceAdvertised whether CAPABILITY listed NAMESPACE
+   * @param grantGranularity the unit a grant is written on
+   * @param serverNotifiesOwner whether the server notifies the owner itself
+   * @param subscriptionRequired whether the grantee must accept on the server
+   * @param reasonCode why sharing is unsupported, null when it is
+   */
+  public MailboxAclCapabilities(boolean supported,
+                                boolean aclAdvertised,
+                                boolean namespaceAdvertised,
+                                GrantGranularity grantGranularity,
+                                boolean serverNotifiesOwner,
+                                boolean subscriptionRequired,
+                                String reasonCode) {
+    this(supported,
+         aclAdvertised,
+         namespaceAdvertised,
+         grantGranularity,
+         serverNotifiesOwner,
+         subscriptionRequired,
+         reasonCode,
+         Set.of(),
+         false);
+  }
 
   /**
    * A server on which sharing is not available.
@@ -79,6 +198,28 @@ public record MailboxAclCapabilities(boolean supported,
    * @return the capabilities, supported
    */
   public static MailboxAclCapabilities imap(boolean aclAdvertised, boolean namespaceAdvertised) {
-    return new MailboxAclCapabilities(true, aclAdvertised, namespaceAdvertised, GrantGranularity.FOLDER, false, false, null);
+    return imap(aclAdvertised, namespaceAdvertised, Set.of());
+  }
+
+  /**
+   * {@link #imap(boolean, boolean)} with the shapes of writing in the owner's name the
+   * administrator declared for the connector (EXO-90582); eXo alone holds the consent on
+   * such a server.
+   *
+   * @param aclAdvertised whether CAPABILITY listed ACL
+   * @param namespaceAdvertised whether CAPABILITY listed NAMESPACE
+   * @param sendModes the declared shapes
+   * @return the capabilities, supported
+   */
+  public static MailboxAclCapabilities imap(boolean aclAdvertised, boolean namespaceAdvertised, Set<SendMode> sendModes) {
+    return new MailboxAclCapabilities(true,
+                                      aclAdvertised,
+                                      namespaceAdvertised,
+                                      GrantGranularity.FOLDER,
+                                      false,
+                                      false,
+                                      null,
+                                      sendModes,
+                                      false);
   }
 }

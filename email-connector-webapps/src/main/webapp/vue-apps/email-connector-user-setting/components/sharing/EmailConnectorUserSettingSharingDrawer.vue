@@ -24,10 +24,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        at all -- an identifier no eXo user holds -- and why those rows carry no button
        rather than a dead one. -->
   <div v-if="active">
-    <v-progress-linear
-      v-if="loading"
-      indeterminate
-      color="primary" />
     <!-- Said before the list and not after it: on a mail server without sharing
          there is nothing to read, and the reason is the whole answer. -->
     <div v-if="loaded && !supported" class="px-4 py-4 text-sub-title text-wrap">
@@ -46,8 +42,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="grantee.identifier"
           :grantee="grantee"
           :disabled="revokingId !== null || changingId !== null"
+          :per-folder="perFolder"
+          :send-modes="sendModes"
           @change-preset="askChangePreset(grantee, $event)"
+          @change-send-mode="askChangeSendMode(grantee, $event)"
           @extend="askExtend(grantee)"
+          @folders="openFolders(grantee)"
           @revoke="openRevoke(grantee)" />
       </v-list>
     </template>
@@ -77,6 +77,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('UserSettings.emailConnector.sharing.replace.confirm.ok')"
       :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
       @ok="confirmChangePreset" />
+    <!-- Letting someone write mail in the owner's name (EXO-90582) is asked first, with
+         what recipients will see and whether the owner keeps a copy: a grant, and the
+         step from on behalf to as. Narrowing it is not asked (PO decision Q-C). -->
+    <exo-confirm-dialog
+      ref="sendModeConfirmDialog"
+      :title="sendModeConfirmTitle"
+      :message="sendModeConfirmMessage"
+      :ok-label="$t('UserSettings.emailConnector.sharing.sendMode.confirm.ok')"
+      :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
+      @ok="confirmChangeSendMode" />
   </div>
 </template>
 
@@ -105,6 +115,11 @@ export default {
     // The folders the Extend being confirmed adds, by name: kept apart from extendTarget,
     // which the confirmation clears as it closes, so its text does not empty on the way out.
     extendNames: '',
+    // The consent to writing in the owner's name waiting for its confirmation: {grantee, mode}.
+    pendingSendMode: null,
+    // What that confirmation says, kept apart from pendingSendMode for the same reason.
+    sendModeConfirmTitle: '',
+    sendModeConfirmMessage: '',
   }),
   computed: {
     /**
@@ -121,6 +136,33 @@ export default {
      */
     supported() {
       return !!this.capabilities?.supported;
+    },
+    /**
+     * Whether the mail server shares folder by folder (EXO-90556): only then are folders
+     * offered one by one; a server that shares a whole mailbox at once shows the presets.
+     *
+     * @returns {Boolean} true on a per-folder server
+     */
+    perFolder() {
+      return this.supported && this.capabilities?.grantGranularity === 'FOLDER';
+    },
+    /**
+     * The shapes of writing in the owner's name her mail server is declared to accept
+     * (EXO-90582): none where nothing is declared, which hides the choice.
+     *
+     * @returns {Array} ON_BEHALF, AS, or empty
+     */
+    sendModes() {
+      return this.supported ? (this.capabilities?.sendModes || []) : [];
+    },
+    /**
+     * Whether an Editor of the owner's Trash can delete mail there for good on this mail
+     * server (EXO-90816): the server says so, and the wording follows.
+     *
+     * @returns {Boolean} true when an Editor's access holds that in the Trash
+     */
+    trashExpunge() {
+      return this.supported && !!this.capabilities?.editorExpungesTrash;
     },
     /**
      * @returns {Boolean} whether a new share may be offered
@@ -149,6 +191,16 @@ export default {
   },
   watch: {
     /**
+     * Tells the drawer whether this tab reads the server, for the drawer's own bar under
+     * its title.
+     *
+     * @param {Boolean} value whether it does
+     * @returns {void}
+     */
+    loading(value) {
+      this.$emit('loading', value);
+    },
+    /**
      * Tells the drawer whether to offer its Share button: it lives in the drawer's
      * title bar, which this tab does not own.
      *
@@ -157,6 +209,25 @@ export default {
      */
     canShare(value) {
       this.$emit('can-share', value);
+    },
+    /**
+     * Tells the drawer whether the invitation may offer folders one by one.
+     *
+     * @param {Boolean} value whether the server shares folder by folder
+     * @returns {void}
+     */
+    perFolder(value) {
+      this.$emit('per-folder', value);
+    },
+    /**
+     * Tells the drawer what an Editor can do in the owner's Trash, for the invitation's
+     * wording (EXO-90816).
+     *
+     * @param {Boolean} value whether an Editor can delete mail there for good
+     * @returns {void}
+     */
+    trashExpunge(value) {
+      this.$emit('trash-expunge', value);
     },
   },
   created() {
@@ -317,6 +388,88 @@ export default {
           this.load();
           this.$root.$emit('email-delegations-updated');
         });
+    },
+    /**
+     * A row's "Writing mail in your name" choice (EXO-90582): a grant, and the step from on
+     * behalf to as, after the confirmation that says what it gives; a withdrawal and the
+     * step back to on behalf at once (PO decision Q-C).
+     *
+     * @param {Object} grantee the row
+     * @param {String} mode NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    askChangeSendMode(grantee, mode) {
+      const current = grantee?.delegation?.sendMode || 'NONE';
+      const widens = mode === 'AS' ? current !== 'AS' : mode === 'ON_BEHALF' && current === 'NONE';
+      if (!widens) {
+        this.changeSendMode(grantee, mode);
+        return;
+      }
+      const name = this.displayName(grantee);
+      const copy = this.$t(grantee?.ownerSentCopy
+        ? 'UserSettings.emailConnector.sharing.sendMode.confirm.copy'
+        : 'UserSettings.emailConnector.sharing.sendMode.confirm.noCopy');
+      this.pendingSendMode = { grantee, mode };
+      this.sendModeConfirmTitle = this.$t(`UserSettings.emailConnector.sharing.sendMode.confirm.title.${mode}`, { 0: name });
+      this.sendModeConfirmMessage = this.$t(`UserSettings.emailConnector.sharing.sendMode.confirm.message.${mode}`, { 0: name, 1: copy });
+      this.$refs.sendModeConfirmDialog.open();
+    },
+    /**
+     * Makes the change the consent confirmation was asked for.
+     *
+     * @returns {void}
+     */
+    confirmChangeSendMode() {
+      const change = this.pendingSendMode;
+      this.pendingSendMode = null;
+      if (change) {
+        this.changeSendMode(change.grantee, change.mode);
+      }
+    },
+    /**
+     * Records the owner's consent to a person writing mail in her name, and shows the list
+     * as it now stands. Nothing is sent and nothing changes on the mail server's ACL.
+     *
+     * @param {Object} grantee the row
+     * @param {String} mode NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    changeSendMode(grantee, mode) {
+      const id = grantee?.delegation?.id;
+      if (!id) {
+        return;
+      }
+      this.changingId = id;
+      this.$emailConnectorUserSettingService.setDelegationSendMode(id, mode)
+        .then(() => this.showAlert(this.$t(mode === 'NONE'
+          ? 'UserSettings.emailConnector.sharing.sendMode.withdrawn'
+          : 'UserSettings.emailConnector.sharing.sendMode.changed'), 'success'))
+        .catch(error => this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.sendMode.error'), 'error'))
+        .finally(() => {
+          this.changingId = null;
+          this.load();
+          this.$root.$emit('email-delegations-updated');
+        });
+    },
+    /**
+     * The person a row names, as the consent says it: their display name, as the server
+     * read it, else their username, else their identifier on the mail server.
+     *
+     * @param {Object} grantee the row
+     * @returns {String} the name
+     */
+    displayName(grantee) {
+      return grantee?.granteeFullName || grantee?.granteeId || grantee?.identifier || '';
+    },
+    /**
+     * A row's "Folders and access": the drawer that reads and sets each folder's access
+     * (EXO-90556), over this list.
+     *
+     * @param {Object} grantee the row
+     * @returns {void}
+     */
+    openFolders(grantee) {
+      this.$root.$emit('open-email-sharing-folders-drawer', grantee, { trashExpunge: this.trashExpunge });
     },
     /**
      * A row's "Share ... too": asked first, with what it gives.

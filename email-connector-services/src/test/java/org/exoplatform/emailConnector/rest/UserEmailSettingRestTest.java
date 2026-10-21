@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,6 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,26 +71,51 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
+import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.AbsenceSettings;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.AbsenceStatus;
+import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
+import org.exoplatform.emailConnector.model.DelegationFolder;
+import org.exoplatform.emailConnector.model.DelegationFolders;
+import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
-import org.exoplatform.emailConnector.model.MailboxAce;
-import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.EmailDelegation;
-import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.FolderAccess;
+import org.exoplatform.emailConnector.model.FolderAccessChange;
+import org.exoplatform.emailConnector.model.FolderAccessResult;
+import org.exoplatform.emailConnector.model.FolderAccessUpdate;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
+import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
-import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
-import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
-import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.model.VacationSetting;
+import org.exoplatform.emailConnector.model.VacationState;
+import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.service.EmailAbsenceService;
+import org.exoplatform.emailConnector.service.EmailForwardingService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.model.UndoSendSettings;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
@@ -136,7 +163,19 @@ public class UserEmailSettingRestTest {
   private ReadReceiptService      readReceiptService;
 
   @MockitoBean
+  private EmailSecurityService    emailSecurityService;
+
+  @MockitoBean
   private EmailDelegationService  emailDelegationService;
+
+  @MockitoBean
+  private EmailAbsenceService     emailAbsenceService;
+
+  @MockitoBean
+  private EmailForwardingService  emailForwardingService;
+
+  @MockitoBean
+  private EmailScheduledSendService emailScheduledSendService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -342,9 +381,12 @@ public class UserEmailSettingRestTest {
                                                                                                                                            "lrs",
                                                                                                                                            MailboxRights.of("lrs")
                                                                                                                                                         .affordances(),
-                                                                                                                                           true)),
+                                                                                                                                           true,
+                                                                                                                                           "Trash",
+                                                                                                                                           "/")),
                                                                                                            true,
-                                                                                                           true)));
+                                                                                                           true,
+                                                                                                           List.of(SendMode.ON_BEHALF))));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -362,13 +404,15 @@ public class UserEmailSettingRestTest {
            // What the band says: from the share, not from the folders found.
            .andExpect(jsonPath("$[0].inboxOnly").value(true))
            // EXO-90551: whether the composer's copy into the owner's Sent will be filed.
-           .andExpect(jsonPath("$[0].sentCopy").value(true));
+           .andExpect(jsonPath("$[0].sentCopy").value(true))
+           // EXO-90582: the shapes the delegate can write in the owner's name in now.
+           .andExpect(jsonPath("$[0].sendModes[0]").value("ON_BEHALF"));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 
   /**
    * Inviting hands the grantee and the preset to the service under the caller's name;
-   * the service's refusals map to 400 (a message code), 401, and 502 (the mail server
+   * the service's refusals map to 400 (a message code), 403, and 502 (the mail server
    * would not).
    */
   @Test
@@ -409,6 +453,162 @@ public class UserEmailSettingRestTest {
   }
 
   /**
+   * EXO-90556 -- the owner's folder choice at invitation travels to the service, keyed by
+   * role; without one, the invitation is the one it always was.
+   */
+  @Test
+  void inviteCarriesTheOwnersFolderChoice() throws Exception {
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(9L);
+    Map<FolderRole, FolderAccess> choice = Map.of(FolderRole.TRASH, FolderAccess.NONE);
+    when(emailDelegationService.invite(SIMPLE_USER, "bob", DelegationPreset.EDITOR, choice)).thenReturn(delegation);
+
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content("{\"granteeUsername\":\"bob\",\"preset\":\"EDITOR\",\"folderAccess\":{\"TRASH\":\"NONE\"}}")
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.id").value(9));
+    verify(emailDelegationService).invite(SIMPLE_USER, "bob", DelegationPreset.EDITOR, choice);
+    verify(emailDelegationService, never()).invite(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90556 -- the owner's folder lists and the per-folder save go to the service under
+   * the caller's name, the save's per-folder outcomes answered 200; the refusals map as
+   * the other owner verbs: 404 for a row that is not the caller's, 400 with the code, 502
+   * when the server would not.
+   */
+  @Test
+  void theOwnersFolderListsAndSave() throws Exception {
+    DelegationFolder sent = new DelegationFolder("Sent", "Sent", "/", null, 0, FolderRole.SENT, FolderAccess.READER, null, true, true);
+    when(emailDelegationService.getOwnFolders(SIMPLE_USER)).thenReturn(new DelegationFolders(List.of(sent), true));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/folders").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.folders[0].folder").value("Sent"))
+           .andExpect(jsonPath("$.truncated").value(true));
+
+    when(emailDelegationService.getFolderAccess(SIMPLE_USER, 5L)).thenReturn(new DelegationFolders(List.of(sent), false));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/5/folders").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.folders[0].access").value("READER"))
+           .andExpect(jsonPath("$.folders[0].role").value("SENT"));
+    when(emailDelegationService.getFolderAccess(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/6/folders").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(5L);
+    List<FolderAccessChange> changes = List.of(new FolderAccessChange("Sent", FolderAccess.NONE), new FolderAccessChange("Projects", FolderAccess.EDITOR));
+    when(emailDelegationService.setFolderAccess(SIMPLE_USER, 5L, changes))
+                                                                       .thenReturn(new FolderAccessUpdate(delegation,
+                                                                                                          List.of(new FolderAccessResult("Sent",
+                                                                                                                                         FolderAccess.NONE,
+                                                                                                                                         FolderAccessResult.Outcome.DONE),
+                                                                                                                  new FolderAccessResult("Projects",
+                                                                                                                                         FolderAccess.EDITOR,
+                                                                                                                                         FolderAccessResult.Outcome.REFUSED))));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delegation.id").value(5))
+           .andExpect(jsonPath("$.results[1].outcome").value("REFUSED"));
+    verify(emailDelegationService).setFolderAccess(SIMPLE_USER, 5L, changes);
+
+    when(emailDelegationService.setFolderAccess(eq(SIMPLE_USER), eq(7L), any()))
+                                                                              .thenThrow(new IllegalArgumentException(EmailDelegationService.FOLDER_UNKNOWN_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailDelegationService.FOLDER_UNKNOWN_MESSAGE));
+    when(emailDelegationService.setFolderAccess(eq(SIMPLE_USER), eq(8L), any()))
+                                                                              .thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE,
+                                                                                                                 "down"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/8/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.UNREACHABLE));
+  }
+
+  /**
+   * EXO-90582 -- the owner's consent to a grantee writing in her name: the mode goes to
+   * the service as sent, under the caller's name, and the row comes back with it; each
+   * refusal answers the status the contract promises, with its code. The owner's and the
+   * delegate's lists carry what the drawer and the switcher read.
+   */
+  @Test
+  void theOwnersSendModeConsent() throws Exception {
+    EmailDelegation consented = new EmailDelegation();
+    consented.setId(5L);
+    consented.setStatus(DelegationStatus.ACCEPTED);
+    consented.setSendMode(SendMode.ON_BEHALF);
+    when(emailDelegationService.setSendMode(SIMPLE_USER, 5L, "ON_BEHALF")).thenReturn(consented);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/send-mode").with(testSimpleUser())
+                                                                              .content(asJsonString(new DelegationSendModeRequest("ON_BEHALF")))
+                                                                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.sendMode").value("ON_BEHALF"));
+    verify(emailDelegationService).setSendMode(SIMPLE_USER, 5L, "ON_BEHALF");
+
+    Map<Long, Object> refusals = Map.of(6L,
+                                        new IllegalArgumentException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE),
+                                        7L,
+                                        new IllegalArgumentException(EmailDelegationService.SEND_MODE_UNSUPPORTED_MESSAGE),
+                                        8L,
+                                        new IllegalArgumentException(EmailDelegationService.NOT_CHANGEABLE_MESSAGE),
+                                        9L,
+                                        new MailboxAclException(MailboxAclException.UNREACHABLE, "down"),
+                                        10L,
+                                        new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE),
+                                        11L,
+                                        new IllegalAccessException("emailConnector.notConnected"));
+    for (Map.Entry<Long, Object> refusal : refusals.entrySet()) {
+      when(emailDelegationService.setSendMode(eq(SIMPLE_USER), eq(refusal.getKey()), any())).thenThrow((Throwable) refusal.getValue());
+    }
+    assertSendModeAnswer(6L, 400, EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    assertSendModeAnswer(7L, 400, EmailDelegationService.SEND_MODE_UNSUPPORTED_MESSAGE);
+    assertSendModeAnswer(8L, 400, EmailDelegationService.NOT_CHANGEABLE_MESSAGE);
+    assertSendModeAnswer(9L, 502, MailboxAclException.UNREACHABLE);
+    assertSendModeAnswer(10L, 404, null);
+    assertSendModeAnswer(11L, 403, null);
+
+    DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
+                                             .withConsentContext("Bob Martin", true);
+    when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true,
+                                                                                                                                  true,
+                                                                                                                                  Set.of(SendMode.ON_BEHALF,
+                                                                                                                                         SendMode.AS)),
+                                                                                                    "simple@acme.com",
+                                                                                                    List.of(bob)));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.capabilities.sendModes.length()").value(2))
+           .andExpect(jsonPath("$.capabilities.sendModeOnServer").value(false))
+           .andExpect(jsonPath("$.grantees[0].granteeFullName").value("Bob Martin"))
+           .andExpect(jsonPath("$.grantees[0].ownerSentCopy").value(true))
+           .andExpect(jsonPath("$.grantees[0].delegation.sendMode").value("ON_BEHALF"));
+  }
+
+  /**
+   * One refused PUT of a send mode, and the status and code it answers.
+   *
+   * @param id the delegation id the service refuses
+   * @param status the status expected
+   * @param reason the code expected, null when the status says it all
+   * @throws Exception when the request cannot be performed
+   */
+  private void assertSendModeAnswer(long id, int status, String reason) throws Exception {
+    ResultActions response = mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/" + id + "/send-mode").with(testSimpleUser())
+                                                                                                             .content(asJsonString(new DelegationSendModeRequest("AS")))
+                                                                                                             .contentType(MediaType.APPLICATION_JSON))
+                                     .andExpect(status().is(status));
+    if (reason != null) {
+      response.andExpect(status().reason(reason));
+    }
+  }
+
+  /**
    * The grantee's verbs: accept answers 410 with the code when the share is gone and
    * 404 for a row that is not the caller's; decline, leave and preferences go through
    * under the caller's name.
@@ -445,12 +645,20 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/leave").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailDelegationService).leave(SIMPLE_USER, 5L);
 
-    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, true, null)).thenReturn(delegation);
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, true, null, null)).thenReturn(delegation);
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preferences").with(testSimpleUser())
                                                                                .content(asJsonString(new DelegationPreferencesRequest(true, null)))
                                                                                .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
-    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, true, null);
+    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, true, null, null);
+
+    // EXO-90554: the search toggle travels alone.
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, null, null, false)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preferences").with(testSimpleUser())
+                                                                               .content("{\"searchIncluded\":false}")
+                                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, null, null, false);
   }
 
   /**
@@ -520,7 +728,7 @@ public class UserEmailSettingRestTest {
            .andExpect(status().isBadRequest())
            .andExpect(status().reason("emailConnector.delegation.notAccepted"));
 
-    when(emailDelegationService.updatePreferences(SIMPLE_USER, 6L, null, true))
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 6L, null, true, null))
                                                                                .thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/preferences").with(testSimpleUser())
                                                                                .content(asJsonString(new DelegationPreferencesRequest(null, true)))
@@ -616,13 +824,13 @@ public class UserEmailSettingRestTest {
     verify(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
   }
 
-  /** A user who may not connect this connector gets a 401, as the endpoint documents. */
+  /** A user who may not connect this connector gets a 403, as the endpoint documents. */
   @Test
   @SneakyThrows
-  void connectThroughProviderAnswers401WhenTheUserMayNotConnect() {
+  void connectThroughProviderAnswers403WhenTheUserMayNotConnect() {
     doThrow(new IllegalAccessException("not allowed")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /** A provider that expects the user to type something is a 400: the browser shows the form. */
@@ -692,5 +900,311 @@ public class UserEmailSettingRestTest {
                                                                    .content("{\"responsePolicy\":\"ALWAYS\"}")
                                                                    .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * The Undo send preference (EXO-90837) is the caller's: read with the offered waits,
+   * stored as given, and a wait not offered is a 400 with its code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void undoSendPreference() throws Exception {
+    when(emailScheduledSendService.getUndoSendSettings(SIMPLE_USER)).thenReturn(new UndoSendSettings(10, List.of(0, 5, 10, 20, 30)));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delaySeconds").value(10))
+           .andExpect(jsonPath("$.allowedDelays[4]").value(30));
+
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser())
+                                                                .content("{\"delaySeconds\":20}")
+                                                                .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailScheduledSendService).saveUndoSendSettings(SIMPLE_USER, new UndoSendSettings(20, null));
+
+    when(emailScheduledSendService.saveUndoSendSettings(eq(SIMPLE_USER), any())).thenThrow(new IllegalArgumentException(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser())
+                                                                .content("{\"delaySeconds\":7}")
+                                                                .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY));
+  }
+
+  /**
+   * EXO-90841: the remote-content choices are read and written for the authenticated
+   * caller only, an address that is not one answers 400 with its code, and a switch
+   * request without a body answers 400.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void remoteContentChoices() throws Exception {
+    when(emailSecurityService.getSettings(SIMPLE_USER)).thenReturn(new RemoteContentSettings(true, List.of("news@shop.example")));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.blockRemoteContent").value(true))
+           .andExpect(jsonPath("$.trustedSenders[0]").value("news@shop.example"));
+
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser())
+                                                                    .content("{\"blockRemoteContent\":false,\"trustedSenders\":[\"x@evil.example\"]}")
+                                                                    .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).setBlockRemoteContent(SIMPLE_USER, false);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser()).contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "News@Shop.example")
+                                                                                    .with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).trustSender(SIMPLE_USER, "News@Shop.example");
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "news@shop.example")
+                                                                                      .with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).forgetSender(SIMPLE_USER, "news@shop.example");
+
+    when(emailSecurityService.trustSender(SIMPLE_USER, "nobody")).thenThrow(new IllegalArgumentException(EmailSecurityService.INVALID_SENDER));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "nobody").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailSecurityService.INVALID_SENDER));
+    when(emailSecurityService.forgetSender(SIMPLE_USER, "nobody")).thenThrow(new IllegalArgumentException(EmailSecurityService.INVALID_SENDER));
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "nobody").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Automatic reply (EXO-90642): the caller's own mailbox only, and the refusals as the
+  // statuses the contract promises, code as message.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The section is read and written for the caller; the body reaches the service, and
+   * republish is forwarded.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceReadAndWrite() throws Exception {
+    AbsenceSettings settings = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7, null);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null, true)).thenReturn(settings);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.engine").value("sieve"))
+           .andExpect(jsonPath("$.vacationState").value("NONE"));
+    AbsenceSettings forwarding = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7,
+                                                     ForwardingSetting.mayForwardByScript("roundcube")
+                                                                      .withManageUrl("https://webmail.example.org"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "UTC", true)).thenReturn(forwarding);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=UTC").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.forwarding.state").value("MAY_FORWARD_BY_SCRIPT"))
+           .andExpect(jsonPath("$.forwarding.scriptName").value("roundcube"))
+           .andExpect(jsonPath("$.forwarding.destinations").isEmpty())
+           .andExpect(jsonPath("$.forwarding.manageUrl").value("https://webmail.example.org"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "Europe/Paris", false)).thenReturn(settings);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=Europe/Paris&forwarding=false").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailAbsenceService).getAbsence(SIMPLE_USER, null, "Europe/Paris", false);
+
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(true))).thenReturn(settings);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?republish=true").with(testSimpleUser())
+                                                                                      .content("{\"enabled\":true,\"subject\":\"Away\",\"text\":\"Back soon\",\"start\":\"2026-10-01\",\"timeZone\":\"Europe/Paris\"}")
+                                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailAbsenceService).setVacation(SIMPLE_USER,
+                                            null,
+                                            new VacationSetting(true, "2026-10-01", null, "Europe/Paris", "Away", "Back soon", 0, null),
+                                            true);
+
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser()))
+           .andExpect(status().isNoContent());
+    verify(emailAbsenceService).disableVacation(SIMPLE_USER, null);
+
+    when(emailAbsenceService.getStatus(SIMPLE_USER, null)).thenReturn(new AbsenceStatus(true, "2026-10-01", null, "Europe/Paris", "EXO", 1L, 2L));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.enabled").value(true))
+           .andExpect(jsonPath("$.start").value("2026-10-01"));
+  }
+
+  /**
+   * A request made from a shared mailbox answers 403 with the own-mailbox code, on every
+   * verb, and the share id reaches the service to be refused there.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceFromASharedMailboxIsForbidden() throws Exception {
+    IllegalAccessException refusal = new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L, null, true)).thenThrow(refusal);
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(12L), any(), eq(false))).thenThrow(refusal);
+    doThrow(refusal).when(emailAbsenceService).disableVacation(SIMPLE_USER, 12L);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(EmailAbsenceService.OWN_MAILBOX_ONLY));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser())
+                                                                                       .content("{\"enabled\":true}")
+                                                                                       .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /**
+   * The status read with a share answers the owner's dates through the delegate's read,
+   * never the caller's own summary, and each refusal of the share its status: 404 for no
+   * such share of the caller's, 403 for a pending share or a caller who may not use mail,
+   * 410 for a share that ended.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceStatusOfASharedMailboxOwner() throws Exception {
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 12L))
+        .thenReturn(new OwnerAbsenceStatus(true, "2026-10-01", "2026-10-15", "Europe/Paris", 1L, 2L, true));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.enabled").value(true))
+           .andExpect(jsonPath("$.end").value("2026-10-15"))
+           .andExpect(jsonPath("$.stale").value(true))
+           .andExpect(jsonPath("$.source").doesNotExist());
+    verify(emailAbsenceService, never()).getStatus(any(), any());
+
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 13L)).thenThrow(new ObjectNotFoundException("not yours"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=13").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 14L))
+        .thenThrow(new IllegalAccessException(EmailAbsenceService.SHARE_NOT_ACCEPTED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=14").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(EmailAbsenceService.SHARE_NOT_ACCEPTED));
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 15L))
+        .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=15").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
+  }
+
+  /**
+   * Each refusal of a write answers its status: 400 for a value or an unsupported
+   * connector, 404 when nothing is connected, 409 with the code and the script's name,
+   * 502 with the transport's code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceWriteStatuses() throws Exception {
+    String body = "{\"enabled\":true,\"subject\":\"Away\",\"text\":\"Back soon\"}";
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(false)))
+                                                                                   .thenThrow(new IllegalArgumentException(EmailAbsenceService.INVALID_SUBJECT))
+                                                                                   .thenThrow(new ServerRuleUnsupportedException(ServerRuleUnsupportedException.VACATION_UNSUPPORTED))
+                                                                                   .thenThrow(new ObjectNotFoundException(EmailAbsenceService.NOT_CONNECTED))
+                                                                                   .thenThrow(new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE,
+                                                                                                                              "roundcube"))
+                                                                                   .thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.TLS_HOST_NAME));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailAbsenceService.INVALID_SUBJECT));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(ServerRuleUnsupportedException.VACATION_UNSUPPORTED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MANAGED_ELSEWHERE))
+           .andExpect(jsonPath("$.scriptName").value("roundcube"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(ServerRuleUnavailableException.TLS_HOST_NAME));
+  }
+
+  /**
+   * Switching off answers 409 with the script's name when eXo's script changed outside
+   * eXo, and a read answers 502 with the transport's code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceSwitchOffAndReadStatuses() throws Exception {
+    doThrow(new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, "exo-rules")).when(emailAbsenceService)
+                                                                                                     .disableVacation(SIMPLE_USER, null);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser()))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MODIFIED_OUTSIDE))
+           .andExpect(jsonPath("$.scriptName").value("exo-rules"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null, true)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    when(emailAbsenceService.getStatus(SIMPLE_USER, null)).thenThrow(new ObjectNotFoundException(EmailAbsenceService.DISABLED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+  }
+
+  /**
+   * The forwarding endpoints answer their refusals as the add-on does: forwarding off, a
+   * domain not allowed, a destination not confirmed, a refusal of the generator, too many
+   * codes or wrong tries -- 403; a destination that is not an address, a wrong or expired
+   * code, a server that cannot keep a copy -- 400; another client's forward or an outside
+   * edit -- 409 with the script; an unreachable server or relay -- 502.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void forwardingRefusalsAnswerTheirStatuses() throws Exception {
+    String body = "{\"destination\":\"bob@example.org\",\"code\":\"123456\"}";
+    when(emailForwardingService.sendCode(SIMPLE_USER, null, "bob@example.org"))
+        .thenThrow(new IllegalAccessException("emailConnector.forwarding.disabled"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/absence/forwarding/code").with(testSimpleUser())
+                                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                                             .content(body))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.forwarding.disabled"));
+    when(emailForwardingService.confirm(SIMPLE_USER, null, "bob@example.org", "123456"))
+        .thenThrow(new IllegalArgumentException("emailConnector.forwarding.code.invalid"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/absence/forwarding/confirm").with(testSimpleUser())
+                                                                                .contentType(MediaType.APPLICATION_JSON)
+                                                                                .content(body))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.forwarding.code.invalid"));
+    when(emailForwardingService.setForwarding(SIMPLE_USER, null, "bob@example.org", "123456", false))
+        .thenThrow(new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/forwarding").with(testSimpleUser())
+                                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                                       .content(body))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(ForwardingRefusedException.NOT_AUTHORIZED));
+    when(emailForwardingService.setForwarding(SIMPLE_USER, null, "bob@example.org", "123456", true))
+        .thenThrow(new ServerRuleConflictException(ServerRuleConflictException.FORWARDED_ELSEWHERE, "roundcube"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/forwarding?republish=true").with(testSimpleUser())
+                                                                                        .contentType(MediaType.APPLICATION_JSON)
+                                                                                        .content(body))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.FORWARDED_ELSEWHERE))
+           .andExpect(jsonPath("$.scriptName").value("roundcube"));
+    doThrow(new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED)).when(emailForwardingService)
+                                                                                                   .removeForwarding(SIMPLE_USER, null, false);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/forwarding").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+    when(emailForwardingService.getStatus(SIMPLE_USER, 4L)).thenThrow(new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/forwarding/status?delegationId=4").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+    // The reply's write answers a forward the generator refuses as a refusal too.
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), isNull(), any(), eq(false)))
+        .thenThrow(new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content("{\"enabled\":true,\"subject\":\"s\",\"text\":\"t\"}"))
+           .andExpect(status().isForbidden());
   }
 }

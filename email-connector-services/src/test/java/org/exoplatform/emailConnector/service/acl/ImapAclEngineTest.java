@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.mail.Folder;
 import javax.mail.FolderNotFoundException;
@@ -63,6 +64,8 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -184,6 +187,27 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90582 -- a supported answer carries the shapes of writing in the owner's name the
+   * administrator declared for the session's connector, and says eXo alone holds the
+   * consent; an unsupported one carries none.
+   */
+  @Test
+  void probeCarriesTheConnectorsDeclaredSendModes() throws MessagingException {
+    when(store.hasCapability("ACL")).thenReturn(true);
+    when(store.hasCapability("NAMESPACE")).thenReturn(true);
+    try {
+      assertEquals(Set.of(SendMode.ON_BEHALF), engine.probe(session()).sendModes(), "on behalf by default");
+      System.setProperty(SendMode.MODES_PROPERTY_PREFIX + 7L, "as");
+      MailboxAclCapabilities capabilities = engine.probe(session());
+      assertEquals(Set.of(SendMode.ON_BEHALF, SendMode.AS), capabilities.sendModes());
+      assertFalse(capabilities.sendModeOnServer(), "an ACL letter cannot say send: eXo holds it");
+      assertTrue(engine.probe(session(mock(Store.class))).sendModes().isEmpty(), "nothing where sharing is unsupported");
+    } finally {
+      System.clearProperty(SendMode.MODES_PROPERTY_PREFIX + 7L);
+    }
+  }
+
+  /**
    * A store that is not IMAP has no ACL command to run.
    */
   @Test
@@ -280,6 +304,7 @@ class ImapAclEngineTest {
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
     // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
     // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrsw")), "Stalwart's Reader");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }
@@ -708,6 +733,74 @@ class ImapAclEngineTest {
     when(root.list("*")).thenReturn(listing);
 
     assertEquals(Map.of(FolderRole.JUNK, "Junk Mail"), engine.findRoleFolders(session()));
+  }
+
+  /**
+   * EXO-90556 -- the owner's own folders for the per-folder list, from the one listing
+   * the roles are read from: each with its separator and the role {@code findRoleFolders}
+   * gives it -- the attribute, else the usual name at the top -- a nested folder named
+   * like a role with none; never a folder under another user's namespace or one that
+   * cannot hold mail.
+   */
+  @Test
+  void theOwnersOwnFoldersAreListedWithTheRolesTheGrantGivesThem() throws MessagingException {
+    Folder otherUsers = mock(Folder.class);
+    when(otherUsers.getFullName()).thenReturn("shared/");
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[] { otherUsers });
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX"), listed("Corbeille", "Corbeille", "\\Trash"), listed("Spam", "Spam"),
+        listed("Deleted", "Clients/Deleted"), listed("Clients", "Clients"), listed("Trash", "shared/alice@dovecot.local/Trash", "\\Trash"),
+        folder("Junk", "Junk", '/') };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(new OwnFolder("INBOX", "INBOX", "/", null),
+                         new OwnFolder("Corbeille", "Corbeille", "/", FolderRole.TRASH),
+                         new OwnFolder("Spam", "Spam", "/", FolderRole.JUNK),
+                         new OwnFolder("Clients/Deleted", "Deleted", "/", null),
+                         new OwnFolder("Clients", "Clients", "/", null)),
+                 own);
+    verify(root, times(1)).list("*");
+  }
+
+  /**
+   * EXO-90556 -- INBOX is never a role folder, whatever attribute a server lists on it:
+   * a role's grant or removal never lands on the share itself.
+   */
+  @Test
+  void inboxIsNeverTakenForARoleFolder() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX", "\\Trash"), listed("Deleted Items", "Deleted Items") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.TRASH, "Deleted Items"), engine.findRoleFolders(session()));
+  }
+
+  /**
+   * EXO-90556 -- every folder the server calls Drafts is Drafts in the owner's list, not
+   * only the one the role goes to, so none is ever offered to share.
+   */
+  @Test
+  void everyDraftsFolderIsDraftsNotOnlyTheFirst() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    Folder[] listing = new Folder[] { listed("Drafts", "Drafts", "\\Drafts"), listed("Brouillons", "Old/Brouillons", "\\Drafts"),
+        listed("Drafts", "Clients/Drafts") };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(FolderRole.DRAFTS, FolderRole.DRAFTS), own.stream().limit(2).map(OwnFolder::role).toList());
+    assertNull(own.get(2).role(), "a folder named so, nested, is the owner's own");
   }
 
   /**

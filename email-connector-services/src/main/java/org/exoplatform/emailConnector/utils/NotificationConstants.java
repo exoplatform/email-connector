@@ -30,6 +30,50 @@ public class NotificationConstants {
   /** A scheduled mail was not sent, or could not be confirmed sent (EXO-90434). */
   public static final String SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN = "ScheduledEmailFailedNotificationPlugin";
 
+  /** A mail import into a folder ended, with its counts (EXO-90846). */
+  public static final String MAIL_IMPORT_FINISHED_NOTIFICATION_PLUGIN = "MailImportFinishedNotificationPlugin";
+
+  /** One of the user's own mail filters matched new mail (EXO-90654). */
+  public static final String EMAIL_FILTER_NOTIFICATION_PLUGIN = "EmailFilterNotificationPlugin";
+
+  /**
+   * The user's mail forward changed, or one eXo did not set was found (EXO-90656): set,
+   * changed, removed, a rule that forwards saved or removed. Its own id, so it has its own
+   * line in the notification settings.
+   */
+  public static final String EMAIL_FORWARDING_NOTIFICATION_PLUGIN = "EmailForwardingNotificationPlugin";
+
+  /** What happened to the forward: an {@code EmailForwardingNotificationPlugin.Change} name. */
+  public static final String FORWARDING_CHANGE              = "FORWARDING_CHANGE";
+
+  /** Where mail is, or was, forwarded. */
+  public static final String FORWARDING_DESTINATION         = "FORWARDING_DESTINATION";
+
+  /** The rule, or the other client's script, the change is about; blank when none. */
+  public static final String FORWARDING_SOURCE              = "FORWARDING_SOURCE";
+
+  /**
+   * Suggestions of the mail filters' assistant wait for the receiver (EXO-90668): one
+   * notification per user, "N suggestions waiting", updated in place while unread and
+   * replaced once read, never one per suggestion.
+   */
+  public static final String EMAIL_FILTER_SUGGESTIONS_NOTIFICATION_PLUGIN = "EmailFilterSuggestionsNotificationPlugin";
+
+  /** How many suggestions wait, as the digest carries it. */
+  public static final String SUGGESTION_COUNT               = "SUGGESTION_COUNT";
+
+  /** The mail filter's name, as its notification carries it. */
+  public static final String FILTER_NAME                    = "FILTER_NAME";
+
+  /** How many mails the filter matched in one pass. */
+  public static final String FILTER_COUNT                   = "FILTER_COUNT";
+
+  /** The UID in the inbox of the mail a filter notification opens, when it is still there. */
+  public static final String MAIL_REMOTE_ID                 = "MAIL_REMOTE_ID";
+
+  /** The built-in folder a filter filed the notified mail into, when it left the inbox. */
+  public static final String MAIL_FOLDER                    = "MAIL_FOLDER";
+
   /** The scheduled mail's subject, as the notification carries it. */
   public static final String SUBJECT                        = "SUBJECT";
 
@@ -64,4 +108,12 @@ public class NotificationConstants {
 
   /** The delegation row's id, so the interface can open the share it is about. */
   public static final String DELEGATION_ID                  = "DELEGATION_ID";
+
+  /**
+   * Where the share an invitation is about now stands, written onto the stored web
+   * notification once it is no longer waiting (EXO-90830): {@code ACCEPTED},
+   * {@code DECLINED}, {@code LEFT} or {@code REVOKED}. Absent while it waits, which is
+   * what makes the notification offer Accept and Refuse.
+   */
+  public static final String DELEGATION_STATUS              = "DELEGATION_STATUS";
 }

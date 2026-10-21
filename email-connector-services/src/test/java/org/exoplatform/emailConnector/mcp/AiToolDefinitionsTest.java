@@ -31,6 +31,7 @@ import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -93,11 +94,177 @@ class AiToolDefinitionsTest {
       assertTrue(tool != null && tool.path("require_approval").asBoolean(false),
                  "Tool " + name + " must carry require_approval: true");
     }
-    for (String name : Set.of("search_contacts", "get_contact", "suggest_recipients")) {
+    for (String name : Set.of("search_contacts", "get_contact", "suggest_recipients", "list_shared_mailboxes")) {
       JsonNode tool = definitions.get(name);
       assertFalse(tool == null || tool.path("require_approval").asBoolean(false),
                   "Read tool " + name + " must not be approval-gated");
     }
+  }
+
+  /**
+   * EXO-90555 -- a tool that takes a {@code mailbox} declares it, and a tool that
+   * declares one takes it: an undeclared parameter is never sent by an agent, so the
+   * tool would silently act on the user's own mailbox; a declared one the method lacks
+   * is dropped, with the same effect. And the one new tool is a read, flagged as such.
+   */
+  @Test
+  void aMailboxParameterIsDeclaredWhereverAToolTakesIt() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Set<String> taking = new TreeSet<>();
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      if (!Modifier.isPublic(method.getModifiers()) || method.isSynthetic()) {
+        continue;
+      }
+      for (java.lang.reflect.Parameter parameter : method.getParameters()) {
+        assertTrue(parameter.isNamePresent(), "compiled with -parameters, or tool arguments bind to null");
+        if ("mailbox".equals(parameter.getName())) {
+          taking.add(toSnakeCase(method.getName()));
+        }
+      }
+    }
+    Set<String> declaring = new TreeSet<>();
+    definitions.forEach((name, tool) -> {
+      if (tool.path("input_schema").path("properties").has("mailbox")) {
+        declaring.add(name);
+      }
+    });
+    assertEquals(declaring, taking);
+    assertEquals(16, taking.size(), "every email tool but the account, the categories and the listing of shares");
+    String search = definitions.get("search_emails").path("description").asText();
+    assertTrue(search.contains("never a mail_remote_id in its place") && search.contains("With mailbox"),
+               "the chaining rule and the mailbox sentence are the description the model reads");
+    // A hit not in the synced copy cannot be opened by the reading tools, which read that
+    // copy: no description may send the model to one with its mail_remote_id.
+    assertTrue(search.contains("A hit without an email_id is not in the synced copy"), search);
+    assertFalse(search.contains("use its mail_remote_id"), search);
+    String thread = definitions.get("get_email_thread").path("description").asText();
+    assertFalse(thread.contains("mail_remote_id) through get_email_full"), thread);
+    JsonNode listing = definitions.get("list_shared_mailboxes");
+    assertTrue(listing.path("annotations").path("readOnlyHint").asBoolean(false), "a read");
+    assertFalse(listing.path("annotations").path("destructiveHint").asBoolean(true), "not destructive");
+  }
+
+  /** The tools that send a mail, and so take the name it leaves under (EXO-90585). */
+  private static final Set<String>    SENDING_TOOLS  = Set.of("send_email", "reply_email", "reply_all", "forward_email");
+
+  /**
+   * EXO-90585 -- the four sending tools, and only they, take and declare an optional
+   * {@code identity} limited to its three words; each stays approval-gated, and its
+   * description tells the model to name, before approval, in whose name the mail
+   * leaves, that the user's own is the default, and where the owner's allowed modes are
+   * read. The listing of shares says it gives them.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void anIdentityIsDeclaredOnTheFourSendingToolsAndTheApprovalMustNameIt() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Set<String> taking = new TreeSet<>();
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      if (Modifier.isPublic(method.getModifiers()) && !method.isSynthetic()
+          && Arrays.stream(method.getParameters()).anyMatch(parameter -> "identity".equals(parameter.getName()))) {
+        taking.add(toSnakeCase(method.getName()));
+      }
+    }
+    Set<String> declaring = new TreeSet<>();
+    definitions.forEach((name, tool) -> {
+      if (tool.path("input_schema").path("properties").has("identity")) {
+        declaring.add(name);
+      }
+    });
+    assertEquals(new TreeSet<>(SENDING_TOOLS), taking);
+    assertEquals(new TreeSet<>(SENDING_TOOLS), declaring);
+    for (String name : SENDING_TOOLS) {
+      JsonNode tool = definitions.get(name);
+      JsonNode identity = tool.path("input_schema").path("properties").path("identity");
+      assertEquals("[\"me\",\"owner_on_behalf\",\"owner\"]", identity.path("enum").toString(), name);
+      tool.path("input_schema").path("required").forEach(required -> assertFalse("identity".equals(required.asText()),
+                                                                                 name + ": the user's own name is the default"));
+      assertTrue(tool.path("require_approval").asBoolean(false), name);
+      String description = tool.path("description").asText();
+      assertTrue(description.contains("goes out in the user's own name unless identity names the owner"), name + ": " + description);
+      assertTrue(description.contains("always say in words in whose name it leaves: 'as you', 'on behalf of <owner's name>' or 'as <owner's name>'"),
+                 name + ": " + description);
+      assertTrue(description.contains("send_modes"), name + ": " + description);
+      assertFalse(description.contains(".."), name + ": a sentence ends once");
+      assertFalse(description.contains("on behalf of the current user"),
+                  name + ": \"on behalf of\" names the owner_on_behalf identity only");
+      assertFalse(description.contains("from the user's own address, with a copy"), name + ": " + description);
+      assertFalse(description.contains("still goes out from the user's own address"), name + ": " + description);
+    }
+    assertTrue(definitions.get("reply_all").path("description").asText().contains("The owner is not copied, whatever the identity."));
+    assertTrue(definitions.get("list_shared_mailboxes").path("description").asText().contains("send_modes"));
+  }
+
+  /**
+   * EXO-90585 -- the approval card of each sending tool shows the identity argument as
+   * given, and says what an empty one and each of the three words mean: the card is
+   * drawn from the arguments before the tool runs, so it is where the user sees in whose
+   * name the mail leaves. The bundle ships in the webapp module, next door.
+   *
+   * @throws Exception when the bundle cannot be read
+   */
+  @Test
+  void theApprovalCardOfEachSendingToolShowsTheIdentity() throws Exception {
+    // Surefire runs in the module's basedir and says so; an IDE run from the repository
+    // root does not, so the path starts from basedir whenever it is given.
+    java.nio.file.Path bundle = java.nio.file.Path.of(System.getProperty("basedir", "."),
+                                                      "..",
+                                                      "email-connector-webapps",
+                                                      "src",
+                                                      "main",
+                                                      "resources",
+                                                      "locale",
+                                                      "portlet",
+                                                      "AiAgentChat_en.properties");
+    assertTrue(java.nio.file.Files.isRegularFile(bundle), bundle.toAbsolutePath().toString());
+    java.util.Properties texts = new java.util.Properties();
+    try (java.io.Reader reader = java.nio.file.Files.newBufferedReader(bundle, java.nio.charset.StandardCharsets.UTF_8)) {
+      texts.load(reader);
+    }
+    for (String name : SENDING_TOOLS) {
+      String text = texts.getProperty("AiAgentChat.tool.confirm." + name);
+      assertTrue(text != null && text.contains("In whose name it leaves (empty or me: your own; owner_on_behalf: on behalf of the "
+          + "shared mailbox's owner, you shown as the sender; owner: as the shared mailbox's owner, you not named): "
+          + "<strong>{identity}</strong>"), name + ": " + text);
+      assertTrue(text.contains("<strong>{mailbox}</strong>"), name + ": " + text);
+    }
+  }
+
+  /**
+   * EXO-90592 -- the reply tools declare, and require, the recipients the approval card
+   * shows: every argument the method takes is declared (an undeclared one is never
+   * sent, and the reply would be refused), and to -- with cc for reply_all -- is
+   * required, so the card never goes out without them. The reading tools say where the
+   * model reads them from.
+   */
+  @Test
+  void theReplyToolsRequireTheRecipientsTheApprovalShows() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Map<String, List<String>> requiredRecipients = Map.of("reply_email", List.of("to"), "reply_all", List.of("to", "cc"));
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      String name = toSnakeCase(method.getName());
+      if (!Modifier.isPublic(method.getModifiers()) || !requiredRecipients.containsKey(name)) {
+        continue;
+      }
+      JsonNode schema = definitions.get(name).path("input_schema");
+      Set<String> declared = new TreeSet<>();
+      schema.path("properties").fieldNames().forEachRemaining(declared::add);
+      Set<String> taken = new TreeSet<>();
+      for (java.lang.reflect.Parameter parameter : method.getParameters()) {
+        taken.add(toSnakeCase(parameter.getName()));
+      }
+      assertEquals(declared, taken, name + " declares exactly what it takes");
+      Set<String> required = new TreeSet<>();
+      schema.path("required").forEach(field -> required.add(field.asText()));
+      for (String recipients : requiredRecipients.get(name)) {
+        assertTrue(required.contains(recipients), name + " requires " + recipients);
+        assertEquals("array", schema.path("properties").path(recipients).path("type").asText(), name + "." + recipients);
+      }
+      assertTrue(definitions.get(name).path("description").asText().contains("refused and nothing is sent"), name);
+    }
+    assertTrue(definitions.get("get_email_thread").path("description").asText().contains("(to) and copied to (cc)"));
+    assertTrue(definitions.get("get_email_by_id").path("description").asText().contains("its to and cc recipients"));
   }
 
   /**
@@ -107,7 +274,11 @@ class AiToolDefinitionsTest {
    * @throws Exception when the resource is missing or unparsable
    */
   private Map<String, JsonNode> readDefinitions() throws Exception {
-    JsonNode root = new ObjectMapper().readTree(getClass().getResourceAsStream("/ai-tool-definitions.json"));
+    // Duplicate keys refused (EXO-90555 review): the MCP server's plain ObjectMapper keeps
+    // the LAST of two "description" keys silently, so a sentence added to the first never
+    // reaches the model -- search_emails carried two for months.
+    JsonNode root = new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                                      .readTree(getClass().getResourceAsStream("/ai-tool-definitions.json"));
     Map<String, JsonNode> byName = new HashMap<>();
     root.path("tools").forEach(tool -> byName.put(tool.path("name").asText(), tool));
     return byName;

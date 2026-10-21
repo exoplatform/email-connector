@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -124,6 +126,34 @@ public class EmailDelegationDAOTest {
   }
 
   /**
+   * The shares of a connector eXo made whose access is on the server: counted by
+   * connector, state and origin, a row predating the origin read as eXo's
+   * (EXO-90793).
+   */
+  @Test
+  void theSharesOnTheServerAreCountedByConnectorStateAndOrigin() {
+    persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    persist(OTHER, OWNER, "alice@acme.com", 7L, "PENDING");
+    persist("dave", OWNER, "alice@acme.com", 7L, "DECLINED");
+    persist("erin", OWNER, "alice@acme.com", 7L, "REVOKED");
+    persist("fred", OWNER, "alice@acme.com", 8L, "ACCEPTED");
+    Long server = persist("gina", OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    Long legacy = persist("hugo", OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity fromServer = emailDelegationDAO.findById(server).orElseThrow();
+    fromServer.setOrigin("SERVER");
+    emailDelegationDAO.saveAndFlush(fromServer);
+    EmailDelegationEntity old = emailDelegationDAO.findById(legacy).orElseThrow();
+    old.setOrigin(null);
+    emailDelegationDAO.saveAndFlush(old);
+    entityManager.clear();
+
+    assertEquals(4, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(7L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+    assertEquals(1, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(8L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+    assertEquals(0, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(9L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+  }
+
+  /**
    * The grantee's toggles are written alone, in SQL: a revoke committed since
    * the grantee's read stays revoked, and only that grantee's row is touched.
    */
@@ -146,6 +176,80 @@ public class EmailDelegationDAOTest {
     assertEquals(5_000L, read.getRevokedDate().getTime());
     assertTrue(read.isBadgeIncluded());
     assertTrue(read.isNotifyNewMail());
+  }
+
+  /**
+   * EXO-90554 -- the search toggle is written alone, in SQL, and on that grantee's row
+   * only: a revoke committed since the grantee's read stays revoked, and the badge and
+   * notification toggles keep what they held. A new row is searched by default.
+   */
+  @Test
+  void theSearchToggleWriteTouchesThatToggleOnly() {
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity revoked = emailDelegationDAO.findById(id).orElseThrow();
+    assertTrue(revoked.isSearchIncluded(), "searched by default");
+    revoked.setStatus("REVOKED");
+    revoked.setBadgeIncluded(true);
+    emailDelegationDAO.saveAndFlush(revoked);
+    entityManager.clear();
+
+    assertEquals(1, emailDelegationDAO.updateSearchIncluded(id, GRANTEE, false, new Date(6_000L)));
+    assertEquals(0, emailDelegationDAO.updateSearchIncluded(id, OTHER, true, new Date(7_000L)), "somebody else's row");
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertFalse(read.isSearchIncluded());
+    assertEquals("REVOKED", read.getStatus(), "the owner's revoke stands");
+    assertTrue(read.isBadgeIncluded(), "the badge toggle is not written");
+    assertEquals(6_000L, read.getUpdatedDate().getTime());
+  }
+
+  /**
+   * EXO-90556 -- the owner's per-folder write, executed: the role folders, the owner's
+   * folder of each and the exceptions are written, and nothing else of the row -- the
+   * INBOX letters a grantee's pass refreshed meanwhile stay; only that owner's row, and
+   * never a share that ended while the server was being asked.
+   */
+  @Test
+  void theFolderGrantsWriteTouchesTheOwnersFolderColumnsOnly() {
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity refreshed = emailDelegationDAO.findById(id).orElseThrow();
+    refreshed.setRights("lr");
+    refreshed.setGrantedRoles("INBOX,SENT,TRASH");
+    emailDelegationDAO.saveAndFlush(refreshed);
+    entityManager.clear();
+    List<String> ended = List.of("REVOKED", "GONE");
+
+    assertEquals(1,
+                 emailDelegationDAO.updateFolderGrants(id,
+                                                       OWNER,
+                                                       "INBOX,SENT",
+                                                       "{\"TRASH\":\"Trash\"}",
+                                                       "TRASH=NONE,JUNK=READER",
+                                                       new Date(6_000L),
+                                                       ended));
+    assertEquals(0,
+                 emailDelegationDAO.updateFolderGrants(id, GRANTEE, "INBOX", null, null, new Date(7_000L), ended),
+                 "the grantee is not the owner");
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals("INBOX,SENT", read.getGrantedRoles());
+    assertEquals("{\"TRASH\":\"Trash\"}", read.getOwnerRoleFolders());
+    assertEquals("TRASH=NONE,JUNK=READER", read.getFolderAccess());
+    assertEquals("lr", read.getRights(), "the INBOX letters are not written");
+    assertEquals("ACCEPTED", read.getStatus());
+    assertEquals(6_000L, read.getUpdatedDate().getTime());
+
+    read.setStatus("REVOKED");
+    emailDelegationDAO.saveAndFlush(read);
+    entityManager.clear();
+    assertEquals(0,
+                 emailDelegationDAO.updateFolderGrants(id, OWNER, "INBOX", null, null, new Date(8_000L), ended),
+                 "a share revoked meanwhile is not written");
+    assertEquals("TRASH=NONE,JUNK=READER", emailDelegationDAO.findById(id).orElseThrow().getFolderAccess());
   }
 
   /**
@@ -201,6 +305,197 @@ public class EmailDelegationDAOTest {
     entityManager.clear();
     assertEquals(new Date(now.getTime() + 600_000L).getTime(),
                  emailDelegationDAO.findById(id).orElseThrow().getLastActivityDate().getTime());
+  }
+
+  /**
+   * EXO-90582 -- the owner's consent to writing in her name, executed: the mode and its
+   * date are written and the server's last refusal cleared, on that owner's share on
+   * offer or in use only -- never another owner's, never a declined, available, revoked
+   * or gone one -- and nothing else of the row moves.
+   */
+  @Test
+  void theSendModeWriteIsTheOwnersOnALiveShareOnly() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    for (String status : live) {
+      Long id = persist(GRANTEE, OWNER, status.toLowerCase() + "@acme.com", 7L, status);
+      EmailDelegationEntity refused = emailDelegationDAO.findById(id).orElseThrow();
+      refused.setSendRefusedDate(new Date(1_000L));
+      refused.setSendRefusedMode("AS");
+      emailDelegationDAO.saveAndFlush(refused);
+      entityManager.clear();
+
+      assertEquals(0,
+                   emailDelegationDAO.updateSendMode(id, GRANTEE, "AS", new Date(2_000L), new Date(2_000L), live),
+                   "the grantee is not the owner");
+      assertEquals(1, emailDelegationDAO.updateSendMode(id, OWNER, "ON_BEHALF", new Date(3_000L), new Date(4_000L), live), status);
+      entityManager.clear();
+
+      EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+      assertEquals("ON_BEHALF", read.getSendMode());
+      assertEquals(3_000L, read.getSendModeDate().getTime());
+      assertNull(read.getSendRefusedDate(), "a consent set again clears the last refusal");
+      assertNull(read.getSendRefusedMode(), "and the shape it refused");
+      assertEquals(status, read.getStatus(), "the status is not written");
+      assertEquals("lrs", read.getRights(), "nor the letters");
+      assertEquals(4_000L, read.getUpdatedDate().getTime());
+    }
+    for (String status : List.of("DECLINED", "AVAILABLE", "REVOKED", "GONE")) {
+      Long id = persist(GRANTEE, OWNER, status.toLowerCase() + "@acme.com", 7L, status);
+      entityManager.clear();
+      assertEquals(0,
+                   emailDelegationDAO.updateSendMode(id, OWNER, "ON_BEHALF", new Date(), new Date(), live),
+                   status + " never carries a consent");
+      entityManager.clear();
+      assertNull(emailDelegationDAO.findById(id).orElseThrow().getSendMode());
+    }
+  }
+
+  /**
+   * EXO-90583 -- a refusal by the owner's mail server recorded, executed: the refusal's
+   * date and the update stamp on the grantee's live row still carrying the consent the
+   * mail was sent under, and nothing else; no write on another grantee's row, on a
+   * consent set again since (another date), on a row carrying no consent, or on an ended
+   * share.
+   */
+  @Test
+  void aSendRefusalIsMarkedOnTheConsentItWasSentUnderOnly() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    Long withoutConsent = persist(GRANTEE, OTHER, "carol@acme.com", 7L, "ACCEPTED");
+    Long ended = persist(GRANTEE, "dave", "dave@acme.com", 7L, "REVOKED");
+    for (Long row : List.of(id, ended)) {
+      EmailDelegationEntity entity = emailDelegationDAO.findById(row).orElseThrow();
+      entity.setSendMode("AS");
+      entity.setSendModeDate(new Date(1_000L));
+      emailDelegationDAO.saveAndFlush(entity);
+    }
+    entityManager.clear();
+
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), "AS", new Date(5_000L), live), "the owner is not the sender");
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), "AS", new Date(5_000L), live), "a consent set since");
+    assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "no consent");
+    assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "an ended share");
+    assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live));
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals(5_000L, read.getSendRefusedDate().getTime());
+    assertEquals("AS", read.getSendRefusedMode(), "the shape refused is recorded with the date");
+    assertEquals(5_000L, read.getUpdatedDate().getTime());
+    assertEquals("AS", read.getSendMode(), "the consent stays: the owner sets it again to clear the refusal");
+    assertEquals(1_000L, read.getSendModeDate().getTime());
+    assertEquals("ACCEPTED", read.getStatus());
+    assertEquals("lrs", read.getRights());
+    assertNull(emailDelegationDAO.findById(ended).orElseThrow().getSendRefusedDate());
+  }
+
+  /**
+   * EXO-90626 -- the shape recorded with a refusal, executed on the engine: a later
+   * refusal never narrows what stands refused. As the owner, then on her behalf, leaves
+   * on her behalf refused (both blocked); on her behalf, then as the owner, keeps on her
+   * behalf; a refusal recorded before the shape was (a date and no shape: every shape)
+   * stays shapeless; as the owner twice stays as the owner. The date is the latest each
+   * time.
+   */
+  @Test
+  void aLaterRefusalNeverNarrowsWhatStandsRefused() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Object[][] cases = { { null, null, "AS", "AS" }, { "AS", new Date(2_000L), "ON_BEHALF", "ON_BEHALF" },
+        { "ON_BEHALF", new Date(2_000L), "AS", "ON_BEHALF" }, { null, new Date(2_000L), "AS", null },
+        { "AS", new Date(2_000L), "AS", "AS" }, { "AS", null, "ON_BEHALF", "ON_BEHALF" } };
+    int index = 0;
+    for (Object[] testCase : cases) {
+      Long id = persist(GRANTEE, OWNER, "case" + index++ + "@acme.com", 7L, "ACCEPTED");
+      EmailDelegationEntity entity = emailDelegationDAO.findById(id).orElseThrow();
+      entity.setSendMode("AS");
+      entity.setSendModeDate(new Date(1_000L));
+      entity.setSendRefusedMode((String) testCase[0]);
+      entity.setSendRefusedDate((Date) testCase[1]);
+      emailDelegationDAO.saveAndFlush(entity);
+      entityManager.clear();
+
+      assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), (String) testCase[2], new Date(5_000L), live));
+      entityManager.clear();
+
+      EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+      String standing = testCase[0] + (testCase[1] == null ? " (no date)" : "");
+      assertEquals(testCase[3], read.getSendRefusedMode(), standing + " then " + testCase[2]);
+      assertEquals(5_000L, read.getSendRefusedDate().getTime(), standing + " then " + testCase[2] + ": the latest date");
+    }
+  }
+
+  /**
+   * EXO-90582 -- the consent taken off an ended share, executed: the three columns go on
+   * a row no longer live, a live row keeps them, and a row with nothing to take off is
+   * not written at all.
+   */
+  @Test
+  void theSendModeGoesWithAnEndedShareOnly() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Long ended = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "REVOKED");
+    Long inUse = persist(GRANTEE, OTHER, "carol@acme.com", 7L, "ACCEPTED");
+    Long nothing = persist(GRANTEE, "dave", "dave@acme.com", 7L, "DECLINED");
+    for (Long id : List.of(ended, inUse)) {
+      EmailDelegationEntity entity = emailDelegationDAO.findById(id).orElseThrow();
+      entity.setSendMode("AS");
+      entity.setSendModeDate(new Date(1_000L));
+      entity.setSendRefusedDate(new Date(2_000L));
+      entity.setSendRefusedMode("AS");
+      emailDelegationDAO.saveAndFlush(entity);
+    }
+    entityManager.clear();
+
+    assertEquals(1, emailDelegationDAO.clearSendMode(ended, live));
+    assertEquals(0, emailDelegationDAO.clearSendMode(inUse, live), "a live share keeps its consent");
+    assertEquals(0, emailDelegationDAO.clearSendMode(nothing, live), "nothing to take off, nothing written");
+    entityManager.clear();
+
+    EmailDelegationEntity cleared = emailDelegationDAO.findById(ended).orElseThrow();
+    assertNull(cleared.getSendMode());
+    assertNull(cleared.getSendModeDate());
+    assertNull(cleared.getSendRefusedDate());
+    assertNull(cleared.getSendRefusedMode());
+    assertEquals("AS", emailDelegationDAO.findById(inUse).orElseThrow().getSendMode());
+    assertEquals("AS", emailDelegationDAO.findById(inUse).orElseThrow().getSendRefusedMode(), "a live share keeps its refusal");
+  }
+
+  /**
+   * EXO-90582, PO decision Q-9 -- a change of access, an Extend, a per-folder save, an
+   * accept and the grantee's own toggles leave the owner's consent to writing in her
+   * name as it stands: each targeted write names its own columns, which only a statement
+   * executed against the row can show.
+   */
+  @Test
+  void everyOtherTargetedWriteLeavesTheSendModeAsItStands() {
+    List<String> ended = List.of("REVOKED", "GONE");
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "PENDING");
+    EmailDelegationEntity consented = emailDelegationDAO.findById(id).orElseThrow();
+    consented.setSendMode("ON_BEHALF");
+    consented.setSendModeDate(new Date(1_000L));
+    consented.setSendRefusedDate(new Date(2_000L));
+    emailDelegationDAO.saveAndFlush(consented);
+    entityManager.clear();
+
+    assertEquals(1, emailDelegationDAO.updateOfferedRights(id, OWNER, "lrsw", "lrsw", new Date(), new Date(), List.of("ACCEPTED", "REVOKED", "GONE")));
+    assertEquals(1,
+                 emailDelegationDAO.accept(id, GRANTEE, "ACCEPTED", "Other Users/alice", "lrsw", "lrsw", null, new Date(), new Date(),
+                                           new Date(), List.of("PENDING", "DECLINED", "AVAILABLE")));
+    assertEquals(1, emailDelegationDAO.updateGrantedRights(id, OWNER, "EDITOR", "lrswite", "lrswite", "bob@acme.com", new Date(), new Date(), ended));
+    assertEquals(1,
+                 emailDelegationDAO.updateGrantedRightsAndRoles(id, OWNER, "READER", "lrs", "lrs", "bob@acme.com", "INBOX,SENT", null,
+                                                                new Date(), new Date(), ended));
+    assertEquals(1, emailDelegationDAO.updateFolderGrants(id, OWNER, "INBOX", null, "SENT=NONE", new Date(), ended));
+    assertEquals(1, emailDelegationDAO.updatePreferences(id, GRANTEE, true, true, new Date()));
+    assertEquals(1, emailDelegationDAO.updateSearchIncluded(id, GRANTEE, false, new Date()));
+    assertEquals(1, emailDelegationDAO.touchActivity(id, GRANTEE, new Date(), new Date()));
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals("ACCEPTED", read.getStatus(), "every write landed");
+    assertEquals("SENT=NONE", read.getFolderAccess());
+    assertEquals("ON_BEHALF", read.getSendMode(), "and none of them touched the consent");
+    assertEquals(1_000L, read.getSendModeDate().getTime());
+    assertEquals(2_000L, read.getSendRefusedDate().getTime());
   }
 
   /**

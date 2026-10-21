@@ -20,6 +20,7 @@
 // than by the menu component: they exist as soon as the app is loaded, and other
 // add-ons can look the point up before any mail is opened.
 import './js/EmailConnectorAttachmentActions.js';
+import { searchFromUrl } from './js/EmailConnectorMailBoxSearchCriteria.js';
 
 extensionRegistry.registerExtension('QuickAction', 'Extension', {
   id: 'email',
@@ -185,11 +186,32 @@ document.addEventListener('open-email-box-search', event => {
 });
 
 /*
+ * Opens the forwarding drawer, from anywhere in the platform: the web notification of a
+ * forwarding change uses it (EXO-90656) -- the drawer the mailbox band's Manage opens,
+ * mounted in this app, without opening the mailbox behind it.
+ */
+document.addEventListener('open-email-forwarding', () => {
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {forwarding: true}));
+});
+
+/*
+ * Opens the "Mailbox sharing" drawer on its "Shared with me" tab, from anywhere in the
+ * platform: the web notification of a mailbox shared with the user uses it (EXO-90830)
+ * -- the drawer the mailbox switcher's "Manage shared mailboxes" opens, where a waiting
+ * invitation is listed first, mounted in this app, without opening the mailbox behind it.
+ */
+document.addEventListener('open-email-shared-with-me', () => {
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {sharedWithMe: true}));
+});
+
+/*
  * Opens the mailbox on one of its built-in folders or views, from anywhere in the
- * platform: the web notification of a scheduled mail that was not sent uses it to open
- * the Scheduled view (EXO-90434).
+ * platform: the web notification of a scheduled mail uses it to open the Scheduled
+ * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595);
+ * the waiting-suggestions digest to open the Suggestions view (EXO-90851).
  *
- * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view.
+ * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view, SUGGESTIONS for
+ * the Suggestions view.
  */
 document.addEventListener('open-email-box-folder', event => {
   const folder = event?.detail?.folder;
@@ -208,6 +230,29 @@ document.addEventListener('open-email-box-mailbox', event => {
   window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox: String(mailbox)} : null));
 });
 
+/**
+ * What a mailbox URL asks to open: one mail when it names one, else the mailbox.
+ *
+ * A mail's permanent link lands here as ?openEmailBox=true&mailRemoteId=<uid>&folder=<key>
+ * (EmailPermanentLinkPlugin). The parameters are data from the address bar, so they are
+ * validated and nothing is rendered from them: a UID is digits, a folder one of the keys
+ * the reader can open a mail from outside with. Anything else opens the mailbox alone.
+ * Whose mail it is needs no check here: the reader fetches it as the viewer, so the link
+ * opens nothing of somebody else's.
+ *
+ * @param {URLSearchParams} urlParams the page's query parameters
+ * @returns {Object} the opening payload: {mailRemoteId, folder}, or {} for the mailbox
+ */
+function openingFromUrl(urlParams) {
+  const mailRemoteId = urlParams.get('mailRemoteId');
+  const folder = urlParams.get('folder') || 'INBOX';
+  const knownFolder = /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(folder);
+  if (!/^\d{1,18}$/.test(mailRemoteId || '') || !knownFolder) {
+    return {};
+  }
+  return {mailRemoteId: Number(mailRemoteId), folder};
+}
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
@@ -215,8 +260,31 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     // mailbox=<delegationId> opens a mailbox somebody shared with the user -- the
     // mailbox= deep link the notifications carry (delegation plan 7.4): the switcher is
     // on it, and its band shows, before its list has loaded.
+    let opening = openingFromUrl(urlParams);
     const mailbox = urlParams.get('mailbox');
-    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox} : null));
+    // search=, searchFrom=, searchAfter=... open the mailbox on a search, the address the
+    // mailbox writes while one runs, so it can be reloaded or shared (EXO-90838).
+    const search = !opening.mailRemoteId && searchFromUrl(urlParams);
+    if (urlParams.get('forwarding') === 'true') {
+      // forwarding=true opens the forwarding drawer: the link a forwarding
+      // notification carries by mail and push (EXO-90656).
+      opening = {forwarding: true};
+    } else if (urlParams.get('sharedWithMe') === 'true') {
+      // sharedWithMe=true opens the sharing drawer on "Shared with me": the link a
+      // shared-mailbox invitation carries by mail and push (EXO-90830). Opening it
+      // answers nothing -- the user does, on the drawer.
+      opening = {sharedWithMe: true};
+    } else if (search) {
+      opening = search;
+    } else if (mailbox) {
+      opening.mailbox = mailbox;
+    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|SUGGESTIONS|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
+      // folder=<key> alone opens that folder: the link a mail filter's notification
+      // carries by mail and push when it names no mail (EXO-90654), and SUGGESTIONS the
+      // Suggestions view, the link of the waiting-suggestions digest (EXO-90851).
+      opening.folder = urlParams.get('folder');
+    }
+    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
   }
 }
 

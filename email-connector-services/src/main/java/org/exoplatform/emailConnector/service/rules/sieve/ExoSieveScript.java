@@ -19,15 +19,24 @@ package org.exoplatform.emailConnector.service.rules.sieve;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.DateTimeException;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
+import org.exoplatform.emailConnector.model.ForwardingDestination;
+import org.exoplatform.emailConnector.model.ServerRule;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -36,8 +45,6 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
-import org.exoplatform.emailConnector.model.SieveVacation;
-
 /**
  * eXo's own Sieve script, {@value #SCRIPT_NAME}: a self-describing model carried in the
  * script's first line, and the Sieve text generated from it.
@@ -45,21 +52,35 @@ import org.exoplatform.emailConnector.model.SieveVacation;
  * The first line is {@code # exo-managed-v1: {"v":1,"vacation":{…},"rules":[…]}} — a
  * Sieve comment holding the model as one line of JSON. eXo reads its own script back
  * from that line, never from the Sieve below it: the server stays the only store, and
- * free-form Sieve is never parsed. The two reserved keys are {@code vacation} and
- * {@code rules}; any other top-level key is kept and written back untouched, so a
- * later feature needs no header version.
+ * free-form Sieve is never parsed. The reserved keys are {@code vacation},
+ * {@code forward} and {@code rules}; any other top-level key is kept and written back
+ * untouched, so a later feature needs no header version.
  * <p>
  * The generated Sieve is sectioned, in a fixed order: the {@code require} line (the
- * union of what the emitted sections need), the {@code # exo-vacation} section, then
- * the {@code # exo-rules} section. The vacation section comes first because
- * {@code vacation} neither files nor stops (RFC 5230 §4.6): no later {@code stop} can
- * skip it, and a later {@code fileinto} still applies.
+ * union of what the emitted sections need), the {@code # exo-vacation} section, the
+ * {@code # exo-forward} section, then the {@code # exo-rules} section. The vacation and
+ * the forward come first because neither files nor stops ({@code vacation}, RFC 5230
+ * §4.6; {@code redirect :copy}, RFC 3894): no later {@code stop} can skip them, and a
+ * later {@code fileinto} still applies.
+ * <p>
+ * <b>A forward is never written on the model's word alone.</b> The forward and every
+ * rule that forwards are written as {@code redirect :copy} -- never a plain
+ * {@code redirect}, so the mail always stays in the mailbox -- and only to a destination
+ * the caller authorized for this write ({@link #withAuthorizedRedirects}); any other one
+ * is refused with {@link ForwardingRefusedException}, and so is a server that does not
+ * advertise {@code copy}. A header read back from the server, even one edited outside
+ * eXo and re-published, cannot make eXo forward anywhere the caller's checks do not
+ * allow.
  * <p>
  * The vocabulary is a closed allowlist: {@code require}, {@code if allof(currentdate …)}
- * and {@code vacation} with {@code :days}, {@code :subject} and {@code :handle}. Every
- * user string becomes a Sieve quoted string with {@code \} and {@code "} escaped, so it
- * cannot close its string and become a command. The rules section is filled by the
- * filters eXip; this class refuses to serialise rules it has no generator for.
+ * and {@code vacation} with {@code :days}, {@code :subject} and {@code :handle} for the
+ * reply; {@code redirect :copy} for the forward; for the rules, what
+ * {@link SieveRulesSection} generates -- address, header, exists and size tests,
+ * {@code addflag}, {@code redirect :copy}, {@code fileinto}, {@code stop}. Every user
+ * string becomes a Sieve quoted string with {@code \} and {@code "} escaped, so it
+ * cannot close its string and become a command. The {@code require} line is the union of
+ * what the two sections emit; a script without rules is byte for byte what the reply
+ * alone generated before rules existed, so a stored hash stays valid.
  * <p>
  * Immutable.
  */
@@ -86,6 +107,12 @@ public final class ExoSieveScript {
   /** The reserved header key of the server rules. */
   public static final String        KEY_RULES         = "rules";
 
+  /** The reserved header key of eXo's forward: {@code {"to":"<address>"}}. */
+  public static final String        KEY_FORWARD       = "forward";
+
+  /** The comment opening the forward section. */
+  public static final String        FORWARD_MARKER    = "# exo-forward";
+
   /** The comment opening the vacation section. */
   public static final String        VACATION_MARKER   = "# exo-vacation";
 
@@ -93,8 +120,8 @@ public final class ExoSieveScript {
   public static final String        RULES_MARKER      = "# exo-rules";
 
   /**
-   * The user {@code SettingService} key under which the caller keeps {@link #hash()} of
-   * the text it last wrote: one neutral entry, checked by the automatic reply and the
+   * The user {@code SettingService} key under which the caller keeps {@link #sha256(String)}
+   * of the text it last wrote: one neutral entry, checked by the automatic reply and the
    * server rules alike, since both write this one script.
    */
   public static final String        HASH_SETTING_KEY  = "emailSieveScript";
@@ -105,13 +132,22 @@ public final class ExoSieveScript {
   private static final JsonMapper   JSON              = JsonMapper.builder().build();
 
   /** The automatic reply, or null when the script has none. */
-  private final SieveVacation       vacation;
+  private final Vacation            vacation;
 
-  /** The rules, as the filters eXip writes them; kept opaque here. */
-  private final ArrayNode           rules;
+  /** The rules, validated, in the order the server applies them. */
+  private final List<ServerRule>    rules;
 
   /** Every other top-level header key, in its order, written back untouched. */
   private final Map<String, JsonNode> otherKeys;
+
+  /** The address eXo's forward sends a copy to, or null when there is none. */
+  private final String              forward;
+
+  /**
+   * The destinations a {@code redirect} may be written to in this write: never part of
+   * the header or of the model's equality, set by the caller from its forwarding checks.
+   */
+  private final Set<String>         authorizedRedirects;
 
   /**
    * A script model.
@@ -119,30 +155,133 @@ public final class ExoSieveScript {
    * @param vacation the automatic reply, possibly null
    * @param rules the rules, possibly null for none
    * @param otherKeys the unknown top-level keys, possibly null
+   * @param forward the forward's address, possibly null
+   * @param authorizedRedirects the destinations this write may forward to, possibly null
    */
-  private ExoSieveScript(SieveVacation vacation, ArrayNode rules, Map<String, JsonNode> otherKeys) {
+  private ExoSieveScript(Vacation vacation,
+                         List<ServerRule> rules,
+                         Map<String, JsonNode> otherKeys,
+                         String forward,
+                         Set<String> authorizedRedirects) {
     this.vacation = vacation;
-    this.rules = rules == null ? JsonNodeFactory.instance.arrayNode() : rules.deepCopy();
+    this.rules = rules == null ? List.of() : List.copyOf(rules);
     this.otherKeys = otherKeys == null ? Map.of() : new LinkedHashMap<>(otherKeys);
+    this.forward = forward;
+    this.authorizedRedirects = authorizedRedirects == null ? Set.of() : Set.copyOf(authorizedRedirects);
   }
 
   /**
-   * A script with nothing in it: no automatic reply, no rule.
+   * A script with nothing in it: no automatic reply, no forward, no rule.
    *
    * @return the empty script
    */
   public static ExoSieveScript empty() {
-    return new ExoSieveScript(null, null, null);
+    return new ExoSieveScript(null, null, null, null, null);
   }
 
   /**
-   * This script with another automatic reply, rules and unknown keys unchanged.
+   * This script with another automatic reply, everything else unchanged.
    *
    * @param newVacation the automatic reply, null to remove it from the model
    * @return the new script
    */
-  public ExoSieveScript withVacation(SieveVacation newVacation) {
-    return new ExoSieveScript(newVacation, rules, otherKeys);
+  public ExoSieveScript withVacation(Vacation newVacation) {
+    return new ExoSieveScript(newVacation, rules, otherKeys, forward, authorizedRedirects);
+  }
+
+  /**
+   * This script with another forward, everything else unchanged. Its destination is
+   * checked for its shape here, and for being allowed when the script is generated.
+   *
+   * @param destination the address a copy of every mail goes to, null for no forward
+   * @return the new script
+   * @throws IllegalArgumentException {@value ForwardingDestination#INVALID} for anything
+   *           but a plain address
+   */
+  public ExoSieveScript withForward(String destination) {
+    return new ExoSieveScript(vacation,
+                              rules,
+                              otherKeys,
+                              destination == null ? null : ForwardingDestination.normalize(destination),
+                              authorizedRedirects);
+  }
+
+  /**
+   * This script, allowed to forward to the given destinations in the write it is
+   * generated for: what the caller's forwarding checks allow, and nothing else. Not part
+   * of the header.
+   *
+   * @param destinations the destinations, normalised
+   * @return the new script
+   */
+  public ExoSieveScript withAuthorizedRedirects(Set<String> destinations) {
+    return new ExoSieveScript(vacation, rules, otherKeys, forward, destinations);
+  }
+
+  /**
+   * The address eXo's forward sends a copy of every mail to.
+   *
+   * @return the address, or empty when there is no forward
+   */
+  public Optional<String> getForward() {
+    return Optional.ofNullable(forward);
+  }
+
+  /**
+   * How many {@code redirect}s the generated script holds, which one mail may all meet:
+   * the forward and each enabled rule that forwards.
+   *
+   * @return the count
+   */
+  public int redirectCount() {
+    return (forward == null ? 0 : 1)
+        + (int) rules.stream().filter(rule -> rule.enabled() && !rule.forwardDestinations().isEmpty()).count();
+  }
+
+  /**
+   * Every destination the generated script forwards to: the forward's and each enabled
+   * rule's.
+   *
+   * @return the destinations, normalised, never null
+   */
+  public Set<String> redirectDestinations() {
+    Set<String> destinations = new HashSet<>();
+    if (forward != null) {
+      destinations.add(forward);
+    }
+    rules.stream().filter(ServerRule::enabled).forEach(rule -> destinations.addAll(rule.forwardDestinations()));
+    return destinations;
+  }
+
+  /**
+   * Whether the generated script forwards anything.
+   *
+   * @return true when it holds a {@code redirect}
+   */
+  public boolean emitsRedirect() {
+    return redirectCount() > 0;
+  }
+
+  /**
+   * This script with other rules, reply and unknown keys unchanged. Each rule is
+   * validated again and must carry a reference, unique in the list.
+   *
+   * @param newRules the rules, in the order the server applies them
+   * @return the new script
+   * @throws IllegalArgumentException with a message code when a rule is invalid, has no
+   *           reference or shares one
+   */
+  public ExoSieveScript withRules(List<ServerRule> newRules) {
+    List<ServerRule> validated = new ArrayList<>();
+    Set<String> refs = new HashSet<>();
+    for (ServerRule rule : newRules == null ? List.<ServerRule>of() : newRules) {
+      ServerRule clean = rule.validated();
+      if (clean.ref() == null || !refs.add(clean.ref())) {
+        throw new IllegalArgumentException(ServerRule.INVALID);
+      }
+      validated.add(clean);
+    }
+    return new ExoSieveScript(vacation, validated, otherKeys, forward, authorizedRedirects);
   }
 
   /**
@@ -150,17 +289,26 @@ public final class ExoSieveScript {
    *
    * @return the reply, or empty
    */
-  public Optional<SieveVacation> getVacation() {
+  public Optional<Vacation> getVacation() {
     return Optional.ofNullable(vacation);
   }
 
   /**
-   * The rules the model holds, as JSON; a copy.
+   * The rules the model holds, enabled or not, in order.
    *
-   * @return the rules, never null
+   * @return the rules, unmodifiable, never null
    */
-  public ArrayNode getRules() {
-    return rules.deepCopy();
+  public List<ServerRule> getRules() {
+    return rules;
+  }
+
+  /**
+   * Whether the generated script contains a rules block: at least one enabled rule.
+   *
+   * @return true when the rules section emits Sieve
+   */
+  public boolean emitsRules() {
+    return rules.stream().anyMatch(ServerRule::enabled);
   }
 
   /**
@@ -174,14 +322,17 @@ public final class ExoSieveScript {
   }
 
   /**
-   * Whether the generated script may file, stop, discard, reject or redirect a mail. The
-   * generator knows what it emits: the vacation section does none of these, and any
-   * rule is assumed to, until the filters eXip's rules generator answers per rule.
+   * Whether the generated script may file, stop, discard, reject or redirect a mail away
+   * from the mailbox. The generator knows what it emits: the vacation section does none
+   * of these, nor does the forward or a rule that forwards ({@code redirect :copy} keeps
+   * the mail where it is), nor a rule that only flags; an enabled rule with a filing
+   * action or {@code stop} does. It never emits {@code discard}, {@code reject} or a
+   * plain {@code redirect}.
    *
-   * @return true when a rule section is emitted
+   * @return true when an enabled rule files the mail or stops
    */
   public boolean filesOrStops() {
-    return !rules.isEmpty();
+    return rules.stream().anyMatch(rule -> rule.enabled() && rule.filesOrStops());
   }
 
   /**
@@ -205,26 +356,35 @@ public final class ExoSieveScript {
           || header.path(KEY_VERSION).intValue() != HEADER_VERSION) {
         return Optional.empty();
       }
-      SieveVacation vacation = null;
-      ArrayNode rules = null;
+      Vacation vacation = null;
+      List<ServerRule> rules = null;
+      String forward = null;
       Map<String, JsonNode> other = new LinkedHashMap<>();
       for (Map.Entry<String, JsonNode> entry : header.properties()) {
         switch (entry.getKey()) {
         case KEY_VERSION -> {
           // Already checked.
         }
-        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : SieveVacation.fromJson(entry.getValue());
+        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : Vacation.fromJson(entry.getValue());
         case KEY_RULES -> {
           if (!(entry.getValue() instanceof ArrayNode array)) {
             return Optional.empty();
           }
-          rules = array;
+          rules = SieveRulesSection.fromJson(array);
+        }
+        case KEY_FORWARD -> {
+          if (!(entry.getValue() instanceof ObjectNode node) || !node.path("to").isString()) {
+            return Optional.empty();
+          }
+          forward = ForwardingDestination.normalize(node.path("to").asString());
         }
         default -> other.put(entry.getKey(), entry.getValue());
         }
       }
-      return Optional.of(new ExoSieveScript(vacation, rules, other));
+      return Optional.of(new ExoSieveScript(vacation, rules, other, forward, null));
     } catch (JacksonException | IllegalArgumentException e) {
+      // A header another client edited into something eXo would not write is not
+      // interpreted: the script reads as not eXo's, "modified outside eXo".
       return Optional.empty();
     }
   }
@@ -246,29 +406,63 @@ public final class ExoSieveScript {
    * Generates the script text with RFC 5228 string escaping.
    *
    * @return the Sieve text, CRLF line endings
-   * @throws IllegalStateException when the model holds rules, which only the filters
-   *           eXip's generator can serialise
    */
   public String toScript() {
     return toScript(SieveStringEncoding.ESCAPED);
   }
 
   /**
-   * Generates the script text: header, {@code require}, vacation section, rules marker,
-   * user strings encoded with the server's strategy.
+   * Generates the script text for a server, from the capabilities it advertised after
+   * TLS: its string encoding, and the {@code mailboxexists} guard where it advertises
+   * {@code mailbox}. What eXo publishes.
+   *
+   * @param capabilities the server's capabilities
+   * @return the Sieve text, CRLF line endings
+   */
+  public String toScript(ManageSieveCapabilities capabilities) {
+    if (emitsRedirect() && (capabilities == null || !capabilities.hasExtension(SieveRulesSection.COPY_EXTENSION))) {
+      // Without copy a redirect would take the mail out of the mailbox: never written.
+      throw new ForwardingRefusedException(ForwardingRefusedException.COPY_UNSUPPORTED);
+    }
+    return toScript(SieveStringEncoding.forCapabilities(capabilities),
+                    capabilities != null && capabilities.hasExtension(SieveRulesSection.MAILBOX_EXTENSION));
+  }
+
+  /**
+   * Generates the script text with every {@code fileinto} unguarded.
    *
    * @param encoding how user strings become quoted strings on this server
    * @return the Sieve text, CRLF line endings
-   * @throws IllegalStateException when the model holds rules, which only the filters
-   *           eXip's generator can serialise
    */
   public String toScript(SieveStringEncoding encoding) {
-    if (!rules.isEmpty()) {
-      throw new IllegalStateException("The model holds server rules and no rules generator is available");
-    }
+    return toScript(encoding, false);
+  }
+
+  /**
+   * Generates the script text: header, {@code require}, vacation section, rules marker
+   * and the enabled rules, user strings encoded with the server's strategy.
+   * <p>
+   * The {@code require} list is the union of what the sections emit, in a fixed order:
+   * the reply's extensions, then {@code fileinto} and {@code imap4flags} for the rules,
+   * then {@code encoded-character} when any string of either section needed it. Never
+   * {@code variables}: under it, a {@code $} written {@code ${unicode:24}} decodes to a
+   * {@code ${…}} the server expands, so a value typed as text would be a variable
+   * reference (observed on Pigeonhole).
+   *
+   * @param encoding how user strings become quoted strings on this server
+   * @param mailboxGuard whether to guard each {@code fileinto} with {@code mailboxexists}
+   * @return the Sieve text, CRLF line endings
+   * @throws IllegalStateException when the union would require {@code variables}
+   * @throws ForwardingRefusedException when the forward or a rule forwards to a
+   *           destination this write was not authorized for
+   */
+  public String toScript(SieveStringEncoding encoding, boolean mailboxGuard) {
     StringBuilder script = new StringBuilder();
     script.append(HEADER_PREFIX).append(headerJson()).append(EOL);
+    SieveRulesSection.Generated generatedRules = SieveRulesSection.generate(rules, encoding, mailboxGuard, authorizedRedirects);
+    String forwardTo = forward == null ? null : SieveRulesSection.authorized(forward, authorizedRedirects);
     List<String> require = new ArrayList<>();
+    boolean encodedCharacter = generatedRules.extensions().contains(SieveStringEncoding.EXTENSION);
     if (emitsVacation()) {
       // The Sieve extension carries the same name as the header key.
       require.add(KEY_VACATION);
@@ -276,9 +470,22 @@ public final class ExoSieveScript {
         require.add("date");
         require.add("relational");
       }
-      if (encoding.needsExtension(vacation.subject()) || encoding.needsExtension(vacation.text())) {
-        require.add(SieveStringEncoding.EXTENSION);
+      encodedCharacter |= encoding.needsExtension(vacation.subject()) || encoding.needsExtension(vacation.text());
+    }
+    if (forwardTo != null) {
+      require.add(SieveRulesSection.COPY_EXTENSION);
+      encodedCharacter |= encoding.needsExtension(forwardTo);
+    }
+    for (String extension : generatedRules.extensions()) {
+      if (!SieveStringEncoding.EXTENSION.equals(extension) && !require.contains(extension)) {
+        require.add(extension);
       }
+    }
+    if (encodedCharacter) {
+      require.add(SieveStringEncoding.EXTENSION);
+    }
+    if (require.contains(SieveStringEncoding.VARIABLES_EXTENSION)) {
+      throw new IllegalStateException("eXo's script never requires variables: its string encoding relies on it");
     }
     if (!require.isEmpty()) {
       script.append("require [");
@@ -291,28 +498,13 @@ public final class ExoSieveScript {
       script.append(VACATION_MARKER).append(EOL);
       appendVacation(script, encoding);
     }
+    if (forwardTo != null) {
+      script.append(FORWARD_MARKER).append(EOL);
+      script.append("redirect :copy ").append(encoding.quote(forwardTo)).append(';').append(EOL);
+    }
     script.append(RULES_MARKER).append(EOL);
+    script.append(generatedRules.text());
     return script.toString();
-  }
-
-  /**
-   * The SHA-256 of the generated text, the value eXo stores to notice an edit made
-   * outside eXo.
-   *
-   * @return the lower-case hex digest
-   */
-  public String hash() {
-    return sha256(toScript());
-  }
-
-  /**
-   * The SHA-256 of the text generated for a server's encoding.
-   *
-   * @param encoding the server's string encoding
-   * @return the lower-case hex digest
-   */
-  public String hash(SieveStringEncoding encoding) {
-    return sha256(toScript(encoding));
   }
 
   /**
@@ -352,7 +544,10 @@ public final class ExoSieveScript {
     if (vacation != null) {
       header.set(KEY_VACATION, vacation.toJson());
     }
-    header.set(KEY_RULES, rules.deepCopy());
+    if (forward != null) {
+      header.putObject(KEY_FORWARD).put("to", forward);
+    }
+    header.set(KEY_RULES, SieveRulesSection.toJson(rules));
     for (Map.Entry<String, JsonNode> entry : otherKeys.entrySet()) {
       header.set(entry.getKey(), entry.getValue().deepCopy());
     }
@@ -372,12 +567,12 @@ public final class ExoSieveScript {
     List<String> tests = new ArrayList<>();
     ZoneId zone = vacation.zoneId();
     if (vacation.start() != null) {
-      ZoneOffset offset = midnightOffset(vacation.start(), zone);
+      ZoneOffset offset = vacation.start().atStartOfDay(zone).getOffset();
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"ge\" \"date\" "
           + quote(vacation.start().toString()));
     }
     if (vacation.end() != null) {
-      ZoneOffset offset = midnightOffset(vacation.end().plusDays(1), zone);
+      ZoneOffset offset = vacation.end().atTime(LocalTime.MAX).atZone(zone).getOffset();
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"le\" \"date\" "
           + quote(vacation.end().toString()));
     }
@@ -395,26 +590,6 @@ public final class ExoSieveScript {
       script.append("         ").append(tests.get(1)).append(") {").append(EOL);
     }
     script.append("  ").append(action).append(EOL).append('}').append(EOL);
-  }
-
-  /**
-   * The fixed offset whose date turns to {@code day} at the very instant the zone starts
-   * that day: {@code day}'s midnight minus that instant, which is the offset in force just
-   * before the zone's day starts. On an ordinary day it is the zone's offset. Where the
-   * clocks go forward at midnight it is the offset before the change: on 2026-03-29 in
-   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start the
-   * date an hour early. Where they go back at midnight the day starts at the second
-   * midnight, so it is the offset after the change: on 2026-10-25 there, +02:00. A
-   * window's start uses its first day, its end the day after its last one.
-   *
-   * @param day the day whose start the date must follow
-   * @param zone the zone the day is in
-   * @return the offset
-   */
-  static ZoneOffset midnightOffset(LocalDate day, ZoneId zone) {
-    long zoneStart = day.atStartOfDay(zone).toEpochSecond();
-    long midnight = day.atStartOfDay().toEpochSecond(ZoneOffset.UTC);
-    return ZoneOffset.ofTotalSeconds(Math.toIntExact(midnight - zoneStart));
   }
 
   /**
@@ -449,5 +624,212 @@ public final class ExoSieveScript {
   @Override
   public int hashCode() {
     return headerJson().hashCode();
+  }
+
+  /**
+   * The automatic reply eXo writes, validated so that nothing the user typed can escape
+   * its quoted string or add a header to the reply.
+   * <p>
+   * Bounds: the subject is one line of at most {@value #MAX_SUBJECT_LENGTH} characters,
+   * the text at most {@value #MAX_TEXT_LENGTH}, no NUL anywhere; the handle is a token
+   * of letters, digits, dots, underscores and dashes; the window's days are the user's
+   * own calendar days in {@code zone}, one UTC offset computed per boundary so a window
+   * across a DST change stays exact.
+   *
+   * @param enabled whether the reply is on; a disabled reply keeps its text in the header
+   *          and emits no Sieve
+   * @param start the first day, or null for "from now"
+   * @param end the last day, inclusive, or null for "until switched off"
+   * @param zone the IANA zone the days are in, required with a window
+   * @param subject the reply's subject, required: the server's default adds a prefix
+   * @param text the reply's text, plain
+   * @param handle the RFC 5230 {@code :handle}, stable across text edits, new per
+   *          activation
+   * @param days the minimum days between two replies to one sender
+   */
+  public record Vacation(boolean enabled,
+                         LocalDate start,
+                         LocalDate end,
+                         String zone,
+                         String subject,
+                         String text,
+                         String handle,
+                         int days) {
+
+    /** The longest subject accepted. */
+    public static final int      MAX_SUBJECT_LENGTH = 200;
+
+    /** The longest text accepted. */
+    public static final int      MAX_TEXT_LENGTH    = 4000;
+
+    /** The largest {@code :days} accepted. */
+    public static final int      MAX_DAYS           = 365;
+
+    /** The characters and length a reply handle may carry. */
+    private static final Pattern HANDLE_PATTERN     = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+
+    /** The header JSON field of the on/off switch. */
+    private static final String  FIELD_ENABLED      = "enabled";
+
+    /**
+     * Validates the reply and normalises the text's line breaks to CRLF.
+     *
+     * @param enabled whether the reply is on
+     * @param start the first day
+     * @param end the last day
+     * @param zone the zone
+     * @param subject the subject
+     * @param text the text
+     * @param handle the handle
+     * @param days the interval
+     * @throws IllegalArgumentException with a message code when a value is invalid
+     */
+    public Vacation {
+      if (text == null || text.isBlank() || text.indexOf('\0') >= 0) {
+        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
+      }
+      text = storedText(text);
+      if (text.length() > MAX_TEXT_LENGTH) {
+        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
+      }
+      validateSubject(subject);
+      if (handle == null || !HANDLE_PATTERN.matcher(handle).matches()) {
+        throw new IllegalArgumentException("emailConnector.absence.handle.invalid");
+      }
+      if (days < 1 || days > MAX_DAYS) {
+        throw new IllegalArgumentException("emailConnector.absence.days.invalid");
+      }
+      if (start != null && end != null && start.isAfter(end)) {
+        throw new IllegalArgumentException("emailConnector.absence.window.invalid");
+      }
+      validateZone(zone, start, end);
+    }
+
+    /**
+     * Checks the subject: present, bounded, on one line, without a NUL.
+     *
+     * @param subject the subject
+     * @throws IllegalArgumentException with a message code when it is invalid
+     */
+    private static void validateSubject(String subject) {
+      if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
+          || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
+        throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
+      }
+    }
+
+    /**
+     * Checks the zone whenever the reply has one or a date window needs one.
+     *
+     * @param zone the zone, may be null
+     * @param start the first day, may be null
+     * @param end the last day, may be null
+     * @throws IllegalArgumentException with a message code when the zone is required and
+     *           unknown
+     */
+    private static void validateZone(String zone, LocalDate start, LocalDate end) {
+      if (zone != null || start != null || end != null) {
+        try {
+          ZoneId.of(zone == null ? "" : zone);
+        } catch (DateTimeException e) {
+          throw new IllegalArgumentException("emailConnector.absence.timeZone.invalid", e);
+        }
+      }
+    }
+
+    /**
+     * A text as the header stores it: every line break CRLF. The length bound applies to
+     * this form, so what is accepted on the way in is also read back from the header.
+     *
+     * @param text the text, any line breaks
+     * @return the text with CRLF line breaks
+     */
+    public static String storedText(String text) {
+      return text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", EOL);
+    }
+
+    /**
+     * The zone the window's days are in.
+     *
+     * @return the zone, UTC when the reply has none
+     */
+    public ZoneId zoneId() {
+      return zone == null ? ZoneOffset.UTC : ZoneId.of(zone);
+    }
+
+    /**
+     * The reply as header JSON, nulls omitted.
+     *
+     * @return the JSON object
+     */
+    ObjectNode toJson() {
+      ObjectNode node = JsonNodeFactory.instance.objectNode();
+      node.put(FIELD_ENABLED, enabled);
+      if (start != null) {
+        node.put("start", start.toString());
+      }
+      if (end != null) {
+        node.put("end", end.toString());
+      }
+      if (zone != null) {
+        node.put("zone", zone);
+      }
+      if (subject != null) {
+        node.put("subject", subject);
+      }
+      node.put("text", text);
+      node.put("handle", handle);
+      node.put("days", days);
+      return node;
+    }
+
+    /**
+     * Reads a reply from header JSON, validating it like any other.
+     *
+     * @param node the JSON object
+     * @return the reply
+     * @throws IllegalArgumentException when a field is missing or invalid
+     */
+    static Vacation fromJson(JsonNode node) {
+      if (!node.isObject() || !node.path(FIELD_ENABLED).isBoolean() || !node.path("days").isInt()) {
+        throw new IllegalArgumentException("emailConnector.absence.header.invalid");
+      }
+      try {
+        return new Vacation(node.path(FIELD_ENABLED).booleanValue(),
+                            date(node, "start"),
+                            date(node, "end"),
+                            string(node, "zone"),
+                            string(node, "subject"),
+                            string(node, "text"),
+                            string(node, "handle"),
+                            node.path("days").intValue());
+      } catch (DateTimeException e) {
+        throw new IllegalArgumentException("emailConnector.absence.header.invalid", e);
+      }
+    }
+
+    /**
+     * A string field, null when absent.
+     *
+     * @param node the object
+     * @param field the field
+     * @return the value or null
+     */
+    private static String string(JsonNode node, String field) {
+      JsonNode value = node.get(field);
+      return value == null || value.isNull() ? null : value.asString();
+    }
+
+    /**
+     * A date field, null when absent.
+     *
+     * @param node the object
+     * @param field the field
+     * @return the value or null
+     */
+    private static LocalDate date(JsonNode node, String field) {
+      String value = string(node, field);
+      return value == null ? null : LocalDate.parse(value);
+    }
   }
 }

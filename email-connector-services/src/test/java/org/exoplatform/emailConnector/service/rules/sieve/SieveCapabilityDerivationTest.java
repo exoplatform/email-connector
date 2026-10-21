@@ -25,9 +25,8 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 
 /**
  * Capabilities derived from the lines a server re-issues after STARTTLS.
@@ -43,13 +42,23 @@ class SieveCapabilityDerivationTest {
     ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(caps("PLAIN OAUTHBEARER",
                                                                                 FakeManageSieveServer.STALWART_SIEVE));
     assertTrue(capabilities.supported());
-    assertEquals(ServerRuleVocabularySource.DYNAMIC, capabilities.vocabularySource());
+    assertEquals(VocabularySource.DYNAMIC, capabilities.vocabularySource());
     assertFalse(capabilities.readsForeignRules());
     for (String element : List.of(ServerRuleCapabilities.VACATION,
                                   ServerRuleCapabilities.VACATION_DATE_WINDOW,
                                   ServerRuleCapabilities.FORWARDING_READ,
-                                  ServerRuleCapabilities.BODY,
                                   ServerRuleCapabilities.MOVE_TO_FOLDER,
+                                  ServerRuleCapabilities.MARK_JUNK,
+                                  ServerRuleCapabilities.DELETE,
+                                  ServerRuleCapabilities.MARK_READ,
+                                  ServerRuleCapabilities.STAR,
+                                  ServerRuleCapabilities.TO,
+                                  ServerRuleCapabilities.CC,
+                                  ServerRuleCapabilities.ANY_RECIPIENT,
+                                  ServerRuleCapabilities.SUBJECT,
+                                  ServerRuleCapabilities.HEADER,
+                                  ServerRuleCapabilities.MESSAGE_SIZE,
+                                  ServerRuleCapabilities.IS_AUTOMATED,
                                   ServerRuleCapabilities.TAG,
                                   ServerRuleCapabilities.FROM,
                                   ServerRuleCapabilities.IS_LIST)) {
@@ -58,9 +67,14 @@ class SieveCapabilityDerivationTest {
     for (String element : List.of(ServerRuleCapabilities.VACATION_HTML,
                                   ServerRuleCapabilities.FORWARDING_WRITE,
                                   ServerRuleCapabilities.READS_FOREIGN_VACATION,
-                                  ServerRuleCapabilities.ATTACHMENT_NAME)) {
+                                  ServerRuleCapabilities.ATTACHMENT_NAME,
+                                  ServerRuleCapabilities.BODY,
+                                  ServerRuleCapabilities.SUBJECT_OR_BODY)) {
       assertFalse(capabilities.isSupported(element), element);
     }
+    // body is advertised, yet the rules generator writes no body test in this phase.
+    assertEquals("emailConnector.rules.unsupported.notInPhase1",
+                 capabilities.elements().get(ServerRuleCapabilities.BODY).reasonKey());
     assertEquals(ServerRuleCapabilities.ALL_ELEMENTS.size(), capabilities.elements().size());
   }
 
@@ -102,14 +116,14 @@ class SieveCapabilityDerivationTest {
   @Test
   void testSharedRecordHelpers() {
     ServerRuleCapabilities none = ServerRuleCapabilities.unsupported("emailConnector.rules.unsupported.noEngine",
-                                                                     ServerRuleVocabularySource.NONE);
+                                                                     VocabularySource.NONE);
     assertEquals(ServerRuleCapabilities.ALL_ELEMENTS, List.copyOf(none.elements().keySet()));
-    assertTrue(none.elements().values().stream().noneMatch(ServerRuleElementSupport::supported));
+    assertTrue(none.elements().values().stream().noneMatch(ServerRuleCapabilities.ElementSupport::supported));
     ServerRuleCapabilities stalwart = SieveCapabilityDerivation.derive(caps("PLAIN", FakeManageSieveServer.STALWART_SIEVE));
     ServerRuleCapabilities conflicting = stalwart.withPublishConflict(true);
     assertTrue(conflicting.publishConflict());
     assertEquals(stalwart.elements(), conflicting.elements());
-    assertFalse(new ServerRuleCapabilities(false, "x", false, false, ServerRuleVocabularySource.DYNAMIC, stalwart.elements())
+    assertFalse(new ServerRuleCapabilities(false, "x", false, false, VocabularySource.DYNAMIC, stalwart.elements())
                                                                                                                   .isSupported(ServerRuleCapabilities.VACATION));
     assertFalse(stalwart.isSupported("unknownElement"));
   }

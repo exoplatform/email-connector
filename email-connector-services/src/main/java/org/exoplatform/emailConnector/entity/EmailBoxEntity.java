@@ -210,4 +210,27 @@ public class EmailBoxEntity {
   // decided at sync from the headers, which the cache does not otherwise keep.
   @Column(name = "READ_RECEIPT_RETURN_PATH_MATCH", nullable = false)
   private boolean                     readReceiptReturnPathMatch;
+
+  // On a draft, the mailbox shared with USER_ID that it was written in (EXO-90595): an
+  // EMAIL_DELEGATION id, settled at the draft's first save and never changed after; null
+  // for the writer's own mailbox and on every row that is not a draft. Declared last and
+  // set by name, like the read-receipt columns.
+  @Column(name = "DRAFT_DELEGATION_ID")
+  private Long                        draftDelegationId;
+
+  // On a draft of a mailbox shared with USER_ID, the name it is to go out in (EXO-90584):
+  // NONE, ON_BEHALF or AS, as the writer last left it, written with every revision; null
+  // when the draft never said (every row before changeset 1.0.0-89, and every draft of the
+  // writer's own mailbox). Never a right: every send checks the owner's consent again.
+  // Declared last and set by name, like the draft's mailbox.
+  @Column(name = "DRAFT_SEND_MODE")
+  private String                      draftSendMode;
+
+  // The sender-authentication method the receiving server reported as failed in the
+  // message's own Authentication-Results header (EXO-90841): DMARC, SPF or DKIM; null when
+  // none failed, the server said nothing, or the row predates changeset 1.0.0-98. Decided
+  // at sync, when the header still exists. Declared last and set by name, like the
+  // draft's send mode.
+  @Column(name = "AUTH_FAILURE")
+  private String                      authFailure;
 }

@@ -16,12 +16,24 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import com.sun.mail.smtp.SMTPAddressFailedException;
+import com.sun.mail.smtp.SMTPSendFailedException;
+import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.event.NewInboxMailEvent;
+import org.exoplatform.emailConnector.service.filters.FilterRunContext;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.model.SendIdentity;
+import org.exoplatform.emailConnector.model.SendMode;
+import javax.mail.internet.AddressException;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyChar;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -60,6 +72,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -73,6 +86,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
@@ -116,7 +130,6 @@ import javax.mail.search.AndTerm;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
-import javax.mail.search.HeaderTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
@@ -176,6 +189,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.event.CustomFoldersRelocatedEvent;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
@@ -186,6 +200,7 @@ import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -194,12 +209,16 @@ import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailCategoryAdded;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -220,6 +239,8 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 
@@ -343,6 +364,7 @@ public class EmailBoxServiceTest {
     theSyncResolvesAnAuthenticatorForItsWorkers();
     theProviderAnswersTheStoredAccount();
     countNothingInTheCacheByDefault();
+    shareNoMailboxByDefault();
   }
 
   /**
@@ -429,6 +451,15 @@ public class EmailBoxServiceTest {
    */
   void countNothingInTheCacheByDefault() {
     lenient().when(emailBoxStorage.getFolderCounts(anyString())).thenReturn(new FolderMessageCounts(Map.of(), Map.of()));
+  }
+
+  /**
+   * No mailbox shared with anybody, for the cached search in this class: an unstubbed
+   * mock answers null where the delegation service never does. Lenient like the
+   * defaults around it; the tests about shared mailboxes stub their own.
+   */
+  private void shareNoMailboxByDefault() {
+    lenient().when(emailDelegationService.getSharedMailboxSearchFolders(anyString())).thenReturn(SharedMailboxSearchFolders.NONE);
   }
 
   /**
@@ -662,6 +693,36 @@ public class EmailBoxServiceTest {
     assertEquals(List.of("Veronika"),
                  emailBox.getThreadSummaries().get("thread-1").participants(),
                  "the draft row is named after the conversation, which the row itself cannot say");
+  }
+
+  /**
+   * EXO-90595 -- the Drafts listing names the shared mailbox each draft was written in,
+   * as the server resolves it, looking each share up once for the whole listing however
+   * many drafts it holds; a draft of the user's own mailbox names none.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void theDraftsListingNamesEachDraftsMailboxOncePerShare() throws Exception {
+    givenAUsableMailbox();
+    Email own = new Email();
+    own.setDraftLocalId("draft-own");
+    Email first = new Email();
+    first.setDraftLocalId("draft-a1");
+    first.setSendDelegationId(100L);
+    Email second = new Email();
+    second.setDraftLocalId("draft-a2");
+    second.setSendDelegationId(100L);
+    when(emailBoxStorage.getUnscheduledDrafts(TEST_USER)).thenReturn(List.of(own, first, second));
+    DraftMailbox anne = new DraftMailbox(100L, "Anne", "anne@example.org", true);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(100L))).thenReturn(Map.of(100L, anne));
+
+    List<Email> listed = emailBoxService.getEmailBox(TEST_USER, MailFolder.DRAFTS).getEmails();
+
+    assertNull(listed.get(0).getSendMailbox(), "the user's own mailbox");
+    assertEquals(anne, listed.get(1).getSendMailbox());
+    assertEquals(anne, listed.get(2).getSendMailbox());
+    verify(emailDelegationService, times(1)).draftMailboxes(anyString(), anyCollection());
   }
 
   @Test
@@ -1771,14 +1832,59 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The undo-move search looks a domain-literal id up by its local part, which every
-   * spelling of the raw header contains; a plain domain is searched as it is.
+   * The search keys cover every server (EXO-90597): the bare id, which is all Stalwart
+   * matches, the bracketed id for a server matching the whole raw value, and for a domain
+   * literal the local part and "@", which every raw spelling contains on a substring
+   * server. A blank id has no key at all.
    */
   @Test
-  void aDomainLiteralIdIsSearchedByItsLocalPart() {
-    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@192.168.0.248>"));
-    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@[192.168.0.248]>"));
-    assertEquals("<a.1@host.example>", EmailBoxService.messageIdSearchKey("<a.1@host.example>"));
+  void aMessageIdIsSearchedBareBracketedAndForALiteralByItsLocalPart() {
+    assertEquals(List.of("a.1@Host.Example", "<a.1@Host.Example>"), EmailBoxService.messageIdSearchKeys(" <a.1@Host.Example> "));
+    assertEquals(List.of("a.1@host", "<a.1@host>"), EmailBoxService.messageIdSearchKeys("a.1@host"));
+    assertEquals(List.of("a.1@192.168.0.248", "<a.1@192.168.0.248>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@192.168.0.248>"));
+    assertEquals(List.of("a.1@[192.168.0.248]", "<a.1@[192.168.0.248]>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@[192.168.0.248]>"));
+    assertEquals(List.of("a.1@[IPv6:2001:db8::1]", "<a.1@[IPv6:2001:db8::1]>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@[IPv6:2001:db8::1]>"));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys("<>"));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys(" "));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys(null));
+  }
+
+  /**
+   * The keys travel as ONE search: an OR of {@code HEADER Message-ID} terms, the bare id
+   * among them -- the only spelling Stalwart answers.
+   */
+  @Test
+  void theMessageIdSearchIsOneOrOfHeaderTermsCarryingTheBareId() {
+    SearchTerm term = EmailBoxService.messageIdSearchTerm("<a.1@host>");
+    assertTrue(term instanceof OrTerm);
+    List<String> patterns = Arrays.stream(((OrTerm) term).getTerms()).map(t -> ((MessageIDTerm) t).getPattern()).toList();
+    assertEquals(List.of("a.1@host", "<a.1@host>"), patterns);
+    assertNull(EmailBoxService.messageIdSearchTerm("<>"));
+  }
+
+  /**
+   * A HEADER search is a substring match (Dovecot answers {@code a.1@host} with
+   * {@code <xa.1@host.org>}, observed live): the longer id containing the searched one
+   * is filtered out, and a blank id never reaches the server -- a blank HEADER search
+   * would answer the whole folder.
+   *
+   * @throws Exception when the mocked folder misbehaves
+   */
+  @Test
+  void aMessageIdSearchKeepsOnlyTheExactIdNeverALongerOneContainingIt() throws Exception {
+    Folder folder = mock(Folder.class);
+    Message exact = aMessageCarrying("<a.1@host>");
+    Message longer = aMessageCarrying("<xa.1@host.org>");
+    Message headerless = mock(Message.class);
+    when(folder.search(any(SearchTerm.class))).thenReturn(new Message[] { longer, exact, headerless });
+
+    assertEquals(List.of(exact), EmailBoxService.searchByMessageId(folder, "<a.1@host>"));
+    assertEquals(List.of(), EmailBoxService.searchByMessageId(folder, "<>"));
+    // any() and not any(SearchTerm.class): the latter would not count a null term.
+    verify(folder, times(1)).search(any());
   }
 
   // ---------------------------------------------------------------------------------
@@ -2959,6 +3065,34 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90555 -- a preset saved with a stray space around its SMTP host, port or
+   * security type is used trimmed: the mail library looked up " 127.0.0.1" as is, and
+   * every send failed on an unknown host.
+   */
+  @Test
+  @SneakyThrows
+  void aSendUsesTheSmtpServerFieldsTrimmed() {
+    SendRig rig = givenASendRig();
+    EmailConnector spaced = emailConnector();
+    spaced.setSmtpUrl(" 127.0.0.1 ");
+    spaced.setSmtpPort(" 1465");
+    spaced.setSmtpSecurityType(" ssl ");
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(spaced);
+    ArgumentCaptor<Properties> props = ArgumentCaptor.forClass(Properties.class);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(props.capture(), any(Authenticator.class))).thenReturn(rig.session());
+
+      emailBoxService.sendEmail(email(TEST_USER), TEST_USER);
+
+      assertEquals("127.0.0.1", props.getValue().get("mail.smtp.host"));
+      assertEquals("1465", props.getValue().get("mail.smtp.port"));
+      assertEquals("true", props.getValue().get("mail.smtp.ssl.enable"));
+    }
+  }
+
+  /**
    * EXO-90551 -- a mail sent from a shared mailbox goes out from the sender's account as
    * ever, is filed in the sender's own Sent, and THEN a copy of the very same message,
    * marked read, is filed in the owner's Sent -- the folder the registry names for that
@@ -3073,6 +3207,867 @@ public class EmailBoxServiceTest {
       transportMock.verify(() -> Transport.send(any(Message.class)));
       verify(rig.ownSent()).appendMessages(any(Message[].class));
     }
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Writing in the owner's name (EXO-90583): the one seam, the envelope, the owner's
+  // copy, and the refusal of the owner's mail server.
+  // ---------------------------------------------------------------------------------
+
+  /** Alice's address: the owner of share 100. */
+  private static final String OWNER_ADDRESS    = "alice@acme.com";
+
+  /** Bob's address, as the credentials provider names it: the sender. */
+  private static final String DELEGATE_ADDRESS = "bob@acme.com";
+
+  /**
+   * EXO-90583 -- on Alice's behalf: From Alice with her name, Sender Bob, and the
+   * envelope Bob's own, set on the message's session -- without it JavaMail takes the
+   * envelope from From, and Stalwart refuses the mail at MAIL (EXO-90586, J4). No
+   * Reply-To (Q-6), no read-receipt request in her name even when the composer asked
+   * one, a Message-ID of her domain, and the static send: one connection for the one
+   * message. The share's consent was asked, with the shape the request named.
+   */
+  @Test
+  @SneakyThrows
+  void onBehalfIsFromTheOwnerWithTheSenderAndTheSendersEnvelope() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, "Alice Martin"));
+    Email email = composed();
+    email.setReadReceiptRequested(true);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email, TEST_USER, 100L, "ON_BEHALF"));
+
+      MimeMessage sent = sentMessage(transportMock);
+      InternetAddress from = (InternetAddress) sent.getFrom()[0];
+      assertEquals(OWNER_ADDRESS, from.getAddress());
+      assertEquals("Alice Martin", from.getPersonal());
+      assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getSender()).getAddress());
+      assertEquals(DELEGATE_ADDRESS, sent.getSession().getProperty("mail.smtp.from"), "the envelope is the sender's own");
+      assertNull(sent.getHeader("Reply-To"), "replies go to the owner");
+      assertNull(sent.getHeader(EmailBoxService.HEADER_DISPOSITION_NOTIFICATION_TO), "no read receipt asked in her name");
+      // What Transport.send does first, which the mock does not.
+      sent.saveChanges();
+      assertTrue(sent.getMessageID().endsWith("@acme.com>"), "a Message-ID of the owner's domain: " + sent.getMessageID());
+      transportMock.verifyNoMoreInteractions();
+    }
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "ON_BEHALF");
+  }
+
+  /**
+   * EXO-90583 -- as Alice: From Alice and nothing naming Bob, under her envelope, which
+   * the owner's mail server decides on.
+   */
+  @Test
+  @SneakyThrows
+  void asIsFromTheOwnerAloneUnderHerEnvelope() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice Martin"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+      assertNull(sent.getHeader("Sender"), "nothing names the sender");
+      assertEquals(OWNER_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    }
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "AS");
+  }
+
+  /**
+   * EXO-90583 -- no shape, or NONE: exactly today's mail from a shared mailbox, in Bob's
+   * name -- From Bob, no Sender, the envelope JavaMail's default, the read receipt he
+   * asked for -- and the consent is never consulted. So is the MCP tools' send, which
+   * has no shape to give (EXO-90585): it cannot reach the owner's name.
+   */
+  @Test
+  @SneakyThrows
+  void withoutAShapeTheMailIsTheSendersAsEver() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email email = composed();
+    email.setReadReceiptRequested(true);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(email, TEST_USER, 100L);
+      emailBoxService.sendEmail(email, TEST_USER, 100L, "NONE");
+      emailBoxService.sendEmail(email, TEST_USER, 100L, " ");
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()), times(3));
+      for (Message message : sent.getAllValues()) {
+        assertEquals(DELEGATE_ADDRESS, ((InternetAddress) message.getFrom()[0]).getAddress());
+        assertNull(message.getHeader("Sender"));
+        assertNull(message.getSession().getProperty("mail.smtp.from"), "JavaMail's own envelope, as ever");
+        assertEquals(DELEGATE_ADDRESS, message.getHeader(EmailBoxService.HEADER_DISPOSITION_NOTIFICATION_TO)[0]);
+      }
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+  }
+
+  /**
+   * EXO-90583 -- a shape with no shared mailbox to be the owner's, or one this version
+   * cannot read, is refused before anything is built; nothing goes out.
+   */
+  @Test
+  @SneakyThrows
+  void aShapeNeedsASharedMailboxAndAKnownName() {
+    givenASendableMailbox();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, null, "AS")).getMessage());
+      assertEquals("emailConnector.sendMode.invalid",
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "OWNER")).getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+  }
+
+  /**
+   * EXO-90583 -- the guard's refusals come before anything is sent: a consent that does
+   * not cover the shape, a share withdrawn meanwhile. Nothing goes out, nothing is filed.
+   */
+  @Test
+  @SneakyThrows
+  void theGuardRefusesBeforeAnythingIsSent() {
+    SendRig rig = givenASendRig();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    when(emailDelegationService.checkSendMode(TEST_USER, 101L, SendMode.AS)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(SendModeMissingException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 101L, "AS"));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+  }
+
+  /**
+   * EXO-90583, PO decision Q-7 -- the copy in Alice's Sent says who sent it: X-Exo-Sent-By
+   * Bob, stamped after the send and after Bob's own copy, so neither the recipients' mail
+   * nor Bob's copy carries it. The same message, the same Message-ID.
+   */
+  @Test
+  @SneakyThrows
+  void theOwnersCopyAloneNamesWhoSentIt() {
+    SendRig rig = givenASendRig();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice Martin"));
+    IMAPFolder ownerSent = givenTheOwnersSent();
+    List<String> sentByOnTheWire = new ArrayList<>();
+    List<String> sentByOnTheSendersCopy = new ArrayList<>();
+    doAnswer(invocation -> {
+      sentByOnTheSendersCopy.add(headerOf(((Message[]) invocation.getArgument(0))[0], "X-Exo-Sent-By"));
+      return null;
+    }).when(rig.ownSent()).appendMessages(any(Message[].class));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class)))
+                   .thenAnswer(invocation -> sentByOnTheWire.add(headerOf(invocation.getArgument(0), "X-Exo-Sent-By")));
+
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+
+      MimeMessage sent = sentMessage(transportMock);
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent, filed.getValue()[0], "the very message that went out");
+      assertEquals(DELEGATE_ADDRESS, headerOf(filed.getValue()[0], "X-Exo-Sent-By"));
+      assertEquals(Arrays.asList((String) null), sentByOnTheWire, "not on the recipients' mail");
+      assertEquals(Arrays.asList((String) null), sentByOnTheSendersCopy, "not on the sender's own copy");
+    }
+  }
+
+  /**
+   * EXO-90583 -- a mail from a shared mailbox in Bob's own name: the owner's copy is
+   * filed as ever, without X-Exo-Sent-By -- its From already names Bob.
+   */
+  @Test
+  @SneakyThrows
+  void aMailInTheSendersNameLeavesTheOwnersCopyAsItWas() {
+    givenASendRig();
+    IMAPFolder ownerSent = givenTheOwnersSent();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
+
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertNull(filed.getValue()[0].getHeader("X-Exo-Sent-By"));
+    }
+  }
+
+  /**
+   * EXO-90583, EXO-90586 -- Stalwart's refusal of a mail as Alice, as JavaMail reports it
+   * (a send failure at MAIL caused by a sender failure, 501 5.5.4): recognised, recorded
+   * on the consent it was sent under, and answered with the fixed code. Nothing was
+   * sent, so nothing is filed anywhere, and nothing is retried in Bob's name.
+   */
+  @Test
+  @SneakyThrows
+  void stalwartsRefusalOfTheOwnersNameIsRecordedAndSaid() {
+    SendRig rig = givenASendRig();
+    IMAPFolder ownerSent = givenTheOwnersSent();
+    SendIdentity identity = ownersIdentity(SendMode.AS, "Alice Martin");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(stalwartSenderRefusal());
+
+      SendModeUnavailableException refused = assertThrows(SendModeUnavailableException.class,
+                                                          () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+
+      assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER, refused.getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), times(1));
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+    verify(ownerSent, never()).appendMessages(any(Message[].class));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+  }
+
+  /**
+   * EXO-90583, EXO-90586 -- Postfix's refusal, with a login map, reaches JavaMail as
+   * INVALID RECIPIENTS: a send failure listing the recipients, caused by a 553 at RCPT
+   * whose text is the sender's refusal. Read from the server's words, it is the owner's
+   * name that was refused, not the recipients.
+   */
+  @Test
+  @SneakyThrows
+  void postfixsRefusalReadAsBadRecipientsIsTheOwnersNameRefused() {
+    givenASendableMailbox();
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(postfixSenderRefusal());
+
+      assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS")).getMessage());
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+  }
+
+  /**
+   * EXO-90583 -- the same refusal of a mail in Bob's own name is today's failure: it is
+   * no consent's refusal, and nothing is recorded on the share. A recipient the server
+   * does not know, on a mail in Alice's name, is not her name refused either.
+   */
+  @Test
+  @SneakyThrows
+  void onlyAMailInTheOwnersNameCanBeRefusedAsSuch() {
+    givenASendableMailbox();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(postfixSenderRefusal());
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
+
+      transportMock.when(() -> Transport.send(any(Message.class)))
+                   .thenThrow(new SendFailedException("Invalid Addresses",
+                                                      new SMTPAddressFailedException(new InternetAddress("nobody@acme.com"),
+                                                                                     "RCPT TO:<nobody@acme.com>",
+                                                                                     550,
+                                                                                     "550 5.1.1 <nobody@acme.com>: Recipient address rejected: User unknown"),
+                                                      new Address[0],
+                                                      new Address[0],
+                                                      new Address[] { new InternetAddress("nobody@acme.com") }));
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+    }
+    verify(emailDelegationService, never()).markSendRefused(anyString(), any());
+  }
+
+  /**
+   * EXO-90583 -- what a sender-policy refusal is, read from the server's words anywhere
+   * in the failure: the observed Stalwart and Postfix chains, an Exchange-shaped send-as
+   * text with no SMTP exception around it; never a recipient refusal, a temporary
+   * failure with the same words, or a failure that is its own next exception.
+   */
+  @Test
+  @SneakyThrows
+  void aSenderRefusalIsReadFromTheServersWords() {
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(stalwartSenderRefusal()));
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(postfixSenderRefusal()));
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(new MessagingException("send failed",
+                                                                            new MessagingException("550 5.7.60 SMTP; Client does not have permissions to send as this sender"))));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("451 4.7.1 You are not allowed to send from this address, try later")));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("550 5.1.1 User unknown")));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("554 5.7.1 Message rejected: resend as plain text")),
+                "a phrase inside another word is not one");
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("relay refused")));
+    MessagingException loop = new MessagingException("421 closing");
+    loop.setNextException(loop);
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(loop), "a chain that loops ends");
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(null));
+  }
+
+  /**
+   * EXO-90583, EXO-90586 (J6) -- a control character in the owner's profile name never
+   * reaches a header: JavaMail would quote and fold a line break rather than refuse it.
+   */
+  @Test
+  @SneakyThrows
+  void aDisplayNameNeverCarriesAControlCharacter() {
+    givenASendableMailbox();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS))
+                                                                            .thenReturn(ownersIdentity(SendMode.AS, "Alice\r\nBcc: evil@example.com\u0000"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals("Alice Bcc: evil@example.com", ((InternetAddress) sent.getFrom()[0]).getPersonal());
+      assertFalse(sent.getHeader("From")[0].matches("(?s).*\\p{Cntrl}.*"), sent.getHeader("From")[0]);
+      assertNull(sent.getHeader("Bcc"));
+    }
+    assertNull(EmailBoxService.displayName("\r\n"));
+    assertNull(EmailBoxService.displayName(null));
+  }
+
+  /**
+   * EXO-90583 -- a draft sent in Alice's name: checked against the consent on the
+   * DRAFT's share, sent From her, and it keeps the Message-ID it was given at its first
+   * save -- the draft and the mail it became stay one message.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentInTheOwnersNameKeepsItsOwnMessageId() {
+    mockDraftSendFixture().setSendDelegationId(100L);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null, "ON_BEHALF");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+      sent.saveChanges();
+      assertEquals("<draft@example.org>", sent.getMessageID());
+      assertEquals("testEmail", sent.getSession().getProperty("mail.smtp.from"));
+    }
+  }
+
+  /**
+   * EXO-90583 -- a draft whose mail the owner's server refuses in her name is left as it
+   * was: the claim put back, nothing removed; and a draft of Bob's own mailbox asked in
+   * an owner's name is refused before it is even claimed.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftRefusedInTheOwnersNameIsLeftWhereItWas() {
+    // No mailbox stubs: a refused send never reaches the IMAP side.
+    Email stored = givenAStoredDraftOfMailbox(100L);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    stored.setDraftState(DraftState.SYNCED);
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(stalwartSenderRefusal());
+      Email draft = draft("draft-1");
+      assertThrows(SendModeUnavailableException.class, () -> emailBoxService.sendDraft(draft, TEST_USER, 100L, "AS"));
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(emailBoxStorage).updateDraftState(TEST_USER, "draft-1", DraftState.DIRTY);
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+
+    stored.setSendDelegationId(null);
+    clearInvocations(emailBoxStorage);
+    Email ownDraft = draft("draft-1");
+    assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.sendDraft(ownDraft, TEST_USER, null, "AS")).getMessage());
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Drafts and scheduled mail keep the name they were written in (EXO-90584).
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Share 100, Alice's, as the writer's own shares resolve it, with her consent.
+   *
+   * @param consent what Alice lets the writer do, null for nothing
+   * @return the share
+   */
+  private static EmailDelegation alicesShare(SendMode consent) {
+    EmailDelegation share = new EmailDelegation();
+    share.setId(100L);
+    share.setStatus(DelegationStatus.ACCEPTED);
+    share.setOwnerMailbox(OWNER_ADDRESS);
+    share.setSendMode(consent);
+    return share;
+  }
+
+  /**
+   * EXO-90584 -- a draft of Alice's mailbox records the name it goes out in with every
+   * revision: the first save's, normalised; a later save's when it says one; the stored
+   * one when a later save says nothing, so a caller that does not know the name cannot
+   * erase it. A draft written in her name, which her consent covers, gets its Message-ID
+   * from her domain at its first save, as a mail sent in her name does.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftRecordsTheNameItGoesOutInWithEveryRevision() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Email first = draft(null);
+    first.setSendDelegationId(100L);
+    first.setSendMode(" on_behalf ");
+
+    Email saved = emailBoxService.saveDraft(first, TEST_USER, false);
+
+    assertEquals("ON_BEHALF", saved.getSendMode());
+    assertTrue(saved.getMailHeaderId().endsWith("@acme.com>"), saved.getMailHeaderId());
+
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("ON_BEHALF");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, false);
+    Email asHer = draft("draft-1");
+    asHer.setSendMode("AS");
+    emailBoxService.saveDraft(asHer, TEST_USER, false);
+    Email asMe = draft("draft-1");
+    asMe.setSendMode("NONE");
+    emailBoxService.saveDraft(asMe, TEST_USER, false);
+
+    verify(emailBoxStorage, times(4)).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getAllValues().get(1).getSendMode(), "a save that says nothing keeps the stored name");
+    assertEquals("AS", written.getAllValues().get(2).getSendMode());
+    assertEquals("NONE", written.getAllValues().get(3).getSendMode(), "the writer's own name is recorded too");
+
+    clearInvocations(emailBoxStorage);
+    Email unknown = draft("draft-1");
+    unknown.setSendMode("SIGNED");
+    assertEquals(EmailDelegationService.SEND_MODE_INVALID_MESSAGE,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.saveDraft(unknown, TEST_USER, false)).getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-90584 -- a draft of the writer's own mailbox has no owner to write in the name
+   * of: its own name records nothing, another's is refused and nothing is saved; and a
+   * first save in Alice's name that her consent does not cover keeps the writer's
+   * domain in its Message-ID -- her domain is no one's to use on her word alone.
+   */
+  @Test
+  @SneakyThrows
+  void anOwnMailboxDraftRecordsNoNameAndAnUncoveredOneKeepsTheWritersId() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email own = draft(null);
+    own.setSendMode("NONE");
+    assertNull(emailBoxService.saveDraft(own, TEST_USER, false).getSendMode());
+
+    Email ownAsHer = draft(null);
+    ownAsHer.setSendMode("AS");
+    clearInvocations(emailBoxStorage);
+    assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.saveDraft(ownAsHer, TEST_USER, false)).getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Email uncovered = draft(null);
+    uncovered.setSendDelegationId(100L);
+    uncovered.setSendMode("AS");
+    Email saved = emailBoxService.saveDraft(uncovered, TEST_USER, false);
+    assertEquals("AS", saved.getSendMode(), "recorded all the same: the send decides");
+    assertTrue(saved.getMailHeaderId().endsWith("@email-connector>"), saved.getMailHeaderId());
+  }
+
+  /**
+   * EXO-90584 -- a draft goes out in the name its row records, as the save before the
+   * send leaves it: the composer's name carried with the text, else the stored one. The
+   * request's parameter is read only for a draft that never said, and one that says
+   * otherwise is refused before anything is saved or claimed -- the row decides.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftGoesOutInTheNameItsRowRecords() {
+    Email stored = mockDraftSendFixture();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email mismatched = draft("draft-1");
+      assertEquals(SendModeUnavailableException.MISMATCH,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendDraft(mismatched, TEST_USER, 100L, "ON_BEHALF")).getMessage());
+      transportMock.verifyNoInteractions();
+      verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+      verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+      verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L, null);
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress(), "the row's name, asked by no one");
+      assertEquals(OWNER_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    }
+    verify(emailDelegationService).checkSendMode(TEST_USER, 100L, SendMode.AS);
+  }
+
+  /**
+   * EXO-90584 -- the name on screen travels with the text and is saved onto the draft
+   * before the send: a draft recorded in Alice's name that the writer switched to their
+   * own goes out in theirs, and the request's parameter agreeing with it is no mismatch.
+   */
+  @Test
+  @SneakyThrows
+  void theNameOnScreenIsSavedWithTheTextAndSent() {
+    Email stored = mockDraftSendFixture();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    Email asMe = draft("draft-1");
+    asMe.setSendMode("NONE");
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(asMe, TEST_USER, 100L, "NONE");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertNull(sent.getHeader("Sender"));
+      assertNull(sent.getSession().getProperty("mail.smtp.from"), "the sender's own envelope");
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("NONE", written.getValue().getSendMode());
+  }
+
+  /**
+   * EXO-90584 -- a draft is scheduled in the name it records only when the owner's
+   * consent covers it now, while the writer is there to be told: otherwise nothing is
+   * saved and nothing is scheduled. The name the composer carries is the one checked and
+   * saved.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftIsScheduledInTheOwnersNameOnlyWhenHerConsentCoversItNow() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    @SuppressWarnings("unchecked")
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+
+    assertThrows(SendModeMissingException.class, () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, scheduler));
+    verify(scheduler, never()).apply(any(Email.class));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+    when(scheduler.apply(any(Email.class))).thenReturn(new EmailScheduledSend());
+    Email onBehalf = draft("draft-1");
+    onBehalf.setSendMode("ON_BEHALF");
+
+    emailBoxService.scheduleDraft(onBehalf, TEST_USER, scheduler);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getValue().getSendMode());
+    verify(scheduler).apply(any(Email.class));
+  }
+
+  /**
+   * A scheduled draft of share 100 recorded in a name, whose owner's Sent takes a copy.
+   *
+   * @param sendMode the name the draft records
+   * @return the owner's Sent folder mock
+   */
+  @SneakyThrows
+  private IMAPFolder givenAScheduledDraftOfAlicesMailbox(String sendMode) {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    lenient().when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    stored.setSendMode(sendMode);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    lenient().when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    lenient().when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    lenient().when(ownerSent.exists()).thenReturn(true);
+    lenient().when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    return ownerSent;
+  }
+
+  /**
+   * EXO-90584 -- a mail scheduled in Alice's name goes out in it, from the row, once her
+   * consent is checked again at dispatch: From her, Sender the writer under the writer's
+   * envelope, the draft's own Message-ID, the trail written, and her copy saying who
+   * sent it.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMailScheduledInTheOwnersNameGoesOutInIt() throws Exception {
+    IMAPFolder ownerSent = givenAScheduledDraftOfAlicesMailbox("ON_BEHALF");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF,
+                                                                                                             "Alice Martin"));
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    MimeMessage sent = transmitted.get(0);
+    assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+    assertEquals("Alice Martin", ((InternetAddress) sent.getFrom()[0]).getPersonal());
+    assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getSender()).getAddress());
+    assertEquals(DELEGATE_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    sent.saveChanges();
+    assertEquals("<draft@example.org>", sent.getMessageID(), "the draft's own id");
+    ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+    verify(ownerSent).appendMessages(filed.capture());
+    assertArrayEquals(new String[] { DELEGATE_ADDRESS }, filed.getValue()[0].getHeader("X-Exo-Sent-By"));
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "ON_BEHALF");
+  }
+
+  /**
+   * EXO-90584, PO decision Q-5 -- a mail scheduled in Alice's name whose name can no
+   * longer be used when it is due fails for good and is never sent in the writer's own
+   * name: her consent withdrawn or narrowed (SEND_MODE_WITHDRAWN), the name switched off,
+   * undeclared or refused before, or a name with no shared mailbox
+   * (SEND_MODE_UNAVAILABLE), her share ended (MAILBOX_UNSHARED). Nothing transmitted,
+   * nothing taken apart.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMailScheduledInANameNoLongerAllowedFailsForGoodAndIsNeverSent() throws Exception {
+    givenAScheduledDraftOfAlicesMailbox("AS");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS))
+                                                                           .thenThrow(new SendModeUnavailableException(EmailDelegationService.SEND_MODE_DISABLED_MESSAGE))
+                                                                           .thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER))
+                                                                           .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    for (ScheduledSendError expected : List.of(ScheduledSendError.SEND_MODE_WITHDRAWN,
+                                               ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                                               ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                                               ScheduledSendError.MAILBOX_UNSHARED)) {
+      Runnable onTransmitted = mock(Runnable.class);
+      ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                  () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+      assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind(), expected.name());
+      assertEquals(expected, failure.getError());
+      verify(onTransmitted, never()).run();
+    }
+    Email noMailbox = emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1");
+    noMailbox.setSendDelegationId(null);
+    assertEquals(ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                 assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                 })).getError(),
+                 "a name with no owner to write in is no reason to send in the writer's");
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90584, EXO-90586 -- Postfix's refusal of a scheduled mail in Alice's name
+   * arrives as refused RECIPIENTS; read from the server's words it is her name refused:
+   * recorded on the share, failed for good as SEND_MODE_REFUSED, never as a recipient's
+   * fault and never retried. The same refusal of a mail in the writer's own name is the
+   * recipients' refusal it always was, and nothing is recorded.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailRefusedInTheOwnersNameIsHerNameRefusedNotItsRecipients() throws Exception {
+    givenAScheduledDraftOfAlicesMailbox("AS");
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, postfixSenderRefusal())).when(smtpTransmitter)
+                                                                                                             .transmit(any(MimeMessage.class));
+
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                                }));
+
+    assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind());
+    assertEquals(ScheduledSendError.SEND_MODE_REFUSED, failure.getError());
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+
+    emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1").setSendMode("NONE");
+    ScheduledSendFailure own = assertThrows(ScheduledSendFailure.class,
+                                            () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                            }));
+    assertEquals(ScheduledSendError.RECIPIENT_REFUSED, own.getError());
+    verify(emailDelegationService, times(1)).markSendRefused(anyString(), any());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90584 -- an edit of a scheduled mail may change the name it goes out in: the
+   * name it is left in is checked against the owner's consent before the schedule is
+   * taken or anything written, and saved with the text.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anEditOfAScheduledMailKeepsItsNameCheckedAndSaved() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("NONE");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    EmailBoxService.ScheduleTaker taker = mock(EmailBoxService.ScheduleTaker.class);
+    Email asHer = draft("draft-1");
+    asHer.setSendMode("AS");
+
+    assertThrows(SendModeMissingException.class, () -> emailBoxService.updateScheduledDraft(asHer, null, TEST_USER, taker));
+    verify(taker, never()).take();
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+    Email onBehalf = draft("draft-1");
+    onBehalf.setSendMode("ON_BEHALF");
+    emailBoxService.updateScheduledDraft(onBehalf, null, TEST_USER, taker);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getValue().getSendMode());
+    verify(taker).take();
+  }
+
+  /**
+   * EXO-90584 -- the rule that says which name an interactive send of a draft uses:
+   * the row's; the request's only for a draft that never said; a request naming another
+   * is refused, an unknown one is invalid.
+   */
+  @Test
+  void theDraftsRowDecidesItsNameAndTheRequestOnlyFallsBack() {
+    assertEquals("AS", EmailBoxService.draftSendModeFor("AS", null));
+    assertEquals("AS", EmailBoxService.draftSendModeFor("AS", " as "));
+    assertEquals("NONE", EmailBoxService.draftSendModeFor("NONE", ""));
+    assertEquals("ON_BEHALF", EmailBoxService.draftSendModeFor(null, "on_behalf"));
+    assertNull(EmailBoxService.draftSendModeFor(null, null));
+    assertEquals(SendModeUnavailableException.MISMATCH,
+                 assertThrows(SendModeUnavailableException.class, () -> EmailBoxService.draftSendModeFor("NONE", "AS")).getMessage());
+    assertEquals(EmailDelegationService.SEND_MODE_INVALID_MESSAGE,
+                 assertThrows(SendModeUnavailableException.class, () -> EmailBoxService.draftSendModeFor("AS", "SIGNED")).getMessage());
+  }
+
+  /**
+   * Alice's identity on share 100, as the guard answers it.
+   *
+   * @param mode the shape
+   * @param name her display name, may be null
+   * @return the identity
+   */
+  private static SendIdentity ownersIdentity(SendMode mode, String name) {
+    return new SendIdentity(mode, 100L, OWNER_ADDRESS, name, new Date(1_000L));
+  }
+
+  /**
+   * A composed mail to Carol.
+   *
+   * @return the mail
+   */
+  private static Email composed() {
+    Email email = new Email();
+    email.setSubject("the quarterly figures");
+    email.setContent(new EmailContent("Here they are.", null, null));
+    email.setTo(List.of(new EmailRecipient("Carol", "carol@acme.com", null, false)));
+    return email;
+  }
+
+  /**
+   * Alice's Sent, shared with Bob, which the owner's copy of share 100 is filed into.
+   *
+   * @return the folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenTheOwnersSent() {
+    // Lenient: a send refused before its copy is filed never opens the folder.
+    lenient().when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    lenient().when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    lenient().when(ownerSent.exists()).thenReturn(true);
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    lenient().when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    return ownerSent;
+  }
+
+  /**
+   * The one message handed to the static send.
+   *
+   * @param transportMock the send, mocked
+   * @return the message
+   */
+  private static MimeMessage sentMessage(MockedStatic<Transport> transportMock) {
+    ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+    transportMock.verify(() -> Transport.send(sent.capture()));
+    return (MimeMessage) sent.getValue();
+  }
+
+  /**
+   * One header of a message, null when absent.
+   *
+   * @param message the message
+   * @param name the header
+   * @return its first value, or null
+   * @throws MessagingException when it cannot be read
+   */
+  private static String headerOf(Message message, String name) throws MessagingException {
+    String[] values = message.getHeader(name);
+    return values == null ? null : values[0];
+  }
+
+  /**
+   * Stalwart v0.11.8's refusal of a MAIL FROM that is not the login's, as JavaMail 1.6.2
+   * reported it on the rig (EXO-90586, J2).
+   *
+   * @return the failure
+   * @throws AddressException never, the addresses are literal
+   */
+  private static MessagingException stalwartSenderRefusal() throws AddressException {
+    String reply = "501 5.5.4 You are not allowed to send from this address.\n";
+    return new SMTPSendFailedException("MAIL FROM:<alice@acme.com>",
+                                       501,
+                                       reply,
+                                       new SMTPSenderFailedException(new InternetAddress(OWNER_ADDRESS), "MAIL FROM:<alice@acme.com>", 501, reply),
+                                       new Address[0],
+                                       new Address[] { new InternetAddress("carol@acme.com") },
+                                       new Address[0]);
+  }
+
+  /**
+   * Postfix 3.7's refusal with a login map, as JavaMail 1.6.2 reported it on the rig
+   * (EXO-90586, J2): invalid addresses listing the RECIPIENT, caused by the 553 at RCPT.
+   *
+   * @return the failure
+   * @throws AddressException never, the addresses are literal
+   */
+  private static MessagingException postfixSenderRefusal() throws AddressException {
+    InternetAddress carol = new InternetAddress("carol@acme.com");
+    return new SendFailedException("Invalid Addresses",
+                                   new SMTPAddressFailedException(carol,
+                                                                  "RCPT TO:<carol@acme.com>",
+                                                                  553,
+                                                                  "553 5.7.1 <alice@acme.com>: Sender address rejected: not owned by user bob@acme.com\n"),
+                                   new Address[0],
+                                   new Address[0],
+                                   new Address[] { carol });
   }
 
   /**
@@ -3466,18 +4461,39 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A usable mailbox holding one local-only draft written in the given mailbox
+   * (EXO-90595), and nothing a send would reach: the fixture of the refusals that come
+   * before any of it.
+   *
+   * @param delegationId the share the draft was written in, null for the own mailbox
+   * @return the stored draft
+   */
+  private Email givenAStoredDraftOfMailbox(Long delegationId) {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(delegationId);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    return stored;
+  }
+
+  /**
    * A mailbox holding one local-only draft that is ready to be sent — the shortest
    * fixture that reaches {@code deliver} through the draft path.
+   *
+   * @return the stored draft, for a test to give it a mailbox
    */
   @SneakyThrows
-  private void mockDraftSendFixture() {
+  private Email mockDraftSendFixture() {
     givenAUsableMailbox();
-    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    lenient().when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
     givenADraftsFolder();
     Email stored = storedDraft();
     stored.setDraftState(DraftState.LOCAL_ONLY);
     stored.setMailRemoteId(null);
     when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    return stored;
   }
 
   /**
@@ -3949,6 +4965,50 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(3)).createEmail(any(Email.class));
   }
 
+  /**
+   * EXO-90654 -- the owner's filters run on the inbox's new mail before it is announced:
+   * the sync publishes one {@link NewInboxMailEvent} for the owner's own inbox, with each
+   * new mail's UID and the keywords its flags carry, and a mail a filter filed away is
+   * left out of {@code NEW_EMAILS_SYNCED}. A sync with no filter filing anything
+   * announces every mail, as {@link #synchronizeSkipsBodyPrefetchForSmallSync} pins.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeRunsTheInboxFiltersBeforeTheAnnouncement() {
+    if (realEventPublisher == null) {
+      realEventPublisher = ReflectionTestUtils.getField(emailBoxService, "eventPublisher");
+    }
+    ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
+    List<NewInboxMailEvent> published = new ArrayList<>();
+    doAnswer(invocation -> {
+      if (invocation.getArgument(0) instanceof NewInboxMailEvent event) {
+        published.add(event);
+        event.getFiledUids().add(2L);
+      }
+      return null;
+    }).when(eventPublisher).publishEvent(any(Object.class));
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 3);
+    Message tagged = inbox.getMessages(1, 3)[0];
+    Flags flags = new Flags();
+    flags.add("exo-filter-7");
+    when(tagged.getFlags()).thenReturn(flags);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    assertEquals(1, published.size(), "one run, for the inbox only");
+    NewInboxMailEvent event = published.get(0);
+    assertEquals(TEST_USER, event.getUsername());
+    assertEquals(FilterRunContext.OWN_INBOX, event.getContext(), "the owner's own inbox");
+    assertEquals(List.of(1L, 2L, 3L), event.getMails().stream().map(NewInboxMailEvent.InboxMail::uid).sorted().toList());
+    assertEquals(Set.of("exo-filter-7"),
+                 event.getMails().stream().filter(mail -> mail.uid() == 1L).findFirst().orElseThrow().keywords(),
+                 "the keywords come from the flags the sync fetched");
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED),
+                                      eq(TEST_USER),
+                                      argThat((List<Long> group) -> group.size() == 2 && !group.contains(2L)));
+  }
+
   @Test
   @SneakyThrows
   void getAvailableEmailCategories() {
@@ -4018,6 +5078,49 @@ public class EmailBoxServiceTest {
     doThrow(ObjectNotFoundException.class).when(categoryLinkService)
                                           .link(anyLong(), any(CategoryObject.class), anyString());
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  /**
+   * EXO-90666 -- a category that sticks on an inbox mail is announced with the mail's UID,
+   * whoever added it, so the owner's filters on that category run on it; one added to a
+   * Junk mail never is, filters running on the inbox only; and a mail already in the
+   * category was not categorised now, so it is not announced again.
+   */
+  @Test
+  @SneakyThrows
+  void aCategoryAddedToAnInboxMailIsAnnouncedAndNeverOnJunk() {
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    Email junk = email(TEST_USER);
+    junk.setId(9l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.JUNK),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(junk);
+
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER, MailFolder.JUNK));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.EMAIL_CATEGORY_ADDED), any(), any());
+
+    Email inbox = email(TEST_USER);
+    inbox.setId(7l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.INBOX),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(inbox);
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l, 3434l), 5L, TEST_USER));
+    verify(listenerService).broadcast(EmailConnectorUtils.EMAIL_CATEGORY_ADDED,
+                                      TEST_USER,
+                                      new EmailCategoryAdded(5L, List.of(1212l)));
+
+    doThrow(ObjectAlreadyExistsException.class).when(categoryLinkService)
+                                               .link(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.EMAIL_CATEGORY_ADDED), any(), any());
   }
 
   /**
@@ -6619,7 +7722,7 @@ public class EmailBoxServiceTest {
     when(((UIDFolder) inbox).getUID(oldest)).thenReturn(11L);
     when(((UIDFolder) inbox).getUID(middle)).thenReturn(12L);
     when(((UIDFolder) inbox).getUID(newest)).thenReturn(13L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L, 13L))).thenReturn(List.of(12L));
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L, 13L))).thenReturn(Map.of(12L, 112L));
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
 
@@ -6631,9 +7734,11 @@ public class EmailBoxServiceTest {
     assertNull(first.getSender());
     assertTrue(first.isRead());
     assertFalse(first.isCached());
+    assertNull(first.getEmailId(), "not synced yet: no row to name");
     EmailSearchResult second = page.getResults().get(1);
     assertFalse(second.isRead());
     assertTrue(second.isCached());
+    assertEquals(112L, second.getEmailId(), "EXO-90555 -- the cached hit names its own row");
     assertEquals("bob@example.com", second.getSender().getAddress());
     // ONE batched fetch for the whole page, never one FETCH per hit.
     verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
@@ -6664,7 +7769,7 @@ public class EmailBoxServiceTest {
     MimeMessage hit = searchHit("about the budget", "me@example.com", new Date(), true);
     when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { hit });
     when(((UIDFolder) inbox).getUID(hit)).thenReturn(21L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(21L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(21L))).thenReturn(Map.of());
 
     EmailSearchResultPage page =
                                emailBoxService.searchEmails(TEST_USER, null, null, "alice@example.com", false, false, null, "INBOX", 10);
@@ -6873,7 +7978,7 @@ public class EmailBoxServiceTest {
     when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { plain, favorited });
     when(((UIDFolder) inbox).getUID(plain)).thenReturn(11L);
     when(((UIDFolder) inbox).getUID(favorited)).thenReturn(12L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(Map.of());
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
 
@@ -6916,7 +8021,7 @@ public class EmailBoxServiceTest {
     // Only the two newest ever get their UID read: the older three are never fetched.
     when(((UIDFolder) inbox).getUID(matches[3])).thenReturn(14L);
     when(((UIDFolder) inbox).getUID(matches[4])).thenReturn(15L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(14L, 15L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(14L, 15L))).thenReturn(Map.of());
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, null, "alice", false, 30, "INBOX", 2);
 
@@ -6951,7 +8056,7 @@ public class EmailBoxServiceTest {
     assertEquals(0, page.getTotalMatches());
     assertTrue(page.getResults().isEmpty());
     verify(inbox, never()).fetch(any(Message[].class), any(FetchProfile.class));
-    verify(emailBoxStorage, never()).getCachedMailRemoteIds(anyString(), anyString(), anyList());
+    verify(emailBoxStorage, never()).getCachedEmailIds(anyString(), anyString(), anyList());
     verify(inbox).close(false);
     verify(store).close();
   }
@@ -7917,6 +9022,13 @@ public class EmailBoxServiceTest {
     assertEquals(DraftState.SYNCED, saved.getDraftState());
   }
 
+  /**
+   * Without APPENDUID the appended draft is found again by its minted Message-ID, and
+   * only by the exact id: a longer id the server's substring search returns after ours
+   * is never taken for our copy, although it is the last hit.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
   @Test
   void aPushFallsBackToAMessageIdSearchWhenTheServerHasNoUidplus() throws Exception {
     // Without UIDPLUS there is no way to ask what UID the message we just wrote got.
@@ -7924,9 +9036,19 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     IMAPFolder draftsFolder = givenADraftsFolder();
     when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { null });
+    // The server answers the search with our copy and, after it, a longer id that merely
+    // contains ours: the exact filter keeps ours although it is not the last hit.
     Message appended = mock(Message.class);
-    when(draftsFolder.search(any(HeaderTerm.class))).thenReturn(new Message[] { appended });
+    Message lookalike = mock(Message.class);
+    java.util.concurrent.atomic.AtomicReference<String> searchedBare = new java.util.concurrent.atomic.AtomicReference<>();
+    when(draftsFolder.search(any(SearchTerm.class))).thenAnswer(invocation -> {
+      searchedBare.set(((MessageIDTerm) ((OrTerm) invocation.getArgument(0)).getTerms()[0]).getPattern());
+      return new Message[] { appended, lookalike };
+    });
+    lenient().when(appended.getHeader("Message-ID")).thenAnswer(invocation -> new String[] { "<" + searchedBare.get() + ">" });
+    lenient().when(lookalike.getHeader("Message-ID")).thenAnswer(invocation -> new String[] { "<x" + searchedBare.get() + ".org>" });
     when(draftsFolder.getUID(appended)).thenReturn(77L);
+    lenient().when(draftsFolder.getUID(lookalike)).thenReturn(78L);
     when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
     when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
                                                                                         .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
@@ -8307,7 +9429,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aDraftSentFromASharedMailboxFilesTheOwnersCopy() {
-    mockDraftSendFixture();
+    mockDraftSendFixture().setSendDelegationId(100L);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -8334,7 +9456,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aDraftSentFromAShareThatIsNotTheSendersIsNotClaimed() {
-    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    givenAStoredDraftOfMailbox(7L);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
@@ -8342,6 +9464,167 @@ public class EmailBoxServiceTest {
       transportMock.verify(() -> Transport.send(any(Message.class)), never());
     }
     verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 -- a draft written in a shared mailbox is sent through ITS share when
+   * the request names none: the composer's switcher, whatever it shows now, is not
+   * where the mailbox comes from. The owner's copy is filed and the answer says so.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftIsSentThroughTheShareItWasWrittenInWhenTheRequestNamesNone() {
+    mockDraftSendFixture().setSendDelegationId(100L);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      verify(ownerSent).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * EXO-90595 -- a send naming another mailbox than the draft's is refused before
+   * anything is saved, claimed or sent, both ways: a draft of a share sent as from
+   * another share, and a draft of the sender's own mailbox sent as from a share. The
+   * server never sends from a mailbox other than the one the draft belongs to.
+   */
+  @Test
+  @SneakyThrows
+  void aSendNamingAnotherMailboxThanTheDraftsIsRefusedBeforeAnythingIsClaimed() {
+    Email stored = givenAStoredDraftOfMailbox(null);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      stored.setSendDelegationId(100L);
+      IllegalArgumentException otherShare = assertThrows(IllegalArgumentException.class,
+                                                         () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 101L));
+      assertEquals(EmailBoxService.MAILBOX_MISMATCH_CODE, otherShare.getMessage());
+      stored.setSendDelegationId(null);
+      IllegalArgumentException ownDraft = assertThrows(IllegalArgumentException.class,
+                                                       () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+      assertEquals(EmailBoxService.MAILBOX_MISMATCH_CODE, ownDraft.getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailDelegationService, never()).ownerSentFolderKey(anyString(), anyLong());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 -- a draft whose share ended since it was written is refused before it is
+   * claimed, whatever the request names: never sent from the sender's own mailbox
+   * instead, and left exactly where it was.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftOfAShareThatEndedIsNeverSentFromTheSendersOwnMailbox() {
+    givenAStoredDraftOfMailbox(100L);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 -- a draft's first save records the mailbox it is written in once the
+   * server resolved it as one of the writer's own shares -- the id stored is the resolved
+   * share's, not the client's word -- and a share that ended while the words were typed
+   * is recorded all the same: the words are kept, and the send then refuses it.
+   */
+  @Test
+  @SneakyThrows
+  void aFirstSaveRecordsTheShareTheServerResolvedAsTheWritersOwnEvenEnded() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailDelegation share = new EmailDelegation();
+    share.setId(100L);
+    share.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(share);
+    Email draft = draft(null);
+    draft.setSendDelegationId(100L);
+
+    Email saved = emailBoxService.saveDraft(draft, TEST_USER, false);
+
+    assertEquals(100L, saved.getSendDelegationId());
+    verify(emailDelegationService).requireOwnShare(TEST_USER, 100L);
+  }
+
+  /**
+   * EXO-90595 -- a first save naming a share that is not the writer's is refused with a
+   * code of its own -- never the "no such draft" 404 the composer reads as a draft sent
+   * elsewhere -- and nothing is written: a client-chosen id never becomes a draft's
+   * mailbox on its word.
+   */
+  @Test
+  @SneakyThrows
+  void aFirstSaveNamingAShareThatIsNotTheWritersWritesNothing() {
+    givenAUsableMailbox();
+    when(emailDelegationService.requireOwnShare(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    Email foreign = draft(null);
+    foreign.setSendDelegationId(7L);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.saveDraft(foreign, TEST_USER, false));
+    assertEquals(EmailBoxService.MAILBOX_NOT_FOUND_CODE, refused.getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-90595 -- the composer asks the server which mailbox a resumed draft belongs to:
+   * none for the user's own, and otherwise the share's owner and whether it is still
+   * shared, as the delegation service names it (which reads a share that no longer
+   * resolves as not shared).
+   */
+  @Test
+  @SneakyThrows
+  void aDraftsMailboxIsTheServersWord() {
+    Email stored = givenAStoredDraftOfMailbox(null);
+    assertNull(emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    stored.setSendDelegationId(100L);
+    DraftMailbox anne = new DraftMailbox(100L, "Anne", "anne@example.org", true);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(100L))).thenReturn(Map.of(100L, anne));
+    assertEquals(anne, emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    stored.setSendDelegationId(7L);
+    DraftMailbox unresolved = new DraftMailbox(7L, null, null, false);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(7L))).thenReturn(Map.of(7L, unresolved));
+    assertEquals(unresolved, emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.getDraftMailbox("draft-2", TEST_USER));
+  }
+
+  /**
+   * EXO-90595 -- a later save never resolves nor carries a mailbox: the draft's is
+   * settled by its first save, and the row the storage is asked to write names none, so
+   * its edit path has nothing to move it with.
+   */
+  @Test
+  @SneakyThrows
+  void aLaterSaveNeitherResolvesNorCarriesAMailbox() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(200L);
+
+    emailBoxService.saveDraft(draft, TEST_USER, false);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertNull(written.getValue().getSendDelegationId(), "an edit carries no mailbox");
+    verify(emailDelegationService, never()).requireOwnShare(anyString(), anyLong());
   }
 
   @Test
@@ -9421,6 +10704,28 @@ public class EmailBoxServiceTest {
     assertEquals("author@example.com", cached.getOriginalSender());
   }
 
+  /**
+   * EXO-90841: the receiving server's authentication verdict is read at sync, from the
+   * top Authentication-Results header only, and kept with the row; a message whose
+   * verdict passed carries none.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheAuthenticationVerdict() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Authentication-Results"))
+             .thenReturn(new String[] { "mx.example.com; spf=pass; dkim=pass; dmarc=fail header.from=bank.example",
+                 "forged.example; dmarc=pass" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(EmailSecurityUtils.AUTH_DMARC, created.getValue().getContent().getAuthFailure());
+  }
+
   @Test
   @SneakyThrows
   void aBackstopOnlyFlushesTheWindowItWasArmedFor() {
@@ -9879,7 +11184,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null);
+                     false, null, null, false, null, null, null, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -11157,9 +12462,9 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * A name embedding the mailbox's OWN hierarchy delimiter is refused -- v1 offers no
-   * parent picker, so a create is always top-level. This check needs the live
-   * separator, so it happens after connecting but before anything is created.
+   * A name embedding the mailbox's OWN hierarchy delimiter is refused -- nesting is
+   * chosen by a parent, never typed. This check needs the live separator, so it
+   * happens after connecting but before anything is created.
    */
   @Test
   @SneakyThrows
@@ -11299,6 +12604,8 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).getEmails(eq(TEST_USER), eq("CUSTOM:5"));
     verify(emailBoxStorage, never()).deleteEmailsByIds(any());
     assertEquals("Invoices", view.getDisplayName());
+    // EXO-90556: a folder shared one by one follows its new name for its delegates.
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Factures", "Invoices");
   }
 
   /**
@@ -11372,7 +12679,7 @@ public class EmailBoxServiceTest {
 
   /**
    * A rename onto a name embedding the folder's own hierarchy delimiter is refused --
-   * v1 offers no parent picker, so a rename never moves a folder to a different parent.
+   * a rename never moves a folder to a different parent; a move does.
    */
   @Test
   void renameCustomFolderRefusesANameEmbeddingTheDelimiter() throws Exception {
@@ -11414,6 +12721,7 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Invoices"))
                                                                                                                                    .getMessage());
     verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+    verify(emailDelegationService, never()).ownerFolderChanged(anyString(), anyString(), any());
   }
 
   /**
@@ -11472,6 +12780,8 @@ public class EmailBoxServiceTest {
     verify(remote).delete(false);
     verify(emailBoxStorage).deleteEmailsByIds(List.of(77L));
     verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+    // EXO-90556: the delegates' copies go with it.
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Factures", null);
   }
 
   /**
@@ -11528,6 +12838,468 @@ public class EmailBoxServiceTest {
   }
 
   // ---------------------------------------------------------------------------------
+  // Sub-folders (EXO-90839): create inside a folder, rename and move a folder with the
+  // folders inside it, delete a folder with its sub-folders.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A folder created inside one of the user's folders is created under the parent's
+   * full name and delimiter, and registered with that full name and its own name as
+   * typed.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderInsideAParentCreatesItUnderTheParentsFullName() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(emailFolderStorage.getFolder(TEST_USER, 4L)).thenReturn(registeredFolder(4L, "Customers", true));
+    IMAPFolder created = mock(IMAPFolder.class);
+    when(store.getFolder("Customers/Acme")).thenReturn(created);
+    when(created.exists()).thenReturn(false);
+    when(created.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+    EmailFolder stored = registeredFolder(9L, "Customers/Acme", false);
+    when(emailFolderStorage.createFolder(any())).thenReturn(stored);
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(stored);
+    when(emailFolderStorage.countEnabledFolders(TEST_USER)).thenReturn(0L);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    emailBoxService.createCustomFolder(TEST_USER, "Acme", 4L);
+
+    verify(created).create(Folder.HOLDS_MESSAGES);
+    verify(defaultFolder, never()).getFolder(anyString());
+    ArgumentCaptor<EmailFolder> registered = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(registered.capture());
+    assertEquals("Customers/Acme", registered.getValue().getRemoteName());
+    assertEquals("Acme", registered.getValue().getDisplayName());
+    assertEquals("/", registered.getValue().getDelimiter());
+  }
+
+  /**
+   * A parent that cannot hold the folder is refused before anything reaches the server:
+   * a folder the last walk did not find, a folder of a mailbox shared with the user, a
+   * folder of another user (unknown here) -- and a name typed as a path is still refused
+   * inside a parent.
+   */
+  @Test
+  void createCustomFolderRefusesAParentThatCannotHoldIt() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailFolder missing = registeredFolder(4L, "Customers", true);
+    missing.setMissing(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 4L)).thenReturn(missing);
+    EmailFolder delegated = registeredFolder(5L, "Shared/alice/Projects", true);
+    delegated.setDelegationId(3L);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(delegated);
+
+    assertEquals(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Acme", 4L))
+                                                                                                                          .getMessage());
+    assertEquals(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Acme", 5L))
+                                                                                                                          .getMessage());
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Acme", 6L))
+                                                                                                                          .getMessage());
+    doThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX)).when(emailDelegationService).checkOwnFolder(TEST_USER, 5L);
+    assertThrows(MailboxRightMissingException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Acme", 5L));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    when(emailFolderStorage.getFolder(TEST_USER, 7L)).thenReturn(registeredFolder(7L, "Customers", true));
+    givenAConnectedDefaultFolder();
+    assertEquals(EmailFolderService.FOLDER_NAME_NESTED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Acme/2024", 7L))
+                                                                                                                                .getMessage());
+    verify(emailFolderStorage, never()).createFolder(any());
+  }
+
+  /**
+   * Renaming a folder renames the folders inside it on the server (an IMAP RENAME takes
+   * them along), so their registry rows follow, in place, keeping their ids and their
+   * own names: without that the next walk would purge them and register new rows, the
+   * user's opt-ins and mirrors lost. A folder whose name only starts the same way is not
+   * inside it.
+   */
+  @Test
+  @SneakyThrows
+  void renameCustomFolderCarriesTheRowsOfTheFoldersInsideIt() {
+    // The mock is pinned into the service by hand -- see sendEmailPublishesSentRecipientsWithoutBcc.
+    if (realEventPublisher == null) {
+      realEventPublisher = ReflectionTestUtils.getField(emailBoxService, "eventPublisher");
+    }
+    ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    EmailFolder parent = registeredFolder(5L, "Customers", true);
+    EmailFolder child = registeredFolder(6L, "Customers/Acme", true);
+    child.setDisplayName("Acme");
+    EmailFolder grandChild = registeredFolder(7L, "Customers/Acme/2024", false);
+    grandChild.setDisplayName("2024");
+    EmailFolder lookalike = registeredFolder(8L, "CustomersOld", true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(parent);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(parent, child, grandChild, lookalike));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    Folder target = mock(Folder.class);
+    when(store.getFolder("Clients")).thenReturn(target);
+    when(remote.renameTo(target)).thenReturn(true);
+    when(emailFolderStorage.renameFolder(TEST_USER, 5L, "Clients", "Clients")).thenReturn(registeredFolder(5L, "Clients", true));
+
+    emailBoxService.renameCustomFolder(TEST_USER, 5L, "Clients");
+
+    verify(emailFolderStorage).renameFolder(TEST_USER, 5L, "Clients", "Clients");
+    verify(emailFolderStorage).renameFolder(TEST_USER, 6L, "Clients/Acme", "Acme");
+    verify(emailFolderStorage).renameFolder(TEST_USER, 7L, "Clients/Acme/2024", "2024");
+    verify(emailFolderStorage, never()).renameFolder(eq(TEST_USER), eq(8L), anyString(), anyString());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Customers", "Clients");
+    // The server rules filing into the folder or a folder inside it follow it.
+    ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher).publishEvent(published.capture());
+    CustomFoldersRelocatedEvent relocated = (CustomFoldersRelocatedEvent) published.getValue();
+    assertEquals(TEST_USER, relocated.getUsername());
+    assertEquals(List.of("CUSTOM:5", "CUSTOM:6", "CUSTOM:7"), relocated.getFolderKeys());
+  }
+
+  /**
+   * A move puts the folder, and the folders inside it, under the chosen parent with one
+   * RENAME on the server -- its own name kept, or the new one given in the same step --
+   * and its shares follow it.
+   */
+  @Test
+  @SneakyThrows
+  void moveCustomFolderPutsItAndItsSubFoldersUnderTheChosenParent() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    EmailFolder moved = registeredFolder(6L, "Customers/Acme", true);
+    moved.setDisplayName("Acme");
+    EmailFolder inside = registeredFolder(7L, "Customers/Acme/2024", true);
+    inside.setDisplayName("2024");
+    EmailFolder newParent = registeredFolder(9L, "Archive 2025", false);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(moved);
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(newParent);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(moved, inside, newParent));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
+    when(store.getFolder("Customers/Acme")).thenReturn(remote);
+    Folder target = mock(Folder.class);
+    when(store.getFolder("Archive 2025/Acme")).thenReturn(target);
+    when(remote.renameTo(target)).thenReturn(true);
+    when(emailFolderStorage.renameFolder(TEST_USER, 6L, "Archive 2025/Acme", "Acme")).thenReturn(moved);
+
+    emailBoxService.moveCustomFolder(TEST_USER, 6L, 9L, null);
+
+    verify(remote).renameTo(target);
+    verify(emailFolderStorage).renameFolder(TEST_USER, 6L, "Archive 2025/Acme", "Acme");
+    verify(emailFolderStorage).renameFolder(TEST_USER, 7L, "Archive 2025/Acme/2024", "2024");
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Customers/Acme", "Archive 2025/Acme");
+    verify(emailDelegationService).checkOwnFolder(TEST_USER, 9L);
+
+    // To the top level, under a new name in the same step.
+    Folder topTarget = mock(Folder.class);
+    when(store.getFolder("Acme Corp")).thenReturn(topTarget);
+    when(remote.renameTo(topTarget)).thenReturn(true);
+    when(emailFolderStorage.renameFolder(TEST_USER, 6L, "Acme Corp", "Acme Corp")).thenReturn(moved);
+
+    emailBoxService.moveCustomFolder(TEST_USER, 6L, null, "Acme Corp");
+
+    verify(remote).renameTo(topTarget);
+    verify(emailFolderStorage).renameFolder(TEST_USER, 7L, "Acme Corp/2024", "2024");
+  }
+
+  /**
+   * A folder is never moved inside itself or inside one of its own folders -- the server
+   * would refuse it, or worse -- nor under a folder of a mailbox shared with the user;
+   * each refused before any connection.
+   */
+  @Test
+  void moveCustomFolderRefusesItselfItsOwnSubFoldersAndASharedParent() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Customers", true));
+    when(emailFolderStorage.getFolder(TEST_USER, 7L)).thenReturn(registeredFolder(7L, "Customers/Acme/2024", true));
+
+    assertEquals(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 6L, 6L, null))
+                                                                                                                          .getMessage());
+    assertEquals(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 6L, 7L, null))
+                                                                                                                          .getMessage());
+    doThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX)).when(emailDelegationService).checkOwnFolder(TEST_USER, 8L);
+    assertThrows(MailboxRightMissingException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 6L, 8L, null));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * A folder with sub-folders on the server is not deleted unless the caller says it
+   * deletes them too: a client that never showed the confirmation saying so never
+   * destroys more than the folder it named.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderWithSubFoldersIsRefusedUnlessAsked() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    IMAPFolder sub = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
+    when(remote.list("*")).thenReturn(new Folder[] { sub });
+
+    assertEquals(EmailFolderService.FOLDER_HAS_SUB_FOLDERS_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L)).getMessage());
+    verify(remote, never()).delete(anyBoolean());
+    verify(sub, never()).delete(anyBoolean());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+  }
+
+  /**
+   * Asked to, the delete takes the sub-folders first, deepest first, each with a
+   * non-recursive DELETE, the folder last; their mirrors and registry rows go with them.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderWithSubFoldersDeletesTheDeepestFirstAndClearsTheirRows() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    EmailFolder parent = registeredFolder(5L, "Customers", true);
+    EmailFolder child = registeredFolder(6L, "Customers/Acme", true);
+    EmailFolder grandChild = registeredFolder(7L, "Customers/Acme/2024", false);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(parent);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(parent, child, grandChild));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    IMAPFolder sub = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
+    IMAPFolder subSub = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme/2024");
+    when(remote.list("*")).thenReturn(new Folder[] { sub, subSub });
+    when(sub.getType()).thenReturn(Folder.HOLDS_MESSAGES | Folder.HOLDS_FOLDERS);
+    when(subSub.getType()).thenReturn(Folder.HOLDS_MESSAGES);
+    when(remote.delete(false)).thenReturn(true);
+    when(sub.delete(false)).thenReturn(true);
+    when(subSub.delete(false)).thenReturn(true);
+
+    emailBoxService.deleteCustomFolder(TEST_USER, 5L, true);
+
+    InOrder order = inOrder(subSub, sub, remote);
+    order.verify(subSub).delete(false);
+    order.verify(sub).delete(false);
+    order.verify(remote).delete(false);
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 6L);
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 7L);
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:6");
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:7");
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Customers", null);
+  }
+
+  /**
+   * A sub-folder that still holds mail refuses the whole delete, nothing sent to the
+   * server; a sub-folder that cannot hold mail (a \Noselect node) is not asked.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderRefusesWhenASubFolderHoldsMail() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    // Deepest first: the node is asked before the folder that holds mail.
+    IMAPFolder node = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme/Old");
+    when(node.getType()).thenReturn(Folder.HOLDS_FOLDERS);
+    IMAPFolder full = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Beta");
+    when(full.getType()).thenReturn(Folder.HOLDS_MESSAGES);
+    when(full.getMessageCount()).thenReturn(2);
+    when(remote.list("*")).thenReturn(new Folder[] { node, full });
+
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L, true))
+                                                                                                                        .getMessage());
+    verify(node, never()).getMessageCount();
+    verify(remote, never()).delete(anyBoolean());
+    verify(node, never()).delete(anyBoolean());
+    verify(full, never()).delete(anyBoolean());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+  }
+
+  /**
+   * The server refusing a DELETE part-way: what it already deleted is cleared locally,
+   * the folder itself and what is left in it stay registered.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderRefusedPartWayClearsOnlyWhatTheServerDeleted() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    EmailFolder parent = registeredFolder(5L, "Customers", true);
+    EmailFolder child = registeredFolder(6L, "Customers/Acme", true);
+    EmailFolder grandChild = registeredFolder(7L, "Customers/Acme/2024", false);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(parent);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(parent, child, grandChild));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    IMAPFolder sub = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
+    IMAPFolder subSub = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme/2024");
+    when(remote.list("*")).thenReturn(new Folder[] { sub, subSub });
+    when(subSub.delete(false)).thenReturn(true);
+    when(sub.delete(false)).thenReturn(false);
+
+    assertEquals(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L, true))
+                                                                                                                        .getMessage());
+    verify(remote, never()).delete(anyBoolean());
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 7L);
+    verify(emailFolderStorage, never()).deleteFolder(TEST_USER, 6L);
+    verify(emailFolderStorage, never()).deleteFolder(TEST_USER, 5L);
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Customers/Acme/2024", null);
+    verify(emailDelegationService, never()).ownerFolderChanged(TEST_USER, "Customers", null);
+  }
+
+  /**
+   * A full name the registry could not keep is refused before the server is asked: a
+   * folder created deep inside its parents, and a move that would push a folder inside
+   * the moved one past the bound.
+   */
+  @Test
+  void createAndMoveRefuseAFullNameTheRegistryCannotKeep() throws Exception {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    String deep = "a".repeat(250) + "/" + "b".repeat(240);
+    when(emailFolderStorage.getFolder(TEST_USER, 4L)).thenReturn(registeredFolder(4L, deep, true));
+
+    assertEquals(EmailFolderService.FOLDER_FULL_NAME_TOO_LONG_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.createCustomFolder(TEST_USER, "c".repeat(10), 4L)).getMessage());
+    verify(emailFolderStorage, never()).createFolder(any());
+
+    EmailFolder moved = registeredFolder(6L, "Acme", true);
+    // Moved under target, Acme's own full name is 255 characters, within the bound; the
+    // folder inside it would grow to 506 -- only the descendants' check refuses it.
+    EmailFolder inside = registeredFolder(7L, "Acme/" + "d".repeat(250), true);
+    EmailFolder target = registeredFolder(9L, "e".repeat(250), true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(moved);
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(target);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(moved, inside, target));
+
+    assertEquals(EmailFolderService.FOLDER_FULL_NAME_TOO_LONG_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 6L, 9L, null))
+                                                                                                                          .getMessage());
+    verify(store, never()).getFolder(anyString());
+    verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * A container the server lists only while something is inside it goes by itself with
+   * the last folder inside it: its own DELETE answers NO, and a folder the server no
+   * longer has counts as deleted -- the delete goes on to the folder itself.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderCountsAContainerGoneWithItsLastFolderAsDeleted() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    IMAPFolder node = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Old");
+    when(node.getType()).thenReturn(Folder.HOLDS_FOLDERS);
+    IMAPFolder leaf = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Old/Acme");
+    when(leaf.getType()).thenReturn(Folder.HOLDS_MESSAGES);
+    when(remote.list("*")).thenReturn(new Folder[] { node, leaf });
+    when(leaf.delete(false)).thenReturn(true);
+    when(node.delete(false)).thenReturn(false);
+    when(node.exists()).thenReturn(false);
+    when(remote.delete(false)).thenReturn(true);
+
+    emailBoxService.deleteCustomFolder(TEST_USER, 5L, true);
+
+    verify(remote).delete(false);
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+  }
+
+  /**
+   * A folder inside the deleted one that the mailbox uses as a built-in -- a Trash the
+   * last walk found by name under the folder -- refuses the delete whole: it is never
+   * deleted as a sub-folder of the user's own.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderRefusesWhenASubFolderIsABuiltIn() {
+    IMAPStore store = givenAConnectedMailboxForFolderManagement();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setTrashFolderName("Customers/Trash");
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers");
+    when(store.getFolder("Customers")).thenReturn(remote);
+    IMAPFolder trash = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Trash");
+    when(remote.list("*")).thenReturn(new Folder[] { trash });
+
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L, true))
+                                                                                                                        .getMessage());
+    verify(trash, never()).delete(anyBoolean());
+    verify(remote, never()).delete(anyBoolean());
+  }
+
+  /**
+   * A folder the mailbox uses as a built-in is never carried along by a rename or a move
+   * of a folder of the user's, as it is never deleted with one: refused before anything
+   * reaches the server.
+   */
+  @Test
+  void renameAndMoveRefuseAFolderHoldingABuiltIn() throws Exception {
+    givenAConnectedMailboxForFolderManagement();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setTrashFolderName("Customers/Trash");
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(registeredFolder(9L, "Archive 2025", true));
+
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Clients"))
+                                                                                                                              .getMessage());
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 5L, 9L, null))
+                                                                                                                          .getMessage());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * A move to the top level checks the folder's own name as a typed one would be: a
+   * folder kept as "Projects/Archive" never becomes the mailbox's Archive by a move.
+   */
+  @Test
+  void moveCustomFolderToTheTopRefusesABuiltInName() throws Exception {
+    givenAConnectedMailboxForFolderManagement();
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projects/Archive", true));
+
+    assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 6L, null, null))
+                                                                                                                            .getMessage());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * The connected mailbox the folder-management tests act on: the feature on, the
+   * user's connector bound, the store connected.
+   *
+   * @return the store
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  private IMAPStore givenAConnectedMailboxForFolderManagement() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    lenient().when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+    return store;
+  }
+
+  // ---------------------------------------------------------------------------------
   // EXO-89952: the Undo of a "Move to...". Addressed by Message-ID rather than by UID,
   // because the moved message has a new UID the client never learnt and no mirror row
   // in the folder it landed in -- so it is found again by the one identity it kept.
@@ -11544,7 +13316,7 @@ public class EmailBoxServiceTest {
   void undoingAMoveFindsTheMessageByIdentityAndCopiesItBackWhereItCameFrom() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
@@ -11571,7 +13343,7 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message first = aMessageCarrying("<a@host>");
     Message second = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { first, second });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { first, second });
 
     int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11592,7 +13364,7 @@ public class EmailBoxServiceTest {
   void anUndoTakesOnlyAnExactIdentityNotTheServersSubstringMatch() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message lookalike = aMessageCarrying("<a@host.example>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { lookalike });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { lookalike });
 
     int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11610,7 +13382,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   void anUndoWithNothingToFindIsCountedAndTouchesNothing() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
 
     int failed = emailBoxService.undoMove(Arrays.asList("<gone@host>", " ", null), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11635,7 +13407,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", true));
     when(trashStore().getFolder("Factures")).thenReturn(factures);
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11663,7 +13435,7 @@ public class EmailBoxServiceTest {
     lenient().when(inbox.isOpen()).thenReturn(true);
     when(trashStore().getFolder("INBOX")).thenReturn(inbox);
     Message message = aMessageCarrying("<a@host>");
-    when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(inbox.getUID(message)).thenReturn(5L);
     when(inbox.getMessageByUID(5L)).thenReturn(message);
 
@@ -11709,7 +13481,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11739,7 +13511,7 @@ public class EmailBoxServiceTest {
     row.setMailHeaderId("<a@host>");
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(5L), eq(TEST_USER), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
     when(inbox.getMessageByUID(5L)).thenReturn(message);
-    lenient().when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    lenient().when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     lenient().when(inbox.getUID(message)).thenReturn(5L);
 
     assertEquals(0, emailBoxService.moveToFolder(List.of(5L), TEST_USER, MailFolder.INBOX, "CUSTOM:1"));
@@ -11762,7 +13534,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     ScheduledFuture<?> queuedByTheMove = mock(ScheduledFuture.class);
@@ -11789,7 +13561,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11944,7 +13716,7 @@ public class EmailBoxServiceTest {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11963,7 +13735,7 @@ public class EmailBoxServiceTest {
   void anUndoThatMovedNothingDoesNotRefreshAnything() {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
 
     emailBoxService.undoMove(List.of("<gone@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -12117,7 +13889,7 @@ public class EmailBoxServiceTest {
   void anUndoWhoseCopyTheServerRefusedCountsItAndTouchesNothingElse() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     doThrow(new MessagingException("COPY rejected")).when(factures).copyMessages(any(), any());
 
@@ -12142,7 +13914,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     doThrow(new MessagingException("STORE refused")).when(message).setFlag(Flags.Flag.DELETED, true);
@@ -12167,7 +13939,7 @@ public class EmailBoxServiceTest {
   void anUndoWhoseCopyExpungedTheSourceIsASuccess() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(message.isExpunged()).thenReturn(true);
 
@@ -12194,7 +13966,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     syncingUsers().add(TEST_USER);
@@ -13341,14 +15113,519 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The cached search leaves the shared mailboxes out -- phase 1 offers them nowhere in
-   * the unified search -- and a user who shares nothing reads exactly as before.
+   * EXO-90555 -- an agent that named a shared mailbox is handed a row by id only when
+   * the row sits in a folder registered for THAT share (read by DELEGATION_ID): a row
+   * of the user's own mailbox, or of another share, is not found.
+   */
+  @Test
+  void anAgentThatNamedASharedMailboxIsHandedOnlyItsRows() throws Exception {
+    Email ofTheShare = email(TEST_USER);
+    ofTheShare.setFolder("CUSTOM:8");
+    Email own = email(TEST_USER);
+    own.setFolder(MailFolder.INBOX);
+    Email ofAnotherShare = email(TEST_USER);
+    ofAnotherShare.setFolder("CUSTOM:9");
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailBoxStorage.getEmailById(eq(5L), eq(TEST_USER), any())).thenReturn(ofTheShare);
+    when(emailBoxStorage.getEmailById(eq(6L), eq(TEST_USER), any())).thenReturn(own);
+    when(emailBoxStorage.getEmailById(eq(7L), eq(TEST_USER), any())).thenReturn(ofAnotherShare);
+    when(emailDelegationService.getMailboxFolderKeys(TEST_USER, 100L)).thenReturn(List.of("CUSTOM:8", "CUSTOM:10"));
+
+    assertSame(ofTheShare, emailBoxService.getSharedMailboxEmailById(5L, TEST_USER, 100L));
+    assertNull(emailBoxService.getSharedMailboxEmailById(6L, TEST_USER, 100L), "the user's own row");
+    assertNull(emailBoxService.getSharedMailboxEmailById(7L, TEST_USER, 100L), "another share's row");
+    // Row ids are global: another user's row reads as no row to an agent, in both
+    // lookups -- never "not allowed", which would say it exists.
+    Email somebodyElses = email("someone-else");
+    somebodyElses.setFolder(MailFolder.INBOX);
+    when(emailBoxStorage.getEmailById(eq(8L), eq(TEST_USER), any())).thenReturn(somebodyElses);
+    assertNull(emailBoxService.getOwnMailboxEmailById(8L, TEST_USER));
+    assertNull(emailBoxService.getSharedMailboxEmailById(8L, TEST_USER, 100L));
+  }
+
+  /**
+   * EXO-90555 -- an agent's search of a shared mailbox reads the mirror of that folder:
+   * subject or sender, a sender filter, unread, an age window, newest first, capped --
+   * and refuses a key that is not a shared mailbox's folder, and a search with no
+   * criteria.
+   */
+  @Test
+  void anAgentsSearchOfASharedMailboxReadsItsMirror() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    Email budget = mirrored(1L, "Budget 2027", "carol@acme.com", false, 1);
+    Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
+    Email old = mirrored(3L, "Old budget", "dave@acme.com", false, 40);
+    Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(old, other, invoice, budget));
+
+    EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 10);
+    assertEquals(3, page.getTotalMatches(), "subject or sender");
+    assertEquals(List.of(1L, 2L, 3L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "newest first");
+    assertEquals("CUSTOM:8", page.getResults().get(0).getFolder());
+
+    assertEquals(List.of(1L, 3L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, true, null, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "unread only");
+    assertEquals(List.of(1L, 2L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, 7, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the last 7 days");
+    assertEquals(List.of(2L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", null, "budget-office", false, null, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the sender only");
+    assertEquals(1, emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 1).getResults().size());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", " ", null, false, null, 10),
+                 "no criteria");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:3", "budget", null, false, null, 10),
+                 "not a shared mailbox's folder");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, MailFolder.INBOX, "budget", null, false, null, 10),
+                 "the user's own inbox is not searched here");
+  }
+
+  /**
+   * EXO-90590 -- the mail drawer's own search box, in a folder of a mailbox shared with
+   * the user, is answered from that folder's mirror and never from the mail server: the
+   * same criteria as the user's own search box, the Favorites chip included (alone, it
+   * is a criterion), newest first; and only for a folder the delegation service finds
+   * searchable for this user, re-checked on every search. Anything else is not a folder
+   * to search, and a share withdrawn meanwhile says so.
+   */
+  @Test
+  void theDrawersSearchInASharedMailboxReadsTheFoldersMirror() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenReturn(true);
+    Email budget = mirrored(1L, "Budget 2027", "carol@acme.com", false, 1);
+    Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
+    invoice.setStarred(true);
+    Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
+    when(emailBoxStorage.getEmailsForSearchInFolders(eq(TEST_USER), eq(List.of("CUSTOM:8")), anyBoolean())).thenReturn(List.of(other, invoice, budget));
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10);
+    assertEquals(2, page.getTotalMatches());
+    assertEquals(List.of(1L, 2L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "newest first");
+    assertEquals("CUSTOM:8", page.getResults().get(0).getFolder(), "opened in the shared folder");
+    assertTrue(page.getResults().get(0).isCached(), "a mirrored row is read locally");
+
+    EmailSearchResultPage favorites = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, true, null, "CUSTOM:8", 10);
+    assertEquals(List.of(2L), favorites.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "the Favorites chip");
+    assertTrue(favorites.isFavoritesOnly());
+    assertEquals(List.of(2L),
+                 emailBoxService.searchEmails(TEST_USER, null, null, null, false, true, null, "CUSTOM:8", 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the Favorites chip alone is a criterion");
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    assertEquals(0,
+                 emailBoxService.searchEmails(TEST_USER, "budget", null, "bob", false, false, null, "CUSTOM:8", 10).getTotalMatches(),
+                 "the recipient filter applies in a shared mailbox too (EXO-90838)");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:9", 10),
+                 "a folder the delegation service does not find searchable for this user");
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    assertThrows(DelegationRevokedException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10),
+                 "a share withdrawn meanwhile");
+    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(eq(TEST_USER), eq(List.of("CUSTOM:9")), anyBoolean());
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90838 -- the advanced search of a shared folder applies every criterion to the
+   * user's copy of it, as the mail server would to the user's own folders: the To or Cc
+   * recipients (never Bcc), the words in the subject or the body read as text (never its
+   * markup), the messages eXo holds an attachment row for -- read only when that
+   * criterion is asked -- and the days of the server's zone, the first one included and
+   * the one before which the range stops excluded.
+   */
+  @Test
+  void theAdvancedSearchOfASharedFolderAppliesEveryCriterionToItsCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenReturn(true);
+    LocalDate today = LocalDate.now();
+    Email toDave = mirrored(1L, "Budget", "carol@acme.com", false, 0);
+    toDave.setId(101L);
+    toDave.setTo(List.of(new EmailRecipient("Dave Smith", "dave@acme.com", null, false)));
+    toDave.setContent(new EmailContent("<div class=\"quarterly\">See the attached figures</div>"));
+    toDave.setReceivedDate(EmailBoxService.startOfServerDay(today));
+    Email ccDave = mirrored(2L, "Lunch", "erin@acme.com", false, 0);
+    ccDave.setId(102L);
+    ccDave.setCc(List.of(new EmailRecipient(null, "dave@acme.com", null, false)));
+    ccDave.setContent(new EmailContent("<p>quarterly figures inside</p>"));
+    ccDave.setReceivedDate(new Date(EmailBoxService.startOfServerDay(today).getTime() - 1));
+    Email bccDave = mirrored(3L, "Quarterly", "frank@acme.com", false, 0);
+    bccDave.setId(103L);
+    bccDave.setTo(List.of(new EmailRecipient("Grace", "grace@acme.com", null, false)));
+    bccDave.setBcc(List.of(new EmailRecipient("Dave", "dave@acme.com", null, false)));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(toDave, ccDave, bccDave));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), true)).thenReturn(List.of(toDave, ccDave, bccDave));
+
+    EmailSearchCriteria recipient = new EmailSearchCriteria();
+    recipient.setTo("DAVE");
+    assertEquals(List.of(1L, 2L), searchedUids(recipient), "To or Cc, by name or address, never Bcc");
+
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("quarterly");
+    assertEquals(List.of(3L, 2L), searchedUids(words), "the subject or the body's text, not a class name of its markup");
+
+    verify(emailBoxStorage, never()).getEmailIdsWithAttachmentsInFolders(anyString(), any());
+    when(emailBoxStorage.getEmailIdsWithAttachmentsInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(Set.of(101L, 103L));
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+    assertEquals(List.of(3L, 1L), searchedUids(attachments), "the rows eXo holds an attachment for");
+
+    EmailSearchCriteria fromToday = new EmailSearchCriteria();
+    fromToday.setAfter(today);
+    assertEquals(List.of(3L, 1L), searchedUids(fromToday), "the first instant of the day is in, the one before is out");
+    EmailSearchCriteria beforeToday = new EmailSearchCriteria();
+    beforeToday.setBefore(today);
+    assertEquals(List.of(2L), searchedUids(beforeToday), "the day the range stops before is out");
+    verify(emailBoxStorage, times(1)).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), true);
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90838 -- in the user's own mailbox the advanced criteria are terms of the one
+   * IMAP SEARCH, and an unanswerable range or a malformed day is refused before the
+   * server is reached -- after the access check, which answers first.
+   */
+  @Test
+  void theAdvancedSearchOfAnOwnFolderIsOneServerSearch() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    EmailSearchCriteria notADay = new EmailSearchCriteria();
+    notADay.setQuery("report");
+    notADay.setInvalidDay(true);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, notADay, "INBOX", 10),
+                 "the refusal answers before a malformed day");
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    assertEquals("emailConnector.search.invalidDate",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, notADay, "INBOX", 10)).getMessage());
+    EmailSearchCriteria reversed = new EmailSearchCriteria();
+    reversed.setAfter(LocalDate.of(2026, 10, 2));
+    reversed.setBefore(LocalDate.of(2026, 10, 1));
+    assertEquals("emailConnector.search.invalidDateRange",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, reversed, "INBOX", 10)).getMessage());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setWords("budget");
+    criteria.setAttachmentsOnly(true);
+    criteria.setAfter(LocalDate.of(2026, 10, 1));
+
+    emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertTrue(searched.getValue() instanceof AndTerm);
+    assertEquals(2, ((AndTerm) searched.getValue()).getTerms().length, "words and day: one search, the attachment never in it");
+  }
+
+  /**
+   * EXO-90838 -- the attachment criterion never reaches the mail server: alone, it
+   * examines the folder's newest messages without a SEARCH; with other criteria, the
+   * newest matches of their SEARCH. Either way the hits are the messages eXo would list
+   * an attachment for, read from their structure in one batched fetch, and the answer
+   * says how many were examined when there were more.
+   */
+  @Test
+  void theAttachmentCriterionIsReadFromTheMatchesStructureNeverSearched() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage withFile = EmailSearchCriteriaTermTest.message(EmailSearchCriteriaTermTest.multipart("mixed",
+                                                                                                    EmailSearchCriteriaTermTest.text("plain"),
+                                                                                                    EmailSearchCriteriaTermTest.file("application/pdf",
+                                                                                                                                     Part.ATTACHMENT)));
+    MimeMessage textOnly = EmailSearchCriteriaTermTest.message(EmailSearchCriteriaTermTest.multipart("alternative",
+                                                                                                    EmailSearchCriteriaTermTest.text("plain"),
+                                                                                                    EmailSearchCriteriaTermTest.text("html")));
+    lenient().when(((UIDFolder) inbox).getUID(withFile)).thenReturn(31L);
+    lenient().when(((UIDFolder) inbox).getUID(textOnly)).thenReturn(30L);
+    lenient().when(emailBoxStorage.getCachedEmailIds(eq(TEST_USER), eq("INBOX"), anyList())).thenReturn(Map.of());
+    when(inbox.getMessageCount()).thenReturn(500);
+    when(inbox.getMessages(301, 500)).thenReturn(new Message[] { textOnly, withFile });
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, attachments, "INBOX", 10);
+
+    verify(inbox, never()).search(any(SearchTerm.class));
+    assertEquals(List.of(31L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(1, page.getTotalMatches());
+    verify(inbox).getMessages(500 - EmailBoxService.ATTACHMENT_SCAN_LIMIT + 1, 500);
+    assertEquals(2, page.getScanned(), "500 messages: the count covers the ones examined, and says how many");
+    ArgumentCaptor<FetchProfile> fetched = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), fetched.capture());
+    assertTrue(fetched.getValue().contains(FetchProfile.Item.CONTENT_INFO), "the structure, in the one batched fetch");
+
+    EmailSearchCriteria wordsAndAttachments = new EmailSearchCriteria();
+    wordsAndAttachments.setWords("budget");
+    wordsAndAttachments.setAttachmentsOnly(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { textOnly, withFile });
+
+    page = emailBoxService.searchEmails(TEST_USER, wordsAndAttachments, "INBOX", 10);
+
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertTrue(searched.getValue() instanceof OrTerm, "the words alone: no term for the attachment");
+    assertEquals(List.of(31L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(0, page.getScanned(), "every match examined");
+
+    Message[] many = new Message[EmailBoxService.ATTACHMENT_SCAN_LIMIT + 1];
+    many[0] = withFile;
+    java.util.Arrays.fill(many, 1, many.length, textOnly);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(many);
+
+    page = emailBoxService.searchEmails(TEST_USER, wordsAndAttachments, "INBOX", 10);
+
+    assertEquals(List.of(), page.getResults(), "a match older than the newest examined is not read");
+    assertEquals(EmailBoxService.ATTACHMENT_SCAN_LIMIT, page.getScanned());
+  }
+
+  /**
+   * EXO-90838 -- the advanced search of the user's own folder reads eXo's copy of it,
+   * with every criterion as the shared folder's copy applies it, never the server. The
+   * access check answers first, and a folder the server search would not read is
+   * refused before any read.
+   */
+  @Test
+  void theCachedSearchOfAnOwnFolderAppliesEveryCriterionToItsCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    EmailSearchCriteria recipient = new EmailSearchCriteria();
+    recipient.setTo("DAVE");
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, recipient, "TRASH", 10));
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, recipient, "TRASH", 10)).getMessage());
+    LocalDate today = LocalDate.now();
+    Email toDave = mirrored(1L, "Budget", "carol@acme.com", false, 0);
+    toDave.setId(101L);
+    toDave.setTo(List.of(new EmailRecipient("Dave Smith", "dave@acme.com", null, false)));
+    toDave.setContent(new EmailContent("<div class=\"quarterly\">See the attached figures</div>"));
+    toDave.setReceivedDate(EmailBoxService.startOfServerDay(today));
+    Email ccDave = mirrored(2L, "Lunch", "erin@acme.com", true, 0);
+    ccDave.setId(102L);
+    ccDave.setStarred(true);
+    ccDave.setCc(List.of(new EmailRecipient(null, "dave@acme.com", null, false)));
+    ccDave.setContent(new EmailContent("<p>quarterly figures inside</p>"));
+    ccDave.setReceivedDate(new Date(EmailBoxService.startOfServerDay(today).getTime() - 1));
+    Email bccDave = mirrored(3L, "Quarterly", "frank@acme.com", false, 0);
+    bccDave.setId(103L);
+    bccDave.setBcc(List.of(new EmailRecipient("Dave", "dave@acme.com", null, false)));
+    List<Email> rows = List.of(toDave, ccDave, bccDave);
+    rows.forEach(email -> email.setFolder(MailFolder.INBOX));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), false)).thenReturn(rows);
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), true)).thenReturn(rows);
+    when(emailBoxStorage.getEmailIdsWithAttachmentsInFolders(TEST_USER, List.of(MailFolder.INBOX))).thenReturn(Set.of(101L, 103L));
+
+    assertEquals(List.of(1L, 2L), cachedUids(recipient), "To or Cc, never Bcc");
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("quarterly");
+    assertEquals(List.of(3L, 2L), cachedUids(words), "the subject or the body's text, not its markup");
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+    assertEquals(List.of(3L, 1L), cachedUids(attachments), "the rows eXo holds an attachment for");
+    EmailSearchCriteria fromToday = new EmailSearchCriteria();
+    fromToday.setAfter(today);
+    assertEquals(List.of(3L, 1L), cachedUids(fromToday));
+    EmailSearchCriteria beforeToday = new EmailSearchCriteria();
+    beforeToday.setBefore(today);
+    assertEquals(List.of(2L), cachedUids(beforeToday));
+    EmailSearchCriteria unread = new EmailSearchCriteria();
+    unread.setUnreadOnly(true);
+    assertEquals(List.of(3L, 1L), cachedUids(unread));
+    EmailSearchCriteria starred = new EmailSearchCriteria();
+    starred.setFavoritesOnly(true);
+    assertEquals(List.of(2L), cachedUids(starred));
+    EmailSearchCriteria sender = new EmailSearchCriteria();
+    sender.setFrom("erin");
+    assertEquals(List.of(2L), cachedUids(sender));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10);
+    assertEquals(MailFolder.INBOX, page.getResults().get(0).getFolder());
+    assertTrue(page.getResults().get(0).isCached());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90838 -- the cached search of a folder of a mailbox shared with the user reads
+   * the user's copy of it, only while the delegation service finds it searchable for
+   * this user -- re-checked on every search -- and a share withdrawn meanwhile says so.
+   */
+  @Test
+  void theCachedSearchOfASharedFolderIsCheckedOnEverySearch() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email budget = mirrored(1L, "Budget", "carol@acme.com", false, 3);
+    budget.setFolder("CUSTOM:9");
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"), false)).thenReturn(List.of(budget));
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("budget");
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenReturn(true);
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10);
+
+    assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals("CUSTOM:9", page.getResults().get(0).getFolder());
+
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenReturn(false);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10)).getMessage());
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10));
+    verify(emailBoxStorage, times(1)).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"), false);
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * The UIDs a cached search of the user's own Inbox returns, newest first.
+   *
+   * @param criteria the criteria
+   * @return the UIDs
+   * @throws IllegalAccessException never, the user may read the mailbox
+   */
+  private List<Long> cachedUids(EmailSearchCriteria criteria) throws IllegalAccessException {
+    return emailBoxService.searchCachedFolder(TEST_USER, criteria, MailFolder.INBOX, 10)
+                          .getResults()
+                          .stream()
+                          .map(EmailSearchResult::getMailRemoteId)
+                          .toList();
+  }
+
+  /**
+   * The UIDs an advanced search of the shared folder CUSTOM:8 returns, newest first.
+   *
+   * @param criteria the criteria
+   * @return the UIDs
+   * @throws IllegalAccessException never, the user may read the mailbox
+   */
+  private List<Long> searchedUids(EmailSearchCriteria criteria) throws IllegalAccessException {
+    return emailBoxService.searchEmails(TEST_USER, criteria, "CUSTOM:8", 10)
+                          .getResults()
+                          .stream()
+                          .map(EmailSearchResult::getMailRemoteId)
+                          .toList();
+  }
+
+  /**
+   * EXO-90554 -- the unified search returns the searchable folders of the mailboxes
+   * shared with the user, each hit carrying its share and its owner's name, interleaved
+   * newest first with the user's own hits, which carry neither. The own read still
+   * leaves every shared folder out, so a shared row is never offered unlabelled; the
+   * shared rows are read in one query over the scope's keys; and the Favorites filter
+   * leaves them out.
+   */
+  @Test
+  void theCachedSearchLabelsTheSharedMailboxesHitsWithTheirOwner() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Map<String, SharedMailboxSearchScope> scopes = Map.of("CUSTOM:8", new SharedMailboxSearchScope(100L, "Alice Martin"));
+    when(emailDelegationService.getSharedMailboxSearchFolders(TEST_USER)).thenReturn(new SharedMailboxSearchFolders(List.of("CUSTOM:8",
+                                                                                                                           "CUSTOM:9"),
+                                                                                                                  scopes));
+    Email own = email(TEST_USER);
+    own.setMailRemoteId(1L);
+    own.setFolder(MailFolder.INBOX);
+    own.setSubject("budget, mine");
+    own.setReceivedDate(new Date(1_000L));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8", "CUSTOM:9"))).thenReturn(List.of(own));
+    Email shared = mirrored(2L, "budget, Alice's", "carol@acme.com", false, 0);
+    shared.setId(55L);
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, scopes.keySet())).thenReturn(List.of(shared));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
+
+    assertEquals(2, page.getTotalMatches());
+    EmailSearchResult sharedHit = page.getResults().get(0);
+    assertEquals("CUSTOM:8", sharedHit.getFolder(), "newest first, across both mailboxes");
+    assertEquals(100L, sharedHit.getDelegationId());
+    assertEquals("Alice Martin", sharedHit.getOwnerFullName());
+    assertNull(sharedHit.getEmailId(), "a unified-search hit opens by UID and folder, as the user's own do");
+    EmailSearchResult ownHit = page.getResults().get(1);
+    assertNull(ownHit.getDelegationId(), "the user's own mail names no share");
+    assertNull(ownHit.getOwnerFullName());
+    verify(emailBoxStorage).getEmailsForSearchInFolders(TEST_USER, scopes.keySet());
+
+    // The Favorites filter is the user's own favorites: a shared mailbox's star is its
+    // owner's (EXO-90550), so its starred mail stays out.
+    shared.setStarred(true);
+    own.setStarred(true);
+    EmailSearchResultPage favorites = emailBoxService.searchCachedEmails(TEST_USER, "budget", true, 10);
+    assertEquals(List.of(MailFolder.INBOX), favorites.getResults().stream().map(EmailSearchResult::getFolder).toList());
+  }
+
+  /**
+   * One mirrored message of a shared mailbox's folder.
+   *
+   * @param uid its UID
+   * @param subject its subject
+   * @param from its sender's address
+   * @param read whether it is read
+   * @param daysAgo how many days ago it was received
+   * @return the row
+   */
+  private Email mirrored(long uid, String subject, String from, boolean read, int daysAgo) {
+    Email email = email(TEST_USER);
+    email.setMailRemoteId(uid);
+    email.setFolder("CUSTOM:8");
+    email.setSubject(subject);
+    email.setSender(new EmailSender(null, from, null, null));
+    email.setRead(read);
+    email.setReceivedDate(new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(daysAgo)));
+    return email;
+  }
+
+  /**
+   * The cached search reads the user's own mail without the shared mailboxes' folders
+   * -- those come back only labelled with their owner, through the searchable scope
+   * (EXO-90554) -- and a user who shares nothing reads exactly as before.
    */
   @Test
   void theCachedSearchLeavesTheSharedMailboxesOut() throws Exception {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
     when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
-    when(emailDelegationService.getDelegatedFolderKeys(TEST_USER)).thenReturn(List.of("CUSTOM:8"));
+    when(emailDelegationService.getSharedMailboxSearchFolders(TEST_USER)).thenReturn(new SharedMailboxSearchFolders(List.of("CUSTOM:8"),
+                                                                                                                  Map.of()));
     when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of());
 
     emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
@@ -13767,6 +16044,178 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90595 -- a scheduled mail written in a shared mailbox goes through that share:
+   * once the mail server accepted it and after the sender's own bookkeeping, a copy of
+   * the very message that went out is filed in the owner's Sent, before the draft is
+   * taken apart (its parts stream from the draft's files).
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailOfASharedMailboxFilesTheOwnersCopyOnceSent() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    assertEquals(OwnerCopy.FILED, sent.ownerCopy());
+    assertEquals("half a subject", sent.subject());
+    ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+    InOrder order = inOrder(smtpTransmitter, ownerSent, emailBoxStorage);
+    order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
+    order.verify(ownerSent).appendMessages(filed.capture());
+    order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    assertSame(transmitted.get(0), filed.getValue()[0], "the very message that went out");
+  }
+
+  /**
+   * EXO-90583, EXO-90584 -- a scheduled mail of a shared mailbox that records no name --
+   * saved before the name was stored -- goes in the sender's own name, whatever the
+   * owner lets them do, and the owner's consent is never consulted for it -- From the
+   * sender, no Sender, JavaMail's own envelope, and no X-Exo-Sent-By on the owner's copy.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailGoesInTheSendersOwnName() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    MimeMessage sent = transmitted.get(0);
+    assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+    assertNull(sent.getHeader("Sender"));
+    assertNull(sent.getSession().getProperty("mail.smtp.from"));
+    assertNull(sent.getHeader("X-Exo-Sent-By"));
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail of a shared mailbox whose copy cannot be filed in the
+   * owner's Sent is still sent, recorded and taken apart like any other; the answer
+   * says FAILED, for the caller to tell the sender. A mail of the sender's own mailbox
+   * answers no copy at all.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailWhoseOwnerCopyFailsIsStillSentAndSaysSo() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    doThrow(new MessagingException("NO [NOPERM]")).when(ownerSent).appendMessages(any(Message[].class));
+    Runnable onTransmitted = mock(Runnable.class);
+
+    EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
+
+    assertEquals(OwnerCopy.FAILED, sent.ownerCopy());
+    verify(onTransmitted).run();
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+
+    stored.setSendDelegationId(null);
+    assertNull(emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    }).ownerCopy(), "a mail of the sender's own mailbox has no owner's copy");
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail whose shared mailbox is no longer the sender's, or no
+   * longer accepted, fails for good with MAILBOX_UNSHARED before anything happens:
+   * nothing transmitted, nothing recorded, nothing taken apart -- never sent from the
+   * sender's own mailbox instead. Not a "draft gone" either, which would leave the
+   * schedule row without an outcome.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailWhoseMailboxIsNoLongerSharedFailsForGoodAndIsNeverSent() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED))
+                                                                   .thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    for (String outcome : List.of("revoked", "not the sender's")) {
+      Runnable onTransmitted = mock(Runnable.class);
+      ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                  () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted),
+                                                  outcome);
+      assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind(), outcome);
+      assertEquals(ScheduledSendError.MAILBOX_UNSHARED, failure.getError(), outcome);
+      verify(onTransmitted, never()).run();
+    }
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90595 -- a draft of a mailbox no longer shared with its writer is not scheduled:
+   * refused while the writer is there, before its text is saved or its schedule made.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftOfAMailboxNoLongerSharedIsNotScheduled() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    @SuppressWarnings("unchecked")
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, scheduler));
+
+    verify(scheduler, never()).apply(any(Email.class));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
    * A stored draft that cannot carry a file it shows, or whose owner can no longer use
    * their mailbox, is refused for good before anything is transmitted.
    *
@@ -13947,7 +16396,7 @@ public class EmailBoxServiceTest {
     order.verify(scheduler).apply(any(Email.class));
     order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
     order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
-    verify(emailScheduledSendStorage, never()).delete(anyLong());
+    verify(emailScheduledSendStorage, never()).deleteWaiting(anyLong());
   }
 
   /**
@@ -14045,14 +16494,39 @@ public class EmailBoxServiceTest {
     EmailScheduledSend created = new EmailScheduledSend();
     created.setId(31L);
 
+    when(emailScheduledSendStorage.deleteWaiting(31L)).thenReturn(true);
+
     IllegalStateException refused = assertThrows(IllegalStateException.class,
                                                  () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
     assertEquals("emailConnector.scheduled.serverCopyRemains", refused.getMessage());
-    verify(emailScheduledSendStorage).delete(31L);
+    verify(emailScheduledSendStorage).deleteWaiting(31L);
     verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
 
     when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
     assertLocked(() -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+  }
+
+  /**
+   * A schedule claimed by a dispatcher while its server copy's removal was failing
+   * (EXO-90837: a mail held seconds for its Undo) is not taken back from the run sending
+   * it: the scheduling answers the schedule, never "nothing scheduled" about a mail that
+   * is on its way, and its send removes the leftover copy.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduleClaimedWhileItsServerCopyRemainsIsNotTakenBack() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    when(emailScheduledSendStorage.deleteWaiting(31L)).thenReturn(false);
+
+    assertSame(created, emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+    verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
   }
 
   /**
@@ -14100,14 +16574,19 @@ public class EmailBoxServiceTest {
     lenient().when(sentFolder.getFullName()).thenReturn("Sent");
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
     ArgumentCaptor<SearchTerm> term = ArgumentCaptor.forClass(SearchTerm.class);
-    when(sentFolder.search(term.capture())).thenReturn(new Message[] { mock(Message.class) }, new Message[0]);
+    Message sentCopy = aMessageCarrying("<draft@example.org>");
+    Message longerId = aMessageCarrying("<draft@example.org.uk>");
+    when(sentFolder.search(term.capture())).thenReturn(new Message[] { sentCopy }, new Message[] { longerId }, new Message[0]);
 
     assertTrue(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
-    assertTrue(term.getValue() instanceof HeaderTerm);
-    assertEquals("Message-ID", ((HeaderTerm) term.getValue()).getHeaderName());
-    assertEquals("<draft@example.org>", ((HeaderTerm) term.getValue()).getPattern());
+    // The bare id is searched: it is all Stalwart matches (EXO-90597).
+    assertTrue(term.getValue() instanceof OrTerm);
+    assertTrue(Arrays.stream(((OrTerm) term.getValue()).getTerms())
+                     .anyMatch(t -> "draft@example.org".equals(((MessageIDTerm) t).getPattern())));
+    // A longer id the server's substring match returned is not our mail: not confirmed.
     assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
-    verify(sentFolder, times(2)).open(Folder.READ_ONLY);
+    assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
+    verify(sentFolder, times(3)).open(Folder.READ_ONLY);
   }
 
   /**
@@ -14291,6 +16770,236 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90598 -- a draft of Alice's shared mailbox keeps its mailbox and the name it was
+   * written in when it comes back from the server: the Drafts copy carries both as
+   * private headers, and the import resolves the mailbox among the user's own shares
+   * before it stores anything.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSharedDraftsCopyComesBackInItsMailboxAndName() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    draft.setSendMode("AS");
+    MimeMessage copy = draftsCopyOf(draft);
+    assertArrayEquals(new String[] { "100" }, copy.getHeader("X-Exo-Draft-Mailbox"));
+    assertArrayEquals(new String[] { "AS" }, copy.getHeader("X-Exo-Draft-Send-Mode"));
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.AS));
+
+    Email imported = importedFrom(copy);
+    assertEquals(100L, imported.getSendDelegationId(), "Alice's mailbox, as confirmed among the user's shares");
+    assertEquals("AS", imported.getSendMode(), "and the name it was left in");
+  }
+
+  /**
+   * EXO-90598 -- a draft of the user's own mailbox says nothing on its Drafts copy, and
+   * comes back as the user's own without anything being looked up; nor does a draft
+   * whose mailbox never resolved.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anOwnDraftsCopyNamesNoMailbox() throws Exception {
+    MimeMessage copy = draftsCopyOf(draft("draft-1"));
+    assertNull(copy.getHeader("X-Exo-Draft-Mailbox"));
+    assertNull(copy.getHeader("X-Exo-Draft-Send-Mode"));
+
+    Email imported = importedFrom(copy);
+    assertNull(imported.getSendDelegationId());
+    assertNull(imported.getSendMode());
+    verify(emailDelegationService, never()).requireOwnShare(anyString(), anyLong());
+
+    Email unresolved = draft("draft-2");
+    unresolved.setSendDelegationId(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX);
+    assertNull(draftsCopyOf(unresolved).getHeader("X-Exo-Draft-Mailbox"), "a mailbox that never resolved is not stamped again");
+  }
+
+  /**
+   * EXO-90598 -- the header is a hint, never trusted alone: a mailbox that is not one of
+   * the user's own shares (somebody else's, or unknown), or an unreadable id, comes back
+   * as a mailbox no longer shared -- never as the user's own, and never with the
+   * header's id stored -- and its name is dropped.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftNamingAMailboxThatIsNotTheUsersOwnComesBackAsNoLongerShared() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(200L);
+    draft.setSendMode("ON_BEHALF");
+    MimeMessage copy = draftsCopyOf(draft);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 200L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    Email foreign = importedFrom(copy);
+    assertEquals(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX, foreign.getSendDelegationId(), "not the user's own mailbox");
+    assertNotEquals(200L, foreign.getSendDelegationId(), "and not the id the header named");
+    assertNull(foreign.getSendMode());
+
+    org.mockito.Mockito.clearInvocations(emailBoxStorage);
+    copy.setHeader("X-Exo-Draft-Mailbox", "not-an-id");
+    Email unreadable = importedFrom(copy);
+    assertEquals(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX, unreadable.getSendDelegationId());
+    assertNull(unreadable.getSendMode());
+  }
+
+  /**
+   * EXO-90598 -- a mailbox that is the user's own share keeps its place whatever the
+   * share's state, as a draft's first save resolves it: one that ended since is named
+   * "no longer shared" and refused at the send, as for any stored draft. A name the
+   * header garbles is dropped, the mailbox kept.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftOfAnEndedShareKeepsItsMailboxAndAGarbledNameIsDropped() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    draft.setSendMode("ON_BEHALF");
+    MimeMessage copy = draftsCopyOf(draft);
+    EmailDelegation ended = alicesShare(SendMode.ON_BEHALF);
+    ended.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(ended);
+
+    Email imported = importedFrom(copy);
+    assertEquals(100L, imported.getSendDelegationId(), "the mailbox it was written in, named no longer shared by every reader");
+    assertEquals("ON_BEHALF", imported.getSendMode(), "the row reads as it did before it was lost");
+
+    org.mockito.Mockito.clearInvocations(emailBoxStorage);
+    copy.setHeader("X-Exo-Draft-Send-Mode", "SUDO");
+    Email garbled = importedFrom(copy);
+    assertEquals(100L, garbled.getSendDelegationId());
+    assertNull(garbled.getSendMode(), "a name no draft can hold is not kept");
+  }
+
+  /**
+   * EXO-90598 -- the user's shares could not be read: no answer, so no row -- the draft is
+   * left for a later sync rather than imported in the wrong mailbox.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWhoseMailboxCannotBeCheckedIsNotImported() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    assertThrows(IllegalStateException.class,
+                 () -> ReflectionTestUtils.invokeMethod(emailBoxService,
+                                                        "createDraftFromServerMessage",
+                                                        copy,
+                                                        77L,
+                                                        "<draft@example.org>",
+                                                        TEST_USER,
+                                                        userEmailSetting()));
+    verify(emailBoxStorage, never()).createEmail(any());
+  }
+
+  /**
+   * EXO-90598 -- a Drafts message whose mailbox could not be checked makes the Drafts
+   * sync report itself incomplete, so the sync keeps no snapshot and the next one reads
+   * the folder again and retries it, even when nothing else changed there; one that
+   * imports reports complete.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftsSyncThatLeftADraftOutAsksToBeRetried() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    javax.mail.UIDFolder uidFolder = mock(javax.mail.UIDFolder.class);
+    when(uidFolder.getUID(copy)).thenReturn(77L);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    Boolean incomplete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+                                                          new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
+    assertFalse(incomplete, "a draft left out: no snapshot, so the next sync retries it");
+    verify(emailBoxStorage, never()).createEmail(any());
+
+    org.mockito.Mockito.reset(emailDelegationService);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Boolean complete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+                                                        new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
+    assertTrue(complete);
+    verify(emailBoxStorage).createEmail(any());
+  }
+
+  /**
+   * EXO-90598 -- through the whole sync: a Drafts folder holding a draft whose mailbox
+   * could not be checked saves no new snapshot for Drafts, so the skip check cannot pass
+   * over the folder next time, even on a server that reports HIGHESTMODSEQ; once the
+   * draft imports, the snapshot is saved.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftsFolderWithADraftLeftOutKeepsNoSnapshot() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(copy);
+    when(draftsFolder.getUID(copy)).thenReturn(77L);
+    lenient().when(draftsFolder.getUIDValidity()).thenReturn(11L);
+    lenient().when(draftsFolder.getUIDNext()).thenReturn(78L);
+    lenient().when(draftsFolder.getHighestModSeq()).thenReturn(900L);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    emailBoxService.synchronize(TEST_USER);
+    assertNull(savedDraftsSnapshot(), "a draft left out: no Drafts snapshot to skip on");
+    verify(emailBoxStorage, never()).createEmail(any());
+
+    org.mockito.Mockito.reset(emailDelegationService, settingService);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    emailBoxService.synchronize(TEST_USER);
+    FolderSyncSnapshot saved = savedDraftsSnapshot();
+    assertNotNull(saved, "everything imported: the snapshot is saved");
+    assertEquals(900L, saved.getHighestModSeq());
+  }
+
+  /**
+   * The Drafts snapshot the last sync saved, if any.
+   *
+   * @return the snapshot, or null when none was saved
+   */
+  private FolderSyncSnapshot savedDraftsSnapshot() {
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService, org.mockito.Mockito.atLeast(0)).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    if (savedState.getAllValues().isEmpty()) {
+      return null;
+    }
+    return JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class).getSnapshot(MailFolder.DRAFTS);
+  }
+
+  /**
+   * The copy of a draft the Drafts folder gets, with a body, as the server would store it.
+   *
+   * @param draft the draft
+   * @return the copy
+   * @throws Exception when it cannot be built
+   */
+  private MimeMessage draftsCopyOf(Email draft) throws Exception {
+    MimeMessage copy = ReflectionTestUtils.invokeMethod(emailBoxService, "buildDraftMessage", draft, userEmailSetting(), TEST_USER);
+    copy.setText("half a sentence");
+    copy.saveChanges();
+    return copy;
+  }
+
+  /**
+   * The row an import of a Drafts message creates.
+   *
+   * @param copy the Drafts message
+   * @return the row stored
+   */
+  private Email importedFrom(MimeMessage copy) {
+    ReflectionTestUtils.invokeMethod(emailBoxService, "createDraftFromServerMessage", copy, 77L, "<draft@example.org>", TEST_USER, userEmailSetting());
+    ArgumentCaptor<Email> imported = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(imported.capture());
+    return imported.getValue();
+  }
+
+  /**
    * The draft revisions carry the author's choice, the first as every later one.
    */
   @Test
@@ -14302,7 +17011,8 @@ public class EmailBoxServiceTest {
                                                    composed,
                                                    "draft-1",
                                                    TEST_USER,
-                                                   userEmailSetting());
+                                                   userEmailSetting(),
+                                                   "bob@example.org");
     assertTrue(first.isReadReceiptRequested());
     Email next = ReflectionTestUtils.invokeMethod(emailBoxService, "buildNextDraftRevision", composed, storedDraft());
     assertTrue(next.isReadReceiptRequested());
@@ -14878,5 +17588,138 @@ public class EmailBoxServiceTest {
 
     verify(smtpTransmitter, times(1)).transmit(any(MimeMessage.class));
     verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+  }
+
+  /**
+   * The live spam read of the filters' assistant (EXO-90668): one connection, the inbox
+   * opened read-only, the one message at the cached UID fetched with its flags, its
+   * Message-ID and its verdict headers, then the inbox and the store closed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerReadsTheInboxReadOnlyAndClosesIt() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    Message message = spamReadMessage(inbox, 77L, "<m1@acme.com>", new String[] { "YES" }, "$Junk");
+
+    assertEquals(Optional.of(Boolean.TRUE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"));
+
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(inbox, never()).open(Folder.READ_WRITE);
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox).fetch(eq(new Message[] { message }), profile.capture());
+    assertTrue(profile.getValue().contains(FetchProfile.Item.FLAGS));
+    assertTrue(profile.getValue().contains("Message-ID"), "the Message-ID is fetched to check the UID");
+    assertTrue(profile.getValue().contains("X-Spam-Flag"));
+    verify(inbox).close(false);
+    verify(store).close();
+
+    when(message.getFlags()).thenReturn(new Flags());
+    when(message.getHeader("X-Spam-Flag")).thenReturn(null);
+    assertEquals(Optional.of(Boolean.FALSE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"), "an unmarked mail");
+  }
+
+  /**
+   * A UID the inbox no longer holds reads as gone (null), and the connection is closed
+   * all the same.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerTellsAnUnknownUidAsGone() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    when(inbox.getMessageByUID(78L)).thenReturn(null);
+
+    assertEquals(Optional.empty(), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 78L, "<m1@acme.com>"));
+
+    verify(inbox).close(false);
+    verify(store).close();
+  }
+
+  /**
+   * The cached UID is not trusted alone (EXO-90668): the message found there must carry
+   * the match's Message-ID -- spelled as the server's ENVELOPE may spell it --, or the
+   * mail reads as gone rather than another mail's marks being read for it. A Message-ID
+   * eXo minted for a mail that had none cannot be checked, so the UID is trusted then.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerReadsGoneWhenTheUidHoldsAnotherMail() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    spamReadMessage(inbox, 79L, "<other@acme.com>", new String[] { "YES" }, "$Junk");
+
+    assertEquals(Optional.empty(), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<m1@acme.com>"), "another mail at that UID");
+    assertEquals(Optional.of(Boolean.TRUE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<other@ACME.com>"), "the same id");
+    assertEquals(Optional.of(Boolean.TRUE),
+                 emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, EmailThreadingUtils.synthesizeMessageId(79L, TEST_USER)),
+                 "a minted id is not checked");
+    verify(inbox, times(3)).close(false);
+    verify(store, times(3)).close();
+  }
+
+  /**
+   * A server that cannot be reached or read is an {@link IllegalStateException} for the
+   * guard to wait on -- a credentials failure too --, and whatever was opened is closed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerFailsAsIllegalStateAndClosesWhatItOpened() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    when(inbox.getMessageByUID(80L)).thenThrow(new MessagingException("connection reset"));
+
+    assertThrows(IllegalStateException.class, () -> emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 80L, "<m1@acme.com>"));
+    verify(inbox).close(false);
+    verify(store).close();
+
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new ConnectorCredentialsException("expired"));
+    assertThrows(IllegalStateException.class, () -> emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 80L, "<m1@acme.com>"));
+  }
+
+  /**
+   * A connected owner whose inbox is an open-able mock and whose store is connected.
+   *
+   * @return the store
+   * @throws Exception never
+   */
+  private Store spamReadStore() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class);
+    when(store.getFolder(MailFolder.INBOX)).thenReturn(inbox);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(store.isConnected()).thenReturn(true);
+    return store;
+  }
+
+  /**
+   * A message of the inbox at a UID, with its Message-ID, a spam flag header and keywords.
+   *
+   * @param inbox the inbox
+   * @param uid the UID
+   * @param messageId its Message-ID header
+   * @param spamFlag its X-Spam-Flag values
+   * @param keywords its keywords
+   * @return the message
+   * @throws Exception never
+   */
+  private static Message spamReadMessage(IMAPFolder inbox, long uid, String messageId, String[] spamFlag, String... keywords) throws Exception {
+    Message message = mock(Message.class);
+    when(inbox.getMessageByUID(uid)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    Flags flags = new Flags();
+    for (String keyword : keywords) {
+      flags.add(keyword);
+    }
+    lenient().when(message.getFlags()).thenReturn(flags);
+    lenient().when(message.getHeader("X-Spam-Flag")).thenReturn(spamFlag);
+    return message;
   }
 }

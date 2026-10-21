@@ -21,7 +21,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.io.UnsupportedEncodingException;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -46,6 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.Date;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -59,6 +64,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -93,11 +99,11 @@ import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
 import javax.mail.search.AndTerm;
+import javax.mail.search.BodyTerm;
 import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
-import javax.mail.search.HeaderTerm;
 import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
@@ -124,9 +130,13 @@ import com.sun.mail.iap.Argument;
 import com.sun.mail.iap.Response;
 import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
+import com.sun.mail.imap.IMAPMessage;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 import com.sun.mail.imap.protocol.BASE64MailboxEncoder;
+import com.sun.mail.smtp.SMTPAddressFailedException;
+import com.sun.mail.smtp.SMTPSendFailedException;
+import com.sun.mail.smtp.SMTPSenderFailedException;
 
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
@@ -143,14 +153,23 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.ExportInterruptedException;
+import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.exception.RawEmailCapReachedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.event.CustomFoldersRelocatedEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
+import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailCategoryAdded;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
@@ -159,7 +178,11 @@ import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnerCopy;
+import org.exoplatform.emailConnector.model.RawEmailRef;
+import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.model.SendIdentity;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.ThreadSummary;
@@ -174,6 +197,7 @@ import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
@@ -183,6 +207,8 @@ import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
@@ -196,9 +222,13 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
+import org.exoplatform.emailConnector.service.filters.FilterRunContext;
+import org.exoplatform.emailConnector.service.filters.SpamSignals;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.CappedOutputStream;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
@@ -225,6 +255,26 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class EmailBoxService {
 
+  /**
+   * The texts a mail server's refusal of a sender carries (EXO-90583, EXO-90586): Stalwart
+   * ("You are not allowed to send from this address"), Postfix with a login map ("Sender
+   * address rejected: not owned by user …"), and the send-as wording of servers that grant
+   * it per mailbox. Whole words, case ignored, looked for in a 5xx reply: a false match
+   * in the owner's name records a refusal that switches her consent off.
+   */
+  private static final Pattern    SENDER_POLICY_TEXT                                          =
+                                                     Pattern.compile("\\b(?:not allowed to send from|not owned by|send as|sendas|send on behalf)\\b",
+                                                                     Pattern.CASE_INSENSITIVE);
+
+  /** A reply code opening a server's text, for a failure that carries no code of its own. */
+  private static final Pattern    SMTP_REPLY_CODE                                             = Pattern.compile("^\\s*([2-5]\\d\\d)\\b");
+
+  /** How many failures of one chain are read for a sender refusal, at most. */
+  private static final int        SENDER_REFUSAL_CHAIN_LIMIT                                  = 32;
+
+  /** Control characters, which a display name never keeps. */
+  private static final Pattern    CONTROL_CHARACTERS                                          = Pattern.compile("\\p{Cntrl}");
+
   private static final Log        LOG                                                         =
                                       ExoLogger.getLogger(EmailBoxService.class);
 
@@ -236,6 +286,9 @@ public class EmailBoxService {
   // The message headers this service reads by name. Named once so the prefetch list below and
   // the call sites that read them cannot drift apart: a header missing from the prefetch costs
   // a server round-trip per message, and nothing fails loudly when that happens.
+  /** The MIME type pattern of a message or part made of other parts. */
+  private static final String    MULTIPART_ANY                           = "multipart/*";
+
   private static final String    BROADCAST_ERROR_MESSAGE                 = "Error broadcasting '{}' for user {}";
 
   private static final String     HEADER_REFERENCES                                           = "References";
@@ -262,6 +315,42 @@ public class EmailBoxService {
   // the envelope sender a request is checked against before any receipt may leave
   // without asking. Return-Path is read at sync, never stored as such.
   static final String             HEADER_DISPOSITION_NOTIFICATION_TO                          = "Disposition-Notification-To";
+
+  /**
+   * Who sent a mail written in the owner's name, on the copy filed in her Sent only
+   * (EXO-90583, PO decision Q-7).
+   */
+  static final String             HEADER_EXO_SENT_BY                                          = "X-Exo-Sent-By";
+
+  /**
+   * On the copy of a draft appended to the writer's Drafts folder, the mailbox shared
+   * with the writer the draft was written in (EXO-90598): the share's id, so a draft
+   * re-read from the server -- after its row was lost, or resaved by another client that
+   * keeps unknown headers -- comes back in that mailbox. A client that drops them on
+   * resave returns the draft as the writer's own, unflagged: nothing else on the copy
+   * tells it from a draft the writer wrote there. A hint, never a proof: the import resolves it among the
+   * writer's own shares ({@link EmailDelegationService#requireOwnShare}) and stores
+   * nothing it did not confirm.
+   */
+  static final String             HEADER_EXO_DRAFT_MAILBOX                                    = "X-Exo-Draft-Mailbox";
+
+  /**
+   * Beside {@link #HEADER_EXO_DRAFT_MAILBOX}, the name the draft is to go out in
+   * (EXO-90598): {@code NONE}, {@code ON_BEHALF} or {@code AS}, as the row records it.
+   * Kept on import only when the mailbox resolved; the owner's consent is checked again
+   * at every send, as for any draft.
+   */
+  static final String             HEADER_EXO_DRAFT_SEND_MODE                                  = "X-Exo-Draft-Send-Mode";
+
+  /**
+   * The mailbox an imported draft names when its {@link #HEADER_EXO_DRAFT_MAILBOX} does
+   * not resolve to one of the writer's own shares (EXO-90598): an id no share carries
+   * (the sequence starts at 1), which every reader already takes for "a mailbox that is
+   * no longer shared" -- named so on the draft, and never sent from the writer's own
+   * mailbox instead. Negative rather than zero, which the composer's JavaScript would
+   * read as no mailbox at all. Not the header's id: nothing unconfirmed is stored.
+   */
+  static final long               UNRESOLVED_DRAFT_MAILBOX                                    = -1L;
 
   private static final String     HEADER_RETURN_PATH                                          = "Return-Path";
 
@@ -362,6 +451,40 @@ public class EmailBoxService {
    */
   public static final int                UNDO_MAX_MESSAGE_IDS    = 200;
 
+  /**
+   * How much of a message's RFC 822 source the "Show original" view carries (EXO-90842),
+   * in bytes. A longer message is cut there and marked truncated; its whole source is the
+   * {@code .eml} download. The webapp keeps no copy of this number: it reads the
+   * {@code truncated} flag and the size off each answer.
+   */
+  public static final int                RAW_SOURCE_SHOWN_MAX_BYTES = 512 * 1024;
+
+  /**
+   * Message code answered as a 400 when a folder holds more messages than one export file
+   * may (EXO-90845).
+   */
+  public static final String             EXPORT_TOO_MANY         = "emailConnector.export.tooMany";
+
+  /**
+   * Message code answered as a 400 for a folder mail is not imported into: Drafts, Trash,
+   * Spam, the Scheduled view, All Mail, or a shared mailbox's folder of those roles
+   * (EXO-90846).
+   */
+  public static final String             IMPORT_FOLDER_REFUSED   = "emailConnector.import.folderRefused";
+
+  // The folder keys an import never writes into (EXO-90846): Drafts is authored here,
+  // Trash and Spam have their own meaning, the Scheduled view is not a folder and All
+  // Mail is a conversation cache.
+  private static final Set<String>       NOT_IMPORTABLE_FOLDER_KEYS = Set.of(MailFolder.DRAFTS,
+                                                                             MailFolder.TRASH,
+                                                                             MailFolder.JUNK,
+                                                                             MailFolder.SCHEDULED,
+                                                                             MailFolder.ALL_MAIL);
+
+  // How many messages a whole-folder export reads per opening of the folder (EXO-90845):
+  // the mail library keeps every message a folder gave until it closes.
+  private static final int               EXPORT_FETCH_WINDOW     = 500;
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -375,7 +498,10 @@ public class EmailBoxService {
                                                                                                       HEADER_LIST_UNSUBSCRIBE,
                                                                                                       HEADER_ORIGINAL_SENDER,
                                                                                                       HEADER_DISPOSITION_NOTIFICATION_TO,
-                                                                                                      HEADER_RETURN_PATH);
+                                                                                                      HEADER_RETURN_PATH,
+                                                                                                      HEADER_EXO_DRAFT_MAILBOX,
+                                                                                                      HEADER_EXO_DRAFT_SEND_MODE,
+                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -443,6 +569,10 @@ public class EmailBoxService {
   // envelope fetched, so the result list's cost stays one bounded batched FETCH
   // whatever the match count. The full count is still reported to the caller.
   private static final int        SEARCH_MAX_RESULTS                                          = 50;
+
+  // How many of the newest matches a server search narrowed to the messages with an
+  // attachment examines (EXO-90838): their MIME structure comes in one batched FETCH.
+  static final int                ATTACHMENT_SCAN_LIMIT                                       = 200;
 
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
@@ -578,10 +708,13 @@ public class EmailBoxService {
   // racing user edits over a single JSON blob is how settings get clobbered.
   private static final String     MAILBOX_SYNC_STATE_KEY                                      = "emailBoxSyncState";
 
-  // The nameIds of the add-on's own default email categories (see default-categories.json).
-  // The platform's CategoryImportService persists each nameId -> created category id in
-  // SettingService, so the assignable email category ids are resolved from there.
-  private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
+  /**
+   * The nameIds of the add-on's own default email categories (see default-categories.json):
+   * their stable keys, which a mail filter's category condition names. The platform's
+   * CategoryImportService persists each nameId -> created category id in SettingService,
+   * so the assignable email category ids are resolved from there.
+   */
+  public static final List<String>  DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
                                                                    List.of("emailImportantCategory",
                                                                            "emailInvitationCategory",
                                                                            "emailNotificationCategory",
@@ -631,6 +764,12 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT                   =
                                                                             "User %s is not allowed to get email attachment";
 
+  private static final String     USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL                          =
+                                                                     "User %s is not allowed to get the source of an email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_IMPORT                                 =
+                                                              "User %s is not allowed to import mail into this folder";
+
   private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_OPEN_EMAIL_EVENT_MESSAGE     =
                                                                                           "User %s is not allowed to broadcast open email event";
 
@@ -670,7 +809,7 @@ public class EmailBoxService {
   /**
    * A move whose source and destination are in two different mailboxes -- one of them a
    * mailbox somebody else shared with the caller. A message code rather than a sentence:
-   * unlike the refusals above (which are log-and-401 wording), the interface translates
+   * unlike the refusals above (which are log-and-403 wording), the interface translates
    * this one, and it is a 400 because the request is malformed rather than forbidden.
    */
   static final String             CROSS_MAILBOX_MESSAGE                                       =
@@ -843,6 +982,20 @@ public class EmailBoxService {
   // The message code a draft whose files cannot all be carried is refused with.
   private static final String     ATTACHMENT_GONE_CODE                                        =
                                                        "emailConnector.drafts.send.attachmentGone";
+
+  /**
+   * The message code a draft send naming a mailbox other than the draft's own is refused
+   * with (EXO-90595).
+   */
+  public static final String      MAILBOX_MISMATCH_CODE                                       =
+                                                        "emailConnector.drafts.send.mailboxMismatch";
+
+  /**
+   * The message code a draft's first save naming a mailbox that is not shared with its
+   * writer is refused with (EXO-90595).
+   */
+  public static final String      MAILBOX_NOT_FOUND_CODE                                      =
+                                                         "emailConnector.drafts.save.mailboxNotFound";
 
   // The message code the size cap is refused with, which a scheduled send maps to its own
   // error code rather than letting it read as an internal failure.
@@ -1517,8 +1670,10 @@ public class EmailBoxService {
    * @param previousSnapshot what the last full sync of the folder saw, may be null: a
    *          different UIDVALIDITY moves the INBOX to a new epoch
    * @return the folder's change snapshot as of this sync's SELECT, for the next
-   *         sync's skip-if-unchanged check; null when none could be captured (the
-   *         next sync then simply takes the full path again)
+   *         sync's skip-if-unchanged check; null when none could be captured, or
+   *         when a Drafts message could not be imported -- the snapshot kept is then
+   *         the one from before, which predates that message, so the next sync takes
+   *         the full path again and retries it
    */
   private FolderSyncSnapshot syncFolder(Folder folder,
                           String folderKey,
@@ -1592,8 +1747,12 @@ public class EmailBoxService {
       // be shared is what comes next: the rest of this method treats the server as the
       // truth and the cache as its copy, and for drafts that is exactly backwards.
       if (MailFolder.DRAFTS.equals(folderKey)) {
-        syncDraftRows(uidFolder, serverMessages, folderEmails, knownEmailsByUid, username, userEmailSetting, emailBoxCacheSize);
-        return folderSnapshot;
+        boolean complete = syncDraftRows(uidFolder, serverMessages, folderEmails, knownEmailsByUid, username, userEmailSetting,
+                                         emailBoxCacheSize);
+        // A draft left out -- its mailbox could not be checked, or it could not be read --
+        // must be tried again even if nothing else changes in the folder: no new snapshot,
+        // so the one kept predates it and the skip check cannot pass over it.
+        return complete ? folderSnapshot : null;
       }
       if (notify) {
         // Open the notification window BEFORE anything is broadcast: the groups of new
@@ -3186,7 +3345,9 @@ public class EmailBoxService {
                                                 fetchedParts);
         newEmailIds.addAll(sliceEmailIds);
         if (streamNewEmails) {
-          broadcastGroup.addAll(sliceEmailIds);
+          // The owner's eXo rules run on the slice before it is announced: a mail a rule
+          // filed away is never announced (EXO-90654).
+          broadcastGroup.addAll(runInboxRules(username, uidFolder, messagesOfSlice(uidSlice, messagesByUid), sliceEmailIds));
           slicesSinceBroadcast++;
           // The very first drained slice goes out on its own: it is the ramp's small one, and
           // holding it back for two more would put the mailbox's first paint at the third
@@ -3242,7 +3403,7 @@ public class EmailBoxService {
                                               MimePartStats fetchedParts) throws MessagingException, IllegalAccessException {
     List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey, Map.of(), knownEmailsByUid, fetchedParts);
     if (streamNewEmails) {
-      broadcastNewEmailsSynced(username, newEmailIds);
+      broadcastNewEmailsSynced(username, runInboxRules(username, uidFolder, serverMessages, newEmailIds));
     }
     return newEmailIds;
   }
@@ -3772,6 +3933,222 @@ public class EmailBoxService {
   }
 
   /**
+   * Runs the owner's eXo rules on the inbox mail a sync just cached, before that mail is
+   * announced (EXO-90654). Published as a {@link NewInboxMailEvent}, synchronously, so
+   * the rules act through this service's own methods without this service knowing them.
+   * <p>
+   * What the rules read beyond the cached row comes from the open messages, and only
+   * when a rule asks: the keywords are in the flags the sync fetched anyway
+   * ({@link #buildSyncFetchProfile}), a header or the size is read on demand. Called
+   * for the owner's own inbox only -- the one place {@code streamNewEmails} is set; a
+   * shared inbox's sync never comes here. Never fails the sync: a failure announces
+   * every mail, as if no rule had run.
+   *
+   * @param username the mailbox owner
+   * @param uidFolder the inbox, for the UIDs
+   * @param messages the messages the mails were cached from, possibly more
+   * @param createdUids the UIDs this pass cached
+   * @return the UIDs to announce: the given ones, less those a rule filed away
+   */
+  private List<Long> runInboxRules(String username, UIDFolder uidFolder, Message[] messages, List<Long> createdUids) {
+    if (createdUids == null || createdUids.isEmpty() || messages == null) {
+      return createdUids;
+    }
+    try {
+      Set<Long> created = new HashSet<>(createdUids);
+      List<NewInboxMailEvent.InboxMail> mails = new ArrayList<>();
+      for (Message message : messages) {
+        long uid = uidFolder.getUID(message);
+        if (created.contains(uid)) {
+          mails.add(new NewInboxMailEvent.InboxMail(uid,
+                                                    userKeywords(message),
+                                                    name -> headerValues(message, name),
+                                                    () -> sizeKb(message)));
+        }
+      }
+      NewInboxMailEvent event = new NewInboxMailEvent(username, FilterRunContext.OWN_INBOX, mails);
+      eventPublisher.publishEvent(event);
+      if (event.getFiledUids().isEmpty()) {
+        return createdUids;
+      }
+      return createdUids.stream().filter(uid -> !event.getFiledUids().contains(uid)).toList();
+    } catch (Exception e) {
+      LOG.warn("The mail filters of user {} could not run on {} new message(s); they are announced as they are",
+               username,
+               createdUids.size(),
+               e);
+      return createdUids;
+    }
+  }
+
+  /**
+   * The keywords set on a message, from the flags the sync already fetched.
+   *
+   * @param message the message
+   * @return the keywords, empty when none or unreadable
+   */
+  private static Set<String> userKeywords(Message message) {
+    try {
+      Flags flags = message.getFlags();
+      return flags == null ? Set.of() : Set.of(flags.getUserFlags());
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("The keywords of a new message could not be read", e);
+      return Set.of();
+    }
+  }
+
+  /**
+   * The values of one header of a message, read from the server on demand.
+   *
+   * @param message the message
+   * @param name the header's name
+   * @return the values, empty when absent; null when they cannot be read
+   */
+  private static List<String> headerValues(Message message, String name) {
+    try {
+      String[] values = message.getHeader(name);
+      return values == null ? List.of() : List.of(values);
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("Header {} of a new message could not be read", name, e);
+      return null; // NOSONAR null is "unknown", which no rule acts on
+    }
+  }
+
+  /**
+   * The size of a message in kilobytes, rounded up.
+   *
+   * @param message the message
+   * @return the size; null when it cannot be read
+   */
+  private static Long sizeKb(Message message) {
+    try {
+      int size = message.getSize();
+      return size < 0 ? null : (size + 1023L) / 1024L;
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("The size of a new message could not be read", e);
+      return null;
+    }
+  }
+
+  /**
+   * The first cached row of the owner's own mailbox in a folder carrying a Message-ID,
+   * whole: what a rule's deferred actions and undo act on, found again after a move or a
+   * cache reset renumbered it.
+   *
+   * @param username the mailbox owner
+   * @param mailHeaderId the Message-ID
+   * @param folder the folder key
+   * @return the row with its recipients and attachments, or null when that folder's
+   *         cache holds none
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  // Transactional on its own account, as getOwnMailboxEmailById is: the call below is on
+  // this instance, so it bypasses the proxy and runs without getEmailById's transaction,
+  // and a filter's assistant runs on a background queue thread with no request session to
+  // fall back on, where the message's lazy attachments would fail to load.
+  @Transactional(noRollbackFor = IllegalAccessException.class)
+  public Email getOwnEmailByMailHeaderId(String username, String mailHeaderId, String folder) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    List<Long> ids = emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folder);
+    if (ids.isEmpty()) {
+      return null;
+    }
+    Email email = getEmailById(ids.get(0), username);
+    return email != null && username.equals(email.getUserId()) ? email : null;
+  }
+
+  /**
+   * Whether the cache of one folder of the owner's own mailbox holds a mail with this
+   * Message-ID: a read of the cache, never of the server.
+   *
+   * @param username the mailbox owner
+   * @param mailHeaderId the Message-ID
+   * @param folder the folder key, e.g. {@link MailFolder#JUNK}
+   * @return true when that folder's cache holds one
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public boolean hasOwnEmailInFolder(String username, String mailHeaderId, String folder) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    return StringUtils.isNotBlank(mailHeaderId) && !emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folder).isEmpty();
+  }
+
+  /**
+   * Whether the mail server flagged one of the owner's inbox mails as spam, read live from
+   * the server: its keywords and its spam verdict headers ({@link SpamSignals}). One
+   * connection, the inbox opened read-only, one message fetched; nothing is written. The
+   * cached UID is not trusted alone: the message found there must carry the expected
+   * Message-ID, or the mail is taken as gone -- a mailbox that renumbered itself would
+   * otherwise have another mail's marks read for this one.
+   *
+   * @param username the mailbox owner
+   * @param inboxUid the mail's UID in the inbox, as the cache holds it
+   * @param mailHeaderId the mail's Message-ID; blank, or one eXo minted for a mail that
+   *          had none, when it cannot be checked
+   * @return true or false; empty when the inbox holds no such mail at that UID any more
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalStateException when the server cannot be reached or read
+   */
+  public Optional<Boolean> isFlaggedAsSpamOnServer(String username, long inboxUid, String mailHeaderId) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    Store store = null;
+    Folder inbox = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      inbox = store.getFolder(MailFolder.INBOX);
+      inbox.open(Folder.READ_ONLY);
+      Message message = ((UIDFolder) inbox).getMessageByUID(inboxUid);
+      if (message == null) {
+        return Optional.empty();
+      }
+      FetchProfile profile = new FetchProfile();
+      profile.add(FetchProfile.Item.FLAGS);
+      profile.add(HEADER_MESSAGE_ID);
+      SpamSignals.VERDICT_HEADERS.forEach(profile::add);
+      inbox.fetch(new Message[] { message }, profile);
+      String expected = EmailThreadingUtils.isSynthesizedMessageId(mailHeaderId) ? null : mailHeaderId;
+      if (!isExpectedMessageAtUid(message, expected, inboxUid, MailFolder.INBOX, username)) {
+        return Optional.empty();
+      }
+      return Optional.of(SpamSignals.isFlagged(userKeywords(message), name -> headerValues(message, name)));
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      LOG.debug("The spam marks of inbox mail {} of user {} could not be read", inboxUid, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
+    } finally {
+      try {
+        if (inbox != null && inbox.isOpen()) {
+          inbox.close(false);
+        }
+      } catch (MessagingException messagingException) {
+        LOG.debug("Error when closing the inbox", messagingException);
+      }
+      try {
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
+        }
+      } catch (MessagingException messagingException) {
+        LOG.debug("Error when closing the store", messagingException);
+      }
+    }
+  }
+
+  /**
+   * The mail eXo keeps of the owner's own inbox, as a list reads it -- no recipients, no
+   * body, an excerpt: what a rule's preview and its one-off pass scan.
+   *
+   * @param username the mailbox owner
+   * @return the cached inbox, newest first
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public List<Email> getCachedInbox(String username) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    return emailBoxStorage.getEmails(username, MailFolder.INBOX);
+  }
+
+  /**
    * Broadcasts {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} with the freshly fetched inbox
    * emails' ids so other add-ons can react to new mail (e.g. the enterprise AI
    * auto-categorization). The add-on stays AI-agnostic; a broadcast failure never breaks sync.
@@ -3944,6 +4321,7 @@ public class EmailBoxService {
       // The Drafts folder leaves out the drafts scheduled to be sent: the "Scheduled"
       // view lists them, and they may not be edited while they wait.
       emails = emailBoxStorage.getUnscheduledDrafts(username);
+      nameDraftMailboxes(username, emails);
     } else {
       emails = emailBoxStorage.getEmails(username, folder);
     }
@@ -4262,6 +4640,34 @@ public class EmailBoxService {
   }
 
   /**
+   * The name on the mail server of one of the user's own built-in folders, as the sync
+   * last resolved it: where a server rule files a mail it archives, moves to Junk or
+   * moves to Trash. Read from the sync memory; no connection is opened, so a mailbox
+   * that never synced that folder answers null rather than a guess.
+   *
+   * @param username the mailbox owner
+   * @param folderKey {@link MailFolder#ARCHIVE}, {@link MailFolder#JUNK} or
+   *          {@link MailFolder#TRASH}
+   * @return the folder's full name on the server, or null when the sync has not resolved
+   *         one
+   * @throws IllegalArgumentException {@code emailConnector.folder.unknown} for any other
+   *           key
+   */
+  public String getRememberedFolderName(String username, String folderKey) {
+    if (folderKey == null) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String name = switch (folderKey) {
+    case MailFolder.ARCHIVE -> syncState.getArchiveFolderName();
+    case MailFolder.JUNK -> syncState.getJunkFolderName();
+    case MailFolder.TRASH -> syncState.getTrashFolderName();
+    default -> throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    };
+    return StringUtils.trimToNull(name);
+  }
+
+  /**
    * Admits the folder an undo puts messages back into: any folder a move may take
    * messages OUT of ({@link #canMoveOutOf}), which is wider than the folders it may
    * file INTO -- Sent is a place a message can be moved from and so must be a place it
@@ -4448,11 +4854,13 @@ public class EmailBoxService {
    * (a copy the user made, a duplicate delivery) with nothing to say which is "the"
    * one the move filed.
    * <p>
-   * The server's search is asked first ({@code HEADER Message-ID}, one round-trip,
-   * no message bodies), and its answers are then checked for EXACT equality, the way
-   * {@link #isExpectedMessageAtUid} checks: IMAP's HEADER search is a substring
-   * match, so {@code <a@host>} also answers {@code <a@host.example>}, and a match on
-   * part of an identifier is not an identity.
+   * Found through {@link #searchByMessageId}: the server's search is asked first
+   * ({@code HEADER Message-ID}, one round-trip, no message bodies), with the keys every
+   * server answers (the bare id is all Stalwart matches, EXO-90597), and its answers
+   * are then checked for EXACT equality, the way {@link #isExpectedMessageAtUid}
+   * checks: IMAP's HEADER search is a substring match on most servers, so
+   * {@code <a@host>} also answers {@code <a@host.example>}, and a match on part of an
+   * identifier is not an identity.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
@@ -4472,19 +4880,7 @@ public class EmailBoxService {
       return null;
     }
     String expected = StringUtils.trim(mailHeaderId);
-    // Searched by the id's local part: IMAP SEARCH matches a substring of the raw
-    // header, and the row may hold the ENVELOPE's spelling of a domain literal
-    // (x@10.0.0.1 for x@[10.0.0.1], EXO-90437), which the raw header does not contain.
-    // The exact filter below still decides.
-    Message[] hits = folder.search(new MessageIDTerm(messageIdSearchKey(expected)));
-    List<Message> exact = new ArrayList<>();
-    for (Message hit : hits == null ? new Message[0] : hits) {
-      String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
-      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-      if (sameMessageId(actual, expected)) {
-        exact.add(hit);
-      }
-    }
+    List<Message> exact = searchByMessageId(folder, expected);
     if (exact.isEmpty()) {
       LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
       return null;
@@ -4565,7 +4961,13 @@ public class EmailBoxService {
      * A mail sent from a shared mailbox was filed in its owner's Sent (EXO-90551) -- on
      * the switch of the sender's own Sent re-read, which it is the counterpart of.
      */
-    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it");
+    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it"),
+    /**
+     * Mail imported from files was appended to the folder (EXO-90846,
+     * {@link EmailBoxService#openImportTarget}) -- on the move's switch: like a move, it
+     * files messages into a folder the user then opens to look for them.
+     */
+    IMPORT(MOVE_REFRESH_ENABLED_PROPERTY, "importing message(s) into it");
 
     private final String property;
 
@@ -4866,6 +5268,19 @@ public class EmailBoxService {
   }
 
   /**
+   * Creates one of the user's own folders on the mail server at the top level -- see
+   * {@link #createCustomFolder(String, String, Long)}.
+   *
+   * @param username the mailbox owner
+   * @param name the folder name, as typed
+   * @return the folder as registered
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   */
+  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+    return createCustomFolder(username, name, null);
+  }
+
+  /**
    * Creates one of the user's own folders on the mail server -- the explicit act
    * {@code +} in the folders drawer stands for, and the one this add-on never takes on
    * its own behalf, the single exception being the Archive folder an archive creates on
@@ -4875,10 +5290,10 @@ public class EmailBoxService {
    * user shares with every other client of theirs acceptable here is that the user
    * asked for exactly this, by name, on this screen).
    * <p>
-   * Created flat, directly under the account's own root ({@code store.getDefaultFolder()}):
-   * v1 offers no parent picker, so every folder this add-on creates is top-level, and
-   * a name embedding the mailbox's own hierarchy delimiter is refused rather than
-   * silently nested or silently flattened (see
+   * Created directly under the account's own root ({@code store.getDefaultFolder()}),
+   * or inside one of the user's own folders when a parent is given (EXO-90839): the
+   * parent's full name, its delimiter, then the typed name. The name itself never
+   * embeds the delimiter -- nesting is chosen by the parent, never typed (see
    * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The row is registered
    * directly ({@link EmailFolderService#registerCreatedFolder}, never through
    * {@link #walkAndReconcileFolders}, which would mark every OTHER custom folder of
@@ -4887,28 +5302,41 @@ public class EmailBoxService {
    * and as a "Move to..." target, the moment this call returns.
    *
    * @param username the mailbox owner
-   * @param name the folder name as typed
+   * @param name the folder name, as typed
+   * @param parentId the registry id of the user's own folder to create it in, or null
+   *          for the top level
    * @return the folder as registered -- {@code syncEnabled} false only when the cap
    *         was already reached
-   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalAccessException if the user may not manage their mailbox, or the
+   *           parent is a folder of a mailbox shared with them
    * @throws IllegalArgumentException if the name is blank, too long, reserved, nests
    *           (embeds the delimiter), or is already used by another of this user's
-   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), or the
-   *           server refused the {@code CREATE}
+   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), the
+   *           parent cannot hold it ({@link EmailFolderService#FOLDER_PARENT_INVALID_MESSAGE}),
+   *           or the server refused the {@code CREATE}
    *           ({@link EmailFolderService#FOLDER_CREATE_FAILED_MESSAGE})
    */
-  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+  public MailFolderView createCustomFolder(String username, String name, Long parentId) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
     String trimmedName = emailFolderService.validateFolderName(name);
+    EmailFolder parent = null;
+    if (parentId != null) {
+      // A folder is created inside the caller's own folders only: a shared mailbox's
+      // folders are its owner's to organise.
+      emailDelegationService.checkOwnFolder(username, parentId);
+      parent = emailFolderService.getParentFolder(username, parentId);
+    }
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder defaultFolder = store.getDefaultFolder();
-      String delimiter = defaultNamespaceDelimiter(defaultFolder);
+      String delimiter = parent == null ? defaultNamespaceDelimiter(defaultFolder) : parent.getDelimiter();
       emailFolderService.checkNotNested(trimmedName, delimiter);
-      emailFolderService.checkNameAvailable(username, trimmedName, null);
-      Folder toCreate = defaultFolder.getFolder(trimmedName);
+      String remoteName = parent == null ? trimmedName : parent.getRemoteName() + delimiter + trimmedName;
+      emailFolderService.checkFullNameFits(username, null, remoteName);
+      emailFolderService.checkNameAvailable(username, remoteName, null);
+      Folder toCreate = parent == null ? defaultFolder.getFolder(trimmedName) : store.getFolder(remoteName);
       if (toCreate.exists()) {
         // A folder the server already has under that name, that our registry does not
         // know about yet (created from another client since the last walk, say). The
@@ -4919,7 +5347,7 @@ public class EmailBoxService {
       if (!toCreate.create(Folder.HOLDS_MESSAGES) || !(toCreate instanceof IMAPFolder)) {
         throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
       }
-      EmailFolder registered = emailFolderService.registerCreatedFolder(username, trimmedName, delimiter);
+      EmailFolder registered = emailFolderService.registerCreatedFolder(username, remoteName, trimmedName, delimiter);
       boolean enabled = emailFolderService.tryAutoEnable(username, registered.getId());
       EmailFolder finalFolder = enabled ? emailFolderService.getFolder(username, registered.getId()) : registered;
       return customFolderView(finalFolder, emailBoxStorage.getFolderMessageCounts(username));
@@ -4949,12 +5377,10 @@ public class EmailBoxService {
    * Renames one of the user's own folders, on the server and in the registry.
    * <p>
    * Only the folder's OWN name changes -- the new name replaces the last segment of
-   * its full path, its parent untouched (v1 offers no parent picker; see
-   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The registry row is
-   * updated IN PLACE, after the server confirms the rename, never deleted and
-   * re-created: see {@link EmailFolderService#renameFolder} for why that is what keeps
-   * every mirrored row -- addressed by the row's id, never by its remote name (verified
-   * across this module) -- exactly where it was.
+   * its full path, its parent untouched; a move to another parent is
+   * {@link #moveCustomFolder}. See {@link #relocateCustomFolder} for what follows the
+   * new name: the registry rows of the folder and of every folder inside it, updated in
+   * place, and the folder's shares.
    *
    * @param username the mailbox owner
    * @param id the registry id
@@ -4977,12 +5403,101 @@ public class EmailBoxService {
     String trimmedName = emailFolderService.validateFolderName(newName);
     emailFolderService.checkNotNested(trimmedName, customFolder.getDelimiter());
     String newRemoteName = EmailFolderService.parentPrefix(customFolder.getRemoteName(), customFolder.getDelimiter()) + trimmedName;
+    return relocateCustomFolder(username, userEmailSetting, customFolder, newRemoteName, trimmedName);
+  }
+
+  /**
+   * Moves one of the user's own folders inside another of their folders, or to the top
+   * level, on the server and in the registry (EXO-90839) -- optionally under a new name
+   * in the same step, so a move and a rename are one {@code RENAME} on the server and
+   * never a half-done pair. The folders inside it go with it, as the server moves them.
+   * A folder is never moved inside itself or inside one of its own folders, and only
+   * the owner of the mailbox moves its folders.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id of the folder to move
+   * @param parentId the registry id of the user's own folder to move it into, or null
+   *          for the top level
+   * @param newName the name it takes there, as typed, or null to keep its own
+   * @return the folder as it now stands
+   * @throws IllegalAccessException if the user may not manage their mailbox, or either
+   *           folder belongs to a mailbox shared with them
+   * @throws IllegalArgumentException if either folder is unknown to this user, the
+   *           parent cannot hold it ({@link EmailFolderService#FOLDER_PARENT_INVALID_MESSAGE}),
+   *           the name is invalid or already used there, or the server refused the
+   *           {@code RENAME} ({@link EmailFolderService#FOLDER_RENAME_FAILED_MESSAGE})
+   */
+  public MailFolderView moveCustomFolder(String username, long id, Long parentId, String newName) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    // As for a rename: the folder, and the folder it goes into, are the owner's.
+    emailDelegationService.checkOwnFolder(username, id);
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    String name = newName == null ? EmailFolderService.ownName(customFolder) : emailFolderService.validateFolderName(newName);
+    String newRemoteName;
+    if (parentId == null) {
+      // At the top level its own name is checked as a typed one would be: a folder kept
+      // as "Projects/Archive" must not become the mailbox's Archive by a move.
+      emailFolderService.validateFolderName(name);
+      emailFolderService.checkNotNested(name, customFolder.getDelimiter());
+      newRemoteName = name;
+    } else {
+      emailDelegationService.checkOwnFolder(username, parentId);
+      EmailFolder parent = emailFolderService.getParentFolder(username, parentId);
+      if (parent.getId().equals(customFolder.getId())
+          || EmailFolderService.isInside(parent.getRemoteName(), customFolder.getRemoteName(), customFolder.getDelimiter())) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE);
+      }
+      emailFolderService.checkNotNested(name, parent.getDelimiter());
+      newRemoteName = parent.getRemoteName() + parent.getDelimiter() + name;
+    }
+    return relocateCustomFolder(username, userEmailSetting, customFolder, newRemoteName, name);
+  }
+
+  /**
+   * Gives one of the user's own folders a new full name on the server, then in the
+   * registry -- what a rename and a move both are.
+   * <p>
+   * The registry rows are updated IN PLACE, after the server confirms the
+   * {@code RENAME}, never deleted and re-created: see
+   * {@link EmailFolderService#renameFolder} for why that is what keeps every mirrored
+   * row -- addressed by the row's id, never by its remote name (verified across this
+   * module) -- exactly where it was. The server takes the folders inside it along, and
+   * so does the registry ({@link EmailFolderService#relocateFolder}). A folder the
+   * owner shares one by one follows its new name for its delegates, the folders inside
+   * it with it ({@link EmailDelegationService#ownerFolderChanged}), and so do the server
+   * rules that file into them ({@link CustomFoldersRelocatedEvent}).
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the owner's connector binding
+   * @param customFolder the folder as registered
+   * @param newRemoteName its new full name
+   * @param newDisplayName its new own name
+   * @return the folder as it now stands
+   * @throws IllegalArgumentException if the new name collides with another of this
+   *           user's folders, the folder is gone from the server, or the server refused
+   *           the {@code RENAME}
+   */
+  private MailFolderView relocateCustomFolder(String username,
+                                              UserEmailSetting userEmailSetting,
+                                              EmailFolder customFolder,
+                                              String newRemoteName,
+                                              String newDisplayName) {
     if (newRemoteName.equals(customFolder.getRemoteName())) {
-      // The name typed back is the name it already has: nothing to change, nothing to
-      // risk on the server for it.
+      // The name and place it already has: nothing to change, nothing to risk on the
+      // server for it.
       return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
     }
-    emailFolderService.checkNameAvailable(username, newRemoteName, id);
+    emailFolderService.checkFullNameFits(username, customFolder, newRemoteName);
+    emailFolderService.checkNameAvailable(username, newRemoteName, customFolder.getId());
+    // A folder the mailbox uses as a built-in is never carried along by a rename or a
+    // move of a folder of the user's, as it is never deleted with one: every client and
+    // every server rule filing into it would lose it.
+    for (String builtInName : builtInFolderNames(loadMailboxSyncState(username))) {
+      if (EmailFolderService.isInside(builtInName, customFolder.getRemoteName(), customFolder.getDelimiter())) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE);
+      }
+    }
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
@@ -5006,54 +5521,95 @@ public class EmailBoxService {
     } finally {
       closeQuietly(null, store, username);
     }
-    EmailFolder renamed = emailFolderService.renameFolder(username, id, newRemoteName, trimmedName);
+    List<String> relocatedKeys = new ArrayList<>();
+    relocatedKeys.add(customFolder.getKey());
+    emailFolderService.getOwnDescendants(username, customFolder).forEach(descendant -> relocatedKeys.add(descendant.getKey()));
+    EmailFolder renamed = emailFolderService.relocateFolder(username, customFolder, newRemoteName, newDisplayName);
+    // A folder shared one by one follows its new name for its delegates (EXO-90556).
+    emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), newRemoteName);
+    // And so do the server rules that file into it or into a folder inside it.
+    eventPublisher.publishEvent(new CustomFoldersRelocatedEvent(username, relocatedKeys));
     return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
   }
 
   /**
-   * Deletes one of the user's own folders, on the server and in the registry --
-   * irreversible, and refused outright while the folder still holds mail.
-   * <p>
-   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
-   * their mailbox from, permanently. So: a folder the live server still lists any
-   * messages in is refused whole ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE}) --
-   * the user is told to empty it first, this add-on never cascades a delete into the
-   * messages it would destroy. Only once the server itself says the folder is empty is
-   * the {@code DELETE} issued, non-recursively: a folder that turns out to still have
-   * sub-folders of its own is left to the server's own refusal
-   * ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE}) rather than this code
-   * choosing whether to take them with it. A folder already gone from the server (the
-   * user deleted it from another client since the last walk) is treated as already
-   * deleted: only the local mirror and registry row are cleared, nothing is sent to a
-   * server that no longer has anything to delete.
+   * Deletes one of the user's own folders that has no sub-folders -- see
+   * {@link #deleteCustomFolder(String, long, boolean)}.
    *
    * @param username the mailbox owner
    * @param id the registry id
    * @throws IllegalAccessException if the user may not manage their mailbox
-   * @throws IllegalArgumentException if the folder is unknown to this user, still
-   *           holds mail on the server, or the server refused the {@code DELETE}
    */
   public void deleteCustomFolder(String username, long id) throws IllegalAccessException {
+    deleteCustomFolder(username, id, false);
+  }
+
+  /**
+   * Deletes one of the user's own folders, and the folders inside it when the caller
+   * says so, on the server and in the registry -- irreversible, and refused outright
+   * while any of them still holds mail.
+   * <p>
+   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
+   * their mailbox from, permanently. So: a folder the live server still lists any
+   * messages in, or one of whose sub-folders does, is refused whole
+   * ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE},
+   * {@link EmailFolderService#FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE}) -- the user is told
+   * to empty it first, this add-on never cascades a delete into the messages it would
+   * destroy. A folder with sub-folders on the server is deleted only when the caller
+   * says it deletes them too ({@link EmailFolderService#FOLDER_HAS_SUB_FOLDERS_MESSAGE}
+   * otherwise): the interface asks for that after a confirmation that says so. The
+   * folders are then deleted deepest first, each with a non-recursive {@code DELETE},
+   * the folder itself last; when the server refuses one, what it already deleted is
+   * cleared locally and the rest is left as it is. A folder already gone from the server
+   * (the user deleted it from another client since the last walk) is treated as already
+   * deleted: only the local mirror and registry rows are cleared, nothing is sent to a
+   * server that no longer has anything to delete. The copies the owner's delegates hold
+   * of a folder shared one by one go with it ({@link EmailDelegationService#ownerFolderChanged}).
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param withSubFolders whether the caller deletes the folders inside it too
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, it or one
+   *           of its sub-folders still holds mail on the server, it has sub-folders the
+   *           caller did not say it deletes, or the server refused a {@code DELETE}
+   */
+  public void deleteCustomFolder(String username, long id, boolean withSubFolders) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
     // As for the rename, and with more at stake: this issues a DELETE on the server.
     // A folder of somebody else's mailbox is never destroyed from here.
     emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    List<String> deletedNames = new ArrayList<>();
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder remote = store.getFolder(customFolder.getRemoteName());
       if (remote instanceof IMAPFolder imapFolder && remote.exists()) {
+        List<Folder> subFolders = subFoldersDeepestFirst(imapFolder);
+        if (!subFolders.isEmpty() && !withSubFolders) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_HAS_SUB_FOLDERS_MESSAGE);
+        }
         if (imapFolder.getMessageCount() != 0) {
           throw new IllegalArgumentException(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE);
         }
-        if (imapFolder.isOpen()) {
-          imapFolder.close(false);
+        Set<String> builtInNames = builtInFolderNames(loadMailboxSyncState(username));
+        for (Folder subFolder : subFolders) {
+          if (builtInNames.contains(subFolder.getFullName())) {
+            throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE);
+          }
         }
-        if (!imapFolder.delete(false)) {
-          throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+        for (Folder subFolder : subFolders) {
+          if ((subFolder.getType() & Folder.HOLDS_MESSAGES) != 0 && subFolder.getMessageCount() != 0) {
+            throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE);
+          }
         }
+        for (Folder subFolder : subFolders) {
+          deleteRemoteFolder(subFolder);
+          deletedNames.add(subFolder.getFullName());
+        }
+        deleteRemoteFolder(imapFolder);
       } else {
         LOG.info("Folder '{}' of user {} is already gone from the server; clearing its local mirror",
                  customFolder.getRemoteName(),
@@ -5061,12 +5617,104 @@ public class EmailBoxService {
       }
     } catch (MessagingException | ConnectorCredentialsException e) {
       LOG.warn("Could not delete folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+      forgetDeletedSubFolders(username, customFolder, deletedNames);
       throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    } catch (IllegalArgumentException e) {
+      forgetDeletedSubFolders(username, customFolder, deletedNames);
+      throw e;
     } finally {
       closeQuietly(null, store, username);
     }
+    for (EmailFolder descendant : emailFolderService.getOwnDescendants(username, customFolder)) {
+      deleteUserEmails(username, descendant.getKey());
+      emailFolderService.removeFolder(username, descendant.getId());
+    }
     deleteUserEmails(username, customFolder.getKey());
     emailFolderService.removeFolder(username, id);
+    // Its delegates' copies go with it, the folders inside it included (EXO-90556).
+    emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), null);
+  }
+
+  /**
+   * The folders inside a folder on the server, at any depth, deepest first: a longer
+   * full name is never an ancestor of a shorter one, so the order deletes every folder
+   * before the folder that holds it.
+   *
+   * @param folder the folder
+   * @return the folders inside it, possibly empty, never null
+   * @throws MessagingException if the server cannot list them
+   */
+  private static List<Folder> subFoldersDeepestFirst(IMAPFolder folder) throws MessagingException {
+    Folder[] listed = folder.list("*");
+    if (listed == null) {
+      return List.of();
+    }
+    return Arrays.stream(listed)
+                 .filter(Objects::nonNull)
+                 .filter(subFolder -> !StringUtils.equals(subFolder.getFullName(), folder.getFullName()))
+                 .sorted(Comparator.comparingInt((Folder subFolder) -> StringUtils.length(subFolder.getFullName())).reversed())
+                 .toList();
+  }
+
+  /**
+   * The full names of the folders the mailbox uses as its built-ins, as the last walk
+   * remembered them.
+   *
+   * @param syncState the mailbox's sync memory
+   * @return the names, possibly empty
+   */
+  private static Set<String> builtInFolderNames(MailboxSyncState syncState) {
+    Set<String> names = new HashSet<>();
+    for (String name : new String[] { syncState.getSentFolderName(), syncState.getArchiveFolderName(),
+        syncState.getDraftsFolderName(), syncState.getTrashFolderName(), syncState.getJunkFolderName() }) {
+      if (StringUtils.isNotBlank(name)) {
+        names.add(name);
+      }
+    }
+    return names;
+  }
+
+  /**
+   * One non-recursive {@code DELETE}, its refusal translated. A folder the server no
+   * longer has once the {@code DELETE} is refused counts as deleted: a container the
+   * server lists only while something is inside it ({@code \Noselect}) goes by itself
+   * with the last folder inside it, and its own {@code DELETE} then answers NO.
+   *
+   * @param folder the folder to delete
+   * @throws MessagingException if the server cannot be asked
+   * @throws IllegalArgumentException if the server refused it
+   *           ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE})
+   */
+  private static void deleteRemoteFolder(Folder folder) throws MessagingException {
+    if (folder.isOpen()) {
+      folder.close(false);
+    }
+    if (!folder.delete(false) && folder.exists()) {
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    }
+  }
+
+  /**
+   * After a delete the server refused part-way: the sub-folders it already deleted are
+   * cleared locally -- their mirror, their registry row, their delegates' copies -- so
+   * nothing lists a folder the server no longer has; the folder itself and what is left
+   * inside it stay as they are.
+   *
+   * @param username the mailbox owner
+   * @param customFolder the folder the delete was asked for
+   * @param deletedNames the full names of the sub-folders the server deleted
+   */
+  private void forgetDeletedSubFolders(String username, EmailFolder customFolder, List<String> deletedNames) {
+    if (deletedNames.isEmpty()) {
+      return;
+    }
+    for (EmailFolder descendant : emailFolderService.getOwnDescendants(username, customFolder)) {
+      if (deletedNames.contains(descendant.getRemoteName())) {
+        deleteUserEmails(username, descendant.getKey());
+        emailFolderService.removeFolder(username, descendant.getId());
+      }
+    }
+    deletedNames.forEach(name -> emailDelegationService.ownerFolderChanged(username, name, null));
   }
 
   /**
@@ -5501,6 +6149,643 @@ public class EmailBoxService {
     }
   }
 
+  /**
+   * A message's header block and RFC 822 source, as text, for the "Show original" view
+   * (EXO-90842). Read through {@link #writeRawEmail}, so every rule of that read holds
+   * here: the same access check, the same 404 cases. The source stops at
+   * {@link #RAW_SOURCE_SHOWN_MAX_BYTES}, and the read from the mail server stops with it.
+   * <p>
+   * Decoded as UTF-8, invalid sequences replaced: the source is 7-bit in the common case,
+   * UTF-8 when a part is sent 8bit, and a byte the decoder cannot read is shown as a
+   * replacement character rather than refused. A cut through a multi-byte character shows
+   * the same way at the very end.
+   *
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param username the reader
+   * @param folder the folder the reader lists the message in; INBOX when blank
+   * @return the source, or null when the reader has no such message there
+   * @throws IllegalAccessException when the reader may not read their mailbox, or, in a
+   *           mailbox shared with them, lacks the read right on that folder
+   */
+  public RawEmailSource getRawEmailSource(long mailRemoteId, String username, String folder) throws IllegalAccessException {
+    try (CappedOutputStream captured = new CappedOutputStream(RAW_SOURCE_SHOWN_MAX_BYTES)) {
+      AtomicInteger reportedSize = new AtomicInteger(-1);
+      boolean found = writeRawEmail(mailRemoteId, username, folder, (subject, size) -> {
+        reportedSize.set(size);
+        return captured;
+      });
+      if (!found) {
+        return null;
+      }
+      byte[] bytes = captured.toByteArray();
+      String source = new String(bytes, StandardCharsets.UTF_8);
+      RawEmailSource rawEmailSource = new RawEmailSource();
+      rawEmailSource.setSource(source);
+      rawEmailSource.setHeaders(headerBlock(source));
+      rawEmailSource.setTruncated(captured.isCapped());
+      rawEmailSource.setShownBytes(bytes.length);
+      rawEmailSource.setSize(reportedSize.get() >= 0 ? reportedSize.get() : bytes.length);
+      return rawEmailSource;
+    } catch (IOException e) {
+      throw new IllegalStateException("The captured source could not be closed", e);
+    }
+  }
+
+  /**
+   * Writes a message's RFC 822 source, as the mail server holds it, to a sink (EXO-90842):
+   * the {@code .eml} download and the "Show original" view.
+   * <p>
+   * <b>Who may read it is the whole of this method.</b> A UID is a small number anybody can
+   * guess, and the source is the mail itself, so the read is refused or answered empty in
+   * this order, before the sink is ever asked for its stream:
+   * <ol>
+   * <li>the reader must be allowed to use their own mailbox ({@code canConnect}), or the
+   * answer is a refusal, as for every other read;</li>
+   * <li>in a folder of a mailbox somebody shared with the reader, the share must still be
+   * accepted ({@link DelegationRevokedException} otherwise) and the reader must hold the
+   * RFC 4314 read right on THAT folder ({@link MailboxRightMissingException} otherwise) --
+   * the check every write already makes, with the letter a read needs;</li>
+   * <li>the reader must have the message cached under that folder and that UID. The cache
+   * is per user, so a UID taken from somebody else's mailbox, or a folder key of a share
+   * the reader is not given, finds nothing here and the answer is "no such message" --
+   * never a read of the mail server on a guess;</li>
+   * <li>the remote folder is resolved the way its rows were cached
+   * ({@link #resolveCachedFolder}), on the reader's own connection, so the mail server
+   * enforces its own rights on top; and the message found under that UID must carry the
+   * Message-ID the row was cached with, when both have one, so a UID the server
+   * renumbered since the last sync is not answered with another message.</li>
+   * </ol>
+   * The folder is opened read-only and the message fetched with PEEK, so reading the
+   * source never marks the message as read.
+   *
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param username the reader
+   * @param folder the folder the reader lists the message in; INBOX when blank
+   * @param sink where the source goes, opened once the message is found
+   * @return true when the source was written, false when the reader has no such message
+   * @throws IllegalAccessException when the reader may not read their mailbox, or, in a
+   *           mailbox shared with them, lacks the read right on that folder
+   * @throws IllegalStateException when the mail server could not be read before the sink
+   *           was opened
+   */
+  public boolean writeRawEmail(long mailRemoteId,
+                               String username,
+                               String folder,
+                               RawEmailSink sink) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, cachedFolder, MailboxRights.READ);
+    Email cached = emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, null, cachedFolder, false, false, false);
+    if (cached == null) {
+      return false;
+    }
+    Store store = null;
+    Folder remote = null;
+    boolean opened = false;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, cachedFolder, username);
+      if (!(remote instanceof UIDFolder uidFolder)) {
+        return false;
+      }
+      remote.open(Folder.READ_ONLY);
+      Message message = uidFolder.getMessageByUID(mailRemoteId);
+      if (!(message instanceof MimeMessage mimeMessage) || !isCachedMessage(cached, mimeMessage)) {
+        return false;
+      }
+      if (mimeMessage instanceof IMAPMessage imapMessage) {
+        imapMessage.setPeek(true);
+      }
+      OutputStream out = sink.open(cached.getSubject(), mimeMessage.getSize());
+      opened = true;
+      mimeMessage.writeTo(out);
+      out.flush();
+      return true;
+    } catch (RawEmailCapReachedException capReached) {
+      // The sink holds all it may; the rest of the message is deliberately not read.
+      return true;
+    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      if (opened) {
+        // The answer is already under way (a download the browser cancelled, a connection
+        // dropped mid-copy): nothing is left to answer with, and it is not an incident.
+        LOG.debug("Raw source of message {} in folder {} of user {} stopped mid-copy", mailRemoteId, cachedFolder, username, e);
+        return true;
+      }
+      LOG.warn("Could not read the raw source of message {} in folder {} of user {}", mailRemoteId, cachedFolder, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(remote, store, username);
+    }
+  }
+
+  /**
+   * Whether the message the server holds under a UID is the one the reader's row was cached
+   * from, by the class's one rule of Message-ID identity ({@link #sameMessageId}). A row or
+   * a message without one cannot be compared and is taken as the same, which is all a UID
+   * read could ever say about it.
+   *
+   * @param cached the reader's cached row
+   * @param message the message the server answered for that UID
+   * @return false only when both carry a Message-ID and the two differ
+   * @throws MessagingException when the header cannot be read
+   */
+  private boolean isCachedMessage(Email cached, MimeMessage message) throws MessagingException {
+    String remoteId = message.getMessageID();
+    return StringUtils.isBlank(cached.getMailHeaderId()) || StringUtils.isBlank(remoteId)
+        || sameMessageId(remoteId, cached.getMailHeaderId());
+  }
+
+  /**
+   * The header block at the top of an RFC 822 source: everything up to the first empty
+   * line, CRLF or bare LF alike, or the whole text when it holds none (a source cut short
+   * inside its headers).
+   *
+   * @param source the source, from its first byte
+   * @return the header block, without the empty line that ends it
+   */
+  private static String headerBlock(String source) {
+    int crlf = source.indexOf("\r\n\r\n");
+    int lf = source.indexOf("\n\n");
+    int end;
+    if (crlf < 0) {
+      end = lf;
+    } else if (lf < 0) {
+      end = crlf;
+    } else {
+      end = Math.min(crlf, lf);
+    }
+    return end < 0 ? source : source.substring(0, end);
+  }
+
+  /**
+   * The caller's mailbox setting, when they may use their mailbox at all: connected, on a
+   * connector they may connect to. The first step of every raw read and of every import
+   * (EXO-90842, EXO-90845, EXO-90846), refused before anything else is read.
+   *
+   * @param username the caller
+   * @param refusal the refusal's message format, given the username
+   * @return the caller's setting, never null
+   * @throws IllegalAccessException when the caller may not use their mailbox
+   */
+  private UserEmailSetting requireConnectable(String username, String refusal) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(refusal, username));
+    }
+    return userEmailSetting;
+  }
+
+  /**
+   * The cached rows of messages named by the mailbox list, for an export (EXO-90845): the
+   * rule of {@link #writeRawEmail} applied to each, and ALL of them checked before any is
+   * read. The caller may use their mailbox; every shared folder named is still shared
+   * with them and they hold its read right; every message is in their own cache under
+   * that folder and that UID. A reference repeated is kept once.
+   * <p>
+   * <b>Refuse-all, never skip.</b> One message refused, or not in the cache, refuses the
+   * whole export: the selection came from the caller's own list, so a reference it does
+   * not hold is a stale list or a forged one, and an archive quietly missing some of what
+   * the user ticked is the outcome this check exists to rule out. The checks read the
+   * database only, so the whole answer is known before a byte is written.
+   *
+   * @param username the caller
+   * @param refs the messages, as the list names them
+   * @return the cached rows in the order named, or null when one of them is not in the
+   *         caller's cache
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on one of the shared folders named
+   */
+  public List<Email> getExportableEmails(String username, List<RawEmailRef> refs) throws IllegalAccessException {
+    requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    Set<String> checkedFolders = new HashSet<>();
+    Set<String> seen = new HashSet<>();
+    List<Email> rows = new ArrayList<>();
+    for (RawEmailRef ref : refs) {
+      String folderKey = StringUtils.defaultIfBlank(ref.getFolder(), MailFolder.INBOX);
+      if (!seen.add(folderKey + "/" + ref.getMailRemoteId())) {
+        continue;
+      }
+      if (checkedFolders.add(folderKey)) {
+        checkDelegatedRight(username, folderKey, MailboxRights.READ);
+      }
+      Email cached = emailBoxStorage.getEmailByMailRemoteIdAndUserId(ref.getMailRemoteId(), username, null, folderKey, false, false, false);
+      if (cached == null) {
+        return null; // NOSONAR the caller tells "no such message" from an empty export
+      }
+      // The row says the folder it is cached under; the export reads it back from there.
+      cached.setFolder(folderKey);
+      rows.add(cached);
+    }
+    return rows;
+  }
+
+  /**
+   * Reads the messages named by the mailbox list, as the mail server holds them, and
+   * hands them one by one to a visitor (EXO-90845: "Download as .zip"). Every check of
+   * {@link #getExportableEmails} runs first, every folder is resolved the way its rows
+   * were cached ({@link #resolveCachedFolder}) on the caller's own connection, and only
+   * then is {@link RawEmailVisitor#begin} called. Each folder is opened read-only and
+   * each message fetched with PEEK, so an export never marks mail read; one connection
+   * serves the whole export.
+   * <p>
+   * Once the export began, nothing the mail server does is left unsaid: a message it no
+   * longer holds under its UID, holds another message under (by
+   * {@link #isCachedMessage}), or fails to give -- a folder renamed since the check, a
+   * connection dropped mid-way -- is handed to {@link RawEmailVisitor#missing}, every
+   * one of them, for the visitor to report in the file. Only a failure of the output
+   * itself ({@link ExportOutputClosedException}: the reader left) ends the export
+   * quietly.
+   *
+   * @param username the caller
+   * @param refs the messages, as the list names them
+   * @param visitor where the messages go
+   * @return true when the export ran, false when a message or a folder named is not the
+   *         caller's
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on a shared folder named
+   * @throws IllegalStateException when the mail server could not be read before the
+   *           export began
+   */
+  public boolean readRawEmails(String username, List<RawEmailRef> refs, RawEmailVisitor visitor) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    List<Email> rows = getExportableEmails(username, refs);
+    if (rows == null) {
+      return false;
+    }
+    Map<String, List<Email>> byFolder = new LinkedHashMap<>();
+    rows.forEach(row -> byFolder.computeIfAbsent(row.getFolder(), key -> new ArrayList<>()).add(row));
+    Store store = null;
+    Map<String, Folder> remotes = new LinkedHashMap<>();
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      for (String folderKey : byFolder.keySet()) {
+        Folder resolved = resolveCachedFolder(store, folderKey, username);
+        if (!(resolved instanceof UIDFolder)) {
+          closeQuietly(null, store, username);
+          return false;
+        }
+        remotes.put(folderKey, resolved);
+      }
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(null, store, username);
+      LOG.warn("Could not read {} message(s) of user {} for an export", rows.size(), username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+    try {
+      visitor.begin(rows.size());
+      for (Map.Entry<String, List<Email>> group : byFolder.entrySet()) {
+        visitFolderGroup(remotes.get(group.getKey()), group.getValue(), visitor, username);
+      }
+    } catch (ExportOutputClosedException e) {
+      // The reader left: a download the browser cancelled, a connection that dropped.
+      // Nothing is left to answer with, and it is not an incident.
+      LOG.debug("Export of {} message(s) of user {} stopped: the output is closed", rows.size(), username, e);
+    } catch (IOException e) {
+      LOG.debug("Export of {} message(s) of user {} stopped on its output", rows.size(), username, e);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    return true;
+  }
+
+  /**
+   * Hands the messages of one folder to the visitor, in the order named: the folder
+   * opened read-only, the messages fetched by UID in one command and their envelopes in
+   * one more, each checked against its cached row. A message the server does not give,
+   * and every message not yet handed over when the folder fails -- to open, to fetch,
+   * mid-way -- goes to {@link RawEmailVisitor#missing}, never silently away.
+   *
+   * @param folder the folder, closed
+   * @param rows the cached rows of that folder
+   * @param visitor where the messages go
+   * @param username the caller, for the log
+   * @throws IOException when the visitor's output fails
+   */
+  private void visitFolderGroup(Folder folder, List<Email> rows, RawEmailVisitor visitor, String username) throws IOException {
+    int visited = 0;
+    try {
+      folder.open(Folder.READ_ONLY);
+      long[] uids = rows.stream().mapToLong(Email::getMailRemoteId).toArray();
+      Message[] messages = ((UIDFolder) folder).getMessagesByUID(uids);
+      Message[] found = Arrays.stream(messages).filter(Objects::nonNull).toArray(Message[]::new);
+      if (found.length > 0) {
+        FetchProfile profile = new FetchProfile();
+        profile.add(FetchProfile.Item.ENVELOPE);
+        folder.fetch(found, profile);
+      }
+      for (; visited < rows.size(); visited++) {
+        Email row = rows.get(visited);
+        Message message = visited < messages.length ? messages[visited] : null;
+        if (!(message instanceof MimeMessage mimeMessage) || message.isExpunged() || !isCachedMessage(row, mimeMessage)) {
+          visitor.missing(row);
+          continue;
+        }
+        if (mimeMessage instanceof IMAPMessage imapMessage) {
+          imapMessage.setPeek(true);
+        }
+        visitor.message(row, mimeMessage);
+      }
+    } catch (MessagingException | RuntimeException e) {
+      LOG.warn("Folder {} of user {} failed during an export; {} message(s) are reported as not exported",
+               rows.get(0).getFolder(),
+               username,
+               rows.size() - visited,
+               e);
+      for (; visited < rows.size(); visited++) {
+        visitor.missing(rows.get(visited));
+      }
+    } finally {
+      closeQuietly(folder, null, username);
+    }
+  }
+
+  /**
+   * How many messages a folder holds on the mail server, for the check an export makes
+   * before its download starts (EXO-90845: "Export folder as .mbox"). The access rule of
+   * {@link #readFolderRawEmails}, without opening the folder.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @return the count, or -1 when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on that shared folder
+   * @throws IllegalStateException when the mail server could not be read
+   */
+  public int countFolderRawEmails(String username, String folder) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, folderKey, MailboxRights.READ);
+    if (!isExportableFolderKey(folderKey)) {
+      return -1;
+    }
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      Folder remote = resolveCachedFolder(store, folderKey, username);
+      return remote == null ? -1 : remote.getMessageCount();
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      LOG.warn("Could not count folder {} of user {} for an export", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * Reads a whole folder as the mail server holds it, oldest first, and hands its
+   * messages to a visitor (EXO-90845: "Export folder as .mbox", a backup or a move to
+   * another mail application).
+   * <p>
+   * The access rule is {@link #writeRawEmail}'s, for a folder: the caller may use their
+   * mailbox; in a shared folder the share is still accepted and the caller holds its read
+   * right. The folder is resolved through the caller's own folder registry, so a key the
+   * caller was not given names nothing here -- which is what the per-message cache check
+   * guards against for a UID, and why the folder's messages are read from the server
+   * rather than from the cache: the cache keeps a window of each folder, and a backup
+   * that stopped at that window would be a silent loss.
+   * <p>
+   * The folder is opened read-only and every message fetched with PEEK. Its UIDs are read
+   * first; the messages are then read {@code EXPORT_FETCH_WINDOW} at a time, the folder
+   * reopened for each window, because the mail library keeps every message a folder gave
+   * until that folder closes: what stays in memory is one window's envelopes and the
+   * UIDs. A message expunged meanwhile is not in its window, and is not part of the
+   * folder any more. A failure of the mail server once the export began -- or a message
+   * the visitor could not copy whole ({@link ExportInterruptedException}) -- ends the
+   * reading, and {@link RawEmailVisitor#interrupted} has the file say so: the answer is
+   * committed by then, and a failure thrown out of the request would not reach the
+   * browser as one (the WAR's error page filter ends a committed response normally).
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @param max the most messages the export may hold; above it nothing is read
+   * @param visitor where the messages go
+   * @return true when the export ran, false when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on that shared folder
+   * @throws IllegalArgumentException {@link #EXPORT_TOO_MANY} when the folder holds more
+   *           than {@code max} messages
+   * @throws IllegalStateException when the mail server could not be read before the
+   *           export began
+   */
+  public boolean readFolderRawEmails(String username, String folder, int max, RawEmailVisitor visitor) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, folderKey, MailboxRights.READ);
+    if (!isExportableFolderKey(folderKey)) {
+      return false;
+    }
+    Store store = null;
+    Folder remote = null;
+    long[] uids;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, folderKey, username);
+      if (!(remote instanceof UIDFolder)) {
+        closeQuietly(null, store, username);
+        return false;
+      }
+      remote.open(Folder.READ_ONLY);
+      if (remote.getMessageCount() > max) {
+        throw new IllegalArgumentException(EXPORT_TOO_MANY);
+      }
+      uids = folderUids(remote);
+      remote.close(false);
+    } catch (IllegalArgumentException e) {
+      closeQuietly(remote, store, username);
+      throw e;
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(remote, store, username);
+      LOG.warn("Could not read folder {} of user {} for an export", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+    int[] handed = new int[1];
+    try {
+      visitor.begin(uids.length);
+      for (int start = 0; start < uids.length; start += EXPORT_FETCH_WINDOW) {
+        visitFolderWindow(remote, Arrays.copyOfRange(uids, start, Math.min(uids.length, start + EXPORT_FETCH_WINDOW)), visitor, handed);
+      }
+    } catch (ExportOutputClosedException e) {
+      LOG.debug("Export of folder {} of user {} stopped: the output is closed", folderKey, username, e);
+    } catch (IOException | MessagingException | RuntimeException e) {
+      LOG.warn("Export of folder {} of user {} was interrupted after {} of {} message(s)", folderKey, username, handed[0], uids.length, e);
+      tellInterrupted(visitor, handed[0], uids.length, folderKey, username);
+    } finally {
+      closeQuietly(remote, store, username);
+    }
+    return true;
+  }
+
+  /**
+   * Has the visitor say, in the file, that the mail server failed and how far the export
+   * got -- the file being the one place sure to reach the reader once the answer is under
+   * way. A reader who left meanwhile is not an incident.
+   *
+   * @param visitor the export's visitor
+   * @param handed how many messages it was handed
+   * @param count how many the folder held
+   * @param folderKey the folder key, for the log
+   * @param username the caller, for the log
+   */
+  private static void tellInterrupted(RawEmailVisitor visitor, int handed, int count, String folderKey, String username) {
+    try {
+      visitor.interrupted(handed, count);
+    } catch (IOException e) {
+      LOG.debug("The interruption of the export of folder {} of user {} could not be written", folderKey, username, e);
+    }
+  }
+
+  /**
+   * The UIDs of an open folder, oldest first: one FETCH of the UIDs alone.
+   *
+   * @param folder the open folder
+   * @return the UIDs
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static long[] folderUids(Folder folder) throws MessagingException {
+    Message[] messages = folder.getMessages();
+    FetchProfile profile = new FetchProfile();
+    profile.add(UIDFolder.FetchProfileItem.UID);
+    folder.fetch(messages, profile);
+    long[] uids = new long[messages.length];
+    for (int i = 0; i < messages.length; i++) {
+      uids[i] = ((UIDFolder) folder).getUID(messages[i]);
+    }
+    return uids;
+  }
+
+  /**
+   * Hands one window of a folder's messages to the visitor: the folder reopened, the
+   * window fetched by UID with its envelopes, closed again so the library forgets it.
+   *
+   * @param folder the folder, closed
+   * @param uids the window's UIDs
+   * @param visitor where the messages go
+   * @param handed how many messages are in the file so far, the last possibly in part,
+   *          counted on
+   * @throws IOException when the visitor's output fails
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static void visitFolderWindow(Folder folder,
+                                        long[] uids,
+                                        RawEmailVisitor visitor,
+                                        int[] handed) throws IOException, MessagingException {
+    folder.open(Folder.READ_ONLY);
+    try {
+      Message[] window = Arrays.stream(((UIDFolder) folder).getMessagesByUID(uids)).filter(Objects::nonNull).toArray(Message[]::new);
+      FetchProfile profile = new FetchProfile();
+      profile.add(FetchProfile.Item.ENVELOPE);
+      folder.fetch(window, profile);
+      for (Message message : window) {
+        if (message instanceof MimeMessage mimeMessage && !message.isExpunged()) {
+          if (mimeMessage instanceof IMAPMessage imapMessage) {
+            imapMessage.setPeek(true);
+          }
+          try {
+            visitor.message(null, mimeMessage);
+          } catch (ExportInterruptedException e) {
+            // Cut mid-copy: it is in the file in part, and the notice counts it as such.
+            handed[0]++;
+            throw e;
+          }
+          handed[0]++;
+        }
+      }
+    } finally {
+      if (folder.isOpen()) {
+        folder.close(false);
+      }
+    }
+  }
+
+  /**
+   * Whether a folder key names a folder a whole-folder export reads: any folder of the
+   * mailbox, but not the Scheduled view, which is a list of drafts rather than a folder,
+   * nor All Mail, the Gmail superset the add-on reads for conversations only.
+   *
+   * @param folderKey the key
+   * @return true for a folder that can be exported whole
+   */
+  private static boolean isExportableFolderKey(String folderKey) {
+    return !MailFolder.SCHEDULED.equals(folderKey) && !MailFolder.ALL_MAIL.equals(folderKey);
+  }
+
+  /**
+   * Checks that the caller may import mail into a folder (EXO-90846), without contacting
+   * the mail server: they may use their mailbox; the folder is one mail is filed into
+   * (not Drafts, Trash, Spam, the Scheduled view or All Mail, nor a shared mailbox's
+   * folder of those roles); in a shared mailbox the share is still accepted and the
+   * caller holds the RFC 4314 insert right ({@code i}) on THAT folder.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @throws IllegalAccessException when the caller may not use their mailbox, or lacks
+   *           the insert right on that shared folder
+   * @throws IllegalArgumentException {@link #IMPORT_FOLDER_REFUSED} for a folder mail is
+   *           not imported into
+   */
+  public void checkImportTarget(String username, String folder) throws IllegalAccessException {
+    requireConnectable(username, USER_NOT_ALLOWED_FOR_IMPORT);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    if (NOT_IMPORTABLE_FOLDER_KEYS.contains(folderKey)) {
+      throw new IllegalArgumentException(IMPORT_FOLDER_REFUSED);
+    }
+    FolderRole role = emailDelegationService.roleOf(username, folderKey);
+    if (role == FolderRole.DRAFTS || role == FolderRole.TRASH || role == FolderRole.JUNK) {
+      throw new IllegalArgumentException(IMPORT_FOLDER_REFUSED);
+    }
+    checkDelegatedRight(username, folderKey, MailboxRights.INSERT);
+  }
+
+  /**
+   * Opens a folder for an import (EXO-90846): every check of {@link #checkImportTarget},
+   * then the folder resolved through the caller's own registry on their own connection,
+   * opened read-only for the run to ask whether a Message-ID is already there
+   * ({@link MailImportTarget#contains}: one IMAP search per mail, so what this server
+   * holds in memory and receives follows what is imported, not the folder's size; each
+   * search is still evaluated by the mail server over the folder). The target holds the connection until it is
+   * closed; closing it queues a re-read of the folder when mail was added, so the new
+   * rows appear in the list without waiting for the next check.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @return the open target, or null when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not use their mailbox, or lacks
+   *           the insert right on that shared folder
+   * @throws IllegalArgumentException {@link #IMPORT_FOLDER_REFUSED} for a folder mail is
+   *           not imported into
+   * @throws IllegalStateException when the mail server could not be read
+   */
+  public MailImportTarget openImportTarget(String username, String folder) throws IllegalAccessException {
+    checkImportTarget(username, folder);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    Store store = null;
+    Folder remote = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, folderKey, username);
+      if (remote == null) {
+        closeQuietly(null, store, username);
+        return null;
+      }
+      remote.open(Folder.READ_ONLY);
+      Store openStore = store;
+      Folder target = remote;
+      return new MailImportTarget(target, appended -> {
+        closeQuietly(target, openStore, username);
+        if (appended > 0) {
+          scheduleFolderRefresh(username, folderKey, FolderRefreshCause.IMPORT);
+        }
+      });
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(remote, store, username);
+      LOG.warn("Could not open folder {} of user {} for an import", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+  }
+
+
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
@@ -5729,12 +7014,16 @@ public class EmailBoxService {
    * (EXO-90557). {@link #getOwnedEmailById} checks the row is this user's; a row of a
    * mailbox somebody shared with them is theirs too, as a mirror, but it is its owner's
    * mail, and the agent's write tools act on the user's own INBOX by UID, where that
-   * UID names another message. Answered as not found, like an id that is not theirs.
+   * UID names another message. Answered as not found, like an id that is not theirs --
+   * and so is the row of another user: row ids are global, and a guessed or mistaken id
+   * (a mail_remote_id passed in its place) must neither be told "not allowed" nor learn
+   * that such a row exists.
    *
    * @param id the local id
    * @param username the reader
    * @return the message, null when it is not in the user's own mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
    */
   // Transactional on its own account, as getOwnedEmailById is: the call below is on
   // this instance, so it bypasses the proxy and runs without that method's transaction,
@@ -5742,11 +7031,331 @@ public class EmailBoxService {
   // attachments then fail to load (live regression, MCP get_email_by_id).
   @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnMailboxEmailById(long id, String username) throws IllegalAccessException {
-    Email email = getOwnedEmailById(id, username);
+    Email email = ownedOrNull(id, username);
     if (email != null && emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       return null;
     }
     return email;
+  }
+
+  /**
+   * One message of a mailbox shared with the user by its local id -- what an agent that
+   * named that mailbox is handed (EXO-90555), the counterpart of
+   * {@link #getOwnMailboxEmailById}. The row must be the user's (its mirror) AND sit in
+   * a folder registered for THAT share, which is read by DELEGATION_ID
+   * ({@link EmailDelegationService#getMailboxFolderKeys}) rather than inferred from the
+   * folder key: a row of the user's own mailbox, or of another share, is answered as not
+   * found, like an id that is not theirs -- and another user's row too, as
+   * {@link #getOwnMailboxEmailById} does.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @param delegationId the share the agent named, as the delegation service resolved it
+   * @return the message, null when it is not in that shared mailbox
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
+   */
+  // Transactional on its own account, for the reason getOwnMailboxEmailById is.
+  @Transactional(noRollbackFor = IllegalAccessException.class)
+  public Email getSharedMailboxEmailById(long id, String username, long delegationId) throws IllegalAccessException {
+    Email email = ownedOrNull(id, username);
+    if (email == null || !emailDelegationService.getMailboxFolderKeys(username, delegationId).contains(email.getFolder())) {
+      return null;
+    }
+    return email;
+  }
+
+  /**
+   * {@link #getOwnedEmailById} for the agent's lookups: a row of another user reads as no
+   * row at all.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @return the user's row, or null
+   */
+  private Email ownedOrNull(long id, String username) {
+    try {
+      return getOwnedEmailById(id, username);
+    } catch (IllegalAccessException e) {
+      LOG.debug("An agent of user {} named email {}, which is not theirs; answered as not found", username, id);
+      return null;
+    }
+  }
+
+  /**
+   * Searches one folder of a mailbox shared with the user in the user's mirror of it
+   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * mail server: the rows are the ones the shared mailbox's sync brought in, so an
+   * answer covers what that folder's mirror holds and says so through its caller.
+   * <p>
+   * The same criteria as {@link #searchEmails}: free text over the subject or the
+   * sender, a sender filter, unread only, an age window -- at least one of them. The
+   * folder's mirrored rows are read and filtered here, which the mirror's own size
+   * bounds (the sync keeps a recent window, not a mailbox's history).
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, as
+   *          {@link EmailDelegationService#getMirroredFolderKey} resolved it
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly only unread messages
+   * @param sinceDays only messages received in the last N days, null for all
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a key
+   *           that is not a folder of a mailbox shared with the user, and the codes
+   *           {@link #searchEmails} raises for its criteria
+   */
+  public EmailSearchResultPage searchSharedMailboxMirror(String username,
+                                                         String folderKey,
+                                                         String query,
+                                                         String from,
+                                                         boolean unreadOnly,
+                                                         Integer sinceDays,
+                                                         int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (emailDelegationService.delegationOf(username, folderKey) == null) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchMirror(username, folderKey, criteria, limit);
+  }
+
+  /**
+   * Searches one folder in eXo's copy of it, with every criterion of the advanced search
+   * (EXO-90838): the mail drawer's advanced search reads here first, in the user's own
+   * folders as in a mailbox shared with them, and asks the mail server only when the
+   * user does, or when the copy holds no match. Answers without touching the server.
+   * <p>
+   * The folder is one the search of the mail server reads (INBOX, SENT, ARCHIVE), or a
+   * folder of a mailbox shared with the user that a search may read -- re-checked on
+   * every search, as the server search does.
+   *
+   * @param username the reader
+   * @param criteria what to match, at least one criterion
+   * @param folder the folder key
+   * @param limit how many hits to return, newest first
+   * @return the newest matching messages of the copy and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of {@link #validateSearchCriteria}
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
+   */
+  public EmailSearchResultPage searchCachedFolder(String username,
+                                                  EmailSearchCriteria criteria,
+                                                  String folder,
+                                                  int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (!isSearchableFolder(folder) && !emailDelegationService.isSearchableSharedFolder(username, folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    return searchMirror(username, folder, criteria, limit);
+  }
+
+  /**
+   * The search of one folder in eXo's copy, once the caller has checked that the user may
+   * read that folder: behind {@link #searchCachedFolder}, {@link #searchSharedMailboxMirror}
+   * and the server search of a folder of a mailbox shared with the user (EXO-90590), which
+   * never reaches the server. The rows the sync brought in, filtered by
+   * {@link #filterCached} -- which the copy's own size bounds -- newest first.
+   *
+   * @param username the reader
+   * @param folderKey the folder's key, already checked
+   * @param criteria what to match
+   * @param limit how many hits to return, newest first
+   * @return the newest matching messages and how many matched
+   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria}
+   */
+  private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
+    validateSearchCriteria(criteria);
+    // The search's own read, not the listing's: no attachment, category or excerpt, which
+    // a search discards -- this runs once per keystroke in the drawer's search box.
+    List<Email> rows = emailBoxStorage.getEmailsForSearchInFolders(username,
+                                                                   List.of(folderKey),
+                                                                   StringUtils.isNotBlank(criteria.getTo()));
+    // One more read only when the attachment criterion asks for it: the ids of the
+    // folder's rows that have one, never the attachments themselves.
+    Set<Long> withAttachments = criteria.isAttachmentsOnly() ? emailBoxStorage.getEmailIdsWithAttachmentsInFolders(username,
+                                                                                                                   List.of(folderKey))
+                                                             : Set.of();
+    List<Email> matches = filterCached(rows, criteria, withAttachments);
+    List<EmailSearchResult> results = matches.stream()
+                                             .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
+                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
+                                                                                 folderKey,
+                                                                                 email.getSubject(),
+                                                                                 email.getSender(),
+                                                                                 email.getReceivedDate(),
+                                                                                 email.isRead(),
+                                                                                 email.isStarred(),
+                                                                                 true,
+                                                                                 null,
+                                                                                 email.getId()))
+                                             .toList();
+    return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
+  }
+
+  /**
+   * The messages of eXo's copy that match the criteria of a search, newest first
+   * (EXO-90838). Every criterion applies as on the mail server: the recipients are the
+   * To and Cc ones, the words are matched against the subject and the body as text, the
+   * days are drawn in eXo's JVM zone -- the zone JavaMail writes the IMAP {@code SINCE}
+   * and {@code BEFORE} days in, which the mail server then matches against its own
+   * internal dates -- and a message has an attachment when eXo holds an attachment row
+   * for it: the paperclip of the list. Package-visible for tests.
+   *
+   * @param rows the copy's messages, as the search read gives them -- with their To and
+   *          Cc recipients when the criteria name one
+   * @param criteria what to match
+   * @param withAttachments the ids of the rows that carry an attachment; read only when
+   *          the criteria ask for one
+   * @return the matching messages, newest first
+   */
+  static List<Email> filterCached(List<Email> rows, EmailSearchCriteria criteria, Set<Long> withAttachments) {
+    String term = StringUtils.trimToNull(criteria.getQuery());
+    String sender = StringUtils.trimToNull(criteria.getFrom());
+    String recipient = StringUtils.trimToNull(criteria.getTo());
+    String words = StringUtils.trimToNull(criteria.getWords());
+    Date since = criteria.getSinceDays() == null ? null
+                                                 : new Date(System.currentTimeMillis()
+                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
+    Date after = startOfServerDay(criteria.getAfter());
+    Date before = startOfServerDay(criteria.getBefore());
+    return rows.stream()
+               .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
+               .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
+               .filter(email -> !criteria.isAttachmentsOnly() || withAttachments.contains(email.getId()))
+               .filter(email -> receivedWithin(email, since, after, before))
+               .filter(email -> sender == null || senderMatches(email, sender))
+               .filter(email -> recipient == null || recipientMatches(email, recipient))
+               .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
+                   || senderMatches(email, term))
+               .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
+                   || bodyTextContains(email, words))
+               .sorted(Comparator.comparing(Email::getReceivedDate, Comparator.nullsLast(Comparator.reverseOrder())))
+               .toList();
+  }
+
+  /**
+   * Refuses the criteria no search can answer (EXO-90838): a day that is not one, a
+   * negative age window, a date range that ends before it starts, and no criterion at
+   * all. Called once the caller's access is checked, so a refusal answers first.
+   *
+   * @param criteria the criteria
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for a day
+   *           the caller sent that is not yyyy-MM-dd,
+   *           {@code emailConnector.search.invalidSinceDays} for a
+   *           negative window -- a future-dated lower bound that would match nothing,
+   *           silently -- {@code emailConnector.search.invalidDateRange} when the day
+   *           before which messages are kept is not after the day from which they are,
+   *           {@code emailConnector.search.criteriaRequired} when nothing narrows the
+   *           search
+   */
+  static void validateSearchCriteria(EmailSearchCriteria criteria) {
+    if (criteria.isInvalidDay()) {
+      throw new IllegalArgumentException("emailConnector.search.invalidDate");
+    }
+    if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    if (criteria.getAfter() != null && criteria.getBefore() != null && !criteria.getAfter().isBefore(criteria.getBefore())) {
+      throw new IllegalArgumentException("emailConnector.search.invalidDateRange");
+    }
+    if (!criteria.hasCriterion()) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+  }
+
+  /**
+   * The first instant of a day in eXo's JVM zone: the zone JavaMail writes an IMAP
+   * {@code SINCE} or {@code BEFORE} day in, so that the search of eXo's copy draws the
+   * day as the mail server's search is asked for it. The mail server matches that day
+   * against its own internal dates, so near midnight the two can differ when its zone
+   * is not eXo's.
+   *
+   * @param day the day, may be null
+   * @return its first instant, or null
+   */
+  static Date startOfServerDay(LocalDate day) {
+    return day == null ? null : Date.from(day.atStartOfDay(ZoneId.systemDefault()).toInstant());
+  }
+
+  /**
+   * Whether a message was received inside the bounds a search sets: at or after
+   * {@code since} and {@code after}, strictly before {@code before}. A message with no
+   * date is outside any bound.
+   *
+   * @param email the message
+   * @param since the age window's lower bound, may be null
+   * @param after the first day's first instant, may be null
+   * @param before the first instant excluded, may be null
+   * @return true when no bound excludes it
+   */
+  private static boolean receivedWithin(Email email, Date since, Date after, Date before) {
+    if (since == null && after == null && before == null) {
+      return true;
+    }
+    Date received = email.getReceivedDate();
+    return received != null && (since == null || !received.before(since)) && (after == null || !received.before(after))
+        && (before == null || received.before(before));
+  }
+
+  /**
+   * Whether one of a message's To or Cc recipients -- name or address -- contains a
+   * text, ignoring case. Bcc is left out, as on the mail server: a person hidden from
+   * the recipients is not shown as one.
+   *
+   * @param email the message
+   * @param text the text
+   * @return true when one does
+   */
+  private static boolean recipientMatches(Email email, String text) {
+    return Stream.of(email.getTo(), email.getCc())
+                 .filter(Objects::nonNull)
+                 .flatMap(List::stream)
+                 .filter(Objects::nonNull)
+                 .anyMatch(recipient -> StringUtils.containsIgnoreCase(recipient.getName(), text)
+                     || StringUtils.containsIgnoreCase(recipient.getAddress(), text));
+  }
+
+  /**
+   * Whether a message's body, read as text, contains some words, ignoring case. The body
+   * is stored as HTML: matched as it is, a search for "div" would hit markup the user
+   * never sees.
+   *
+   * @param email the message
+   * @param text the words
+   * @return true when the body holds them
+   */
+  private static boolean bodyTextContains(Email email, String text) {
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    return StringUtils.isNotBlank(body) && StringUtils.containsIgnoreCase(Jsoup.parse(body).text(), text);
+  }
+
+  /**
+   * Whether a message's sender -- name or address -- contains a text, ignoring case.
+   *
+   * @param email the message
+   * @param text the text
+   * @return true when it does
+   */
+  private static boolean senderMatches(Email email, String text) {
+    EmailSender sender = email.getSender();
+    return sender != null
+        && (StringUtils.containsIgnoreCase(sender.getName(), text) || StringUtils.containsIgnoreCase(sender.getAddress(), text));
   }
 
   /**
@@ -6143,6 +7752,28 @@ public class EmailBoxService {
     if (!uids.contains(mailRemoteId)) {
       uids.add(mailRemoteId);
     }
+  }
+
+  /**
+   * The user's own cached mails whose subject or sender contains a keyword, newest
+   * first, for the editors' "/mail" link picker.
+   * <p>
+   * Only the mailbox of {@code username} is read, never one delegated to them: the
+   * rows are selected by their owner column, the way
+   * {@link #getOwnedEmailById(long, String)} refuses another owner's row. It is
+   * one bounded query on the cache, with no IMAP call, cheap enough for a picker
+   * that searches as the user types. Drafts, Trash and Junk are left out.
+   *
+   * @param username the user searching, whose mails only are returned
+   * @param keyword the searched text, matched literally and case-insensitively
+   * @param offset how many matches to skip
+   * @param limit how many matches at most, capped to
+   *          {@link EmailBoxStorage#MAX_LINK_RESULTS}
+   * @return light mails carrying id, owner, subject, sender and date; never null
+   */
+  @Transactional(readOnly = true)
+  public List<Email> searchOwnEmailsForLink(String username, String keyword, int offset, int limit) {
+    return emailBoxStorage.searchEmailsForLink(username, keyword, offset, limit);
   }
 
   /**
@@ -7950,6 +9581,7 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.category.notFound");
     }
     int linked = 0;
+    List<Long> linkedUids = new ArrayList<>();
     for (Long mailRemoteId : mailRemoteIds) {
       Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, actingFolder, false, false, false, false);
       if (email == null) {
@@ -7960,6 +9592,7 @@ public class EmailBoxService {
                                  new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0),
                                  username);
         linked++;
+        linkedUids.add(mailRemoteId);
       } catch (ObjectAlreadyExistsException e) {
         // Idempotent: the email is already in this category, nothing to do.
       } catch (ObjectNotFoundException e) {
@@ -7974,7 +9607,36 @@ public class EmailBoxService {
     if (linked > 0) {
       broadcastUnreadCountChangedIfCategoryScoped(username);
     }
+    if (MailFolder.INBOX.equals(actingFolder)) {
+      broadcastCategoryAdded(username, categoryId, linkedUids);
+    }
     return linked;
+  }
+
+  /**
+   * Says which inbox mails just got a category, whoever put it there -- the AI
+   * categorizer, the user from the mailbox, the MCP tool, a mail filter's own action --
+   * so the owner's mail filters on that category run on them
+   * ({@link EmailConnectorUtils#EMAIL_CATEGORY_ADDED}). Only the links that stuck: a mail
+   * already in the category was not categorised now. Only the inbox's: filters run on the
+   * owner's own inbox, never on Junk or another folder. A broadcast failure never fails
+   * the assignment.
+   *
+   * @param username the mailbox owner
+   * @param categoryId the category just added
+   * @param mailRemoteIds the INBOX UIDs of the mails that got it
+   */
+  private void broadcastCategoryAdded(String username, long categoryId, List<Long> mailRemoteIds) {
+    if (mailRemoteIds.isEmpty()) {
+      return;
+    }
+    try {
+      listenerService.broadcast(EmailConnectorUtils.EMAIL_CATEGORY_ADDED,
+                                username,
+                                new EmailCategoryAdded(categoryId, List.copyOf(mailRemoteIds)));
+    } catch (Exception e) {
+      LOG.warn("Could not announce category {} added to {} mail(s) of user {}", categoryId, mailRemoteIds.size(), username, e);
+    }
   }
 
   /**
@@ -8123,13 +9785,31 @@ public class EmailBoxService {
   }
 
   /**
+   * The stable key of each of the add-on's own default email categories, by the id the
+   * importer gave it on this instance: what a mail filter's category condition names, so
+   * it survives a rename, a translation or a re-import that gives the category another id.
+   *
+   * @return {@code id -> nameId}, for the defaults the importer has created
+   */
+  public Map<Long, String> getDefaultEmailCategoryNameIds() {
+    Map<Long, String> nameIds = new HashMap<>();
+    for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId != null) {
+        nameIds.put(categoryId, nameId);
+      }
+    }
+    return nameIds;
+  }
+
+  /**
    * Resolves one default email category's id from the {@code nameId -> id} mapping
    * the platform's category importer persisted in settings.
    *
    * @param nameId the category's declared nameId (see {@code default-categories.json})
    * @return the category id, or null when the importer has not created it (yet)
    */
-  private Long getDefaultEmailCategoryId(String nameId) {
+  public Long getDefaultEmailCategoryId(String nameId) {
     SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
     if (settingValue != null && settingValue.getValue() != null) {
       try {
@@ -8183,8 +9863,43 @@ public class EmailBoxService {
    */
   public OwnerCopy sendEmail(Email email, String username, Long delegationId) throws IllegalAccessException,
                                                                                   ObjectNotFoundException {
+    return sendEmail(email, username, delegationId, null);
+  }
+
+  /**
+   * {@link #sendEmail(Email, String, Long)}, in the shared mailbox owner's name when
+   * {@code sendMode} asks for it (EXO-90583): on her behalf -- {@code From:} the owner,
+   * {@code Sender:} the sender, the envelope the sender's -- or as her -- {@code From:}
+   * the owner and nothing naming the sender, the envelope hers. The shape is checked
+   * against the owner's consent on the share ({@link EmailDelegationService#checkSendMode})
+   * before anything is built or sent, and the owner's address and name come from the
+   * share, never from the request. The mail still goes out on the sender's own session,
+   * one connection per message, and is filed in the sender's Sent and -- when the share
+   * lets them -- in the owner's, where that copy also says who sent it
+   * ({@code X-Exo-Sent-By}). When the owner's mail server refuses a mail in her name, the
+   * refusal is recorded on the share and nothing is sent; the sender may send it again in
+   * their own name.
+   *
+   * @param email the composed email
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name; null,
+   *          blank or {@code NONE} for the sender's own name
+   * @return what became of the owner's copy, null when no share is named
+   * @throws IllegalAccessException if the user may not send from their mailbox;
+   *           {@link SendModeMissingException} when the owner's consent does not cover
+   *           the shape
+   * @throws ObjectNotFoundException when the named share is not the sender's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   * @throws SendModeUnavailableException when the shape is unknown, named with no shared
+   *           mailbox, switched off, not declared for the connector, or refused by the
+   *           owner's mail server
+   */
+  public OwnerCopy sendEmail(Email email, String username, Long delegationId, String sendMode) throws IllegalAccessException,
+                                                                                                ObjectNotFoundException {
     // Before anything is sent: a refusal must never follow a delivered mail.
     String ownerSentKey = ownerSentKeyFor(username, delegationId);
+    SendIdentity identity = resolveSendIdentity(username, delegationId, sendMode);
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -8194,13 +9909,27 @@ public class EmailBoxService {
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
     try {
-      MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
+      // In the owner's name, the Message-ID names the owner's domain, as the From does:
+      // JavaMail's own would name this server's host.
+      MimeMessage message = buildOutgoingMessage(email,
+                                                 userEmailSetting,
+                                                 emailConnector,
+                                                 identity == null ? null : mintMessageId(identity.ownerMailbox()),
+                                                 uploadIds,
+                                                 username,
+                                                 false,
+                                                 identity);
       applyThreadingHeaders(message, email, username);
-      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting, identity);
       if (delegationId == null) {
         return null;
       }
-      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+      return ownerSentKey == null ? OwnerCopy.SKIPPED
+                                  : copyToOwnerSent(message,
+                                                    username,
+                                                    userEmailSetting,
+                                                    ownerSentKey,
+                                                    sentByOf(identity, emailConnector, userEmailSetting, username));
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -8208,6 +9937,62 @@ public class EmailBoxService {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
       // since the attachment body parts stream their bytes lazily from those temporary files.
       removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * The name a mail is sent under, from what the request asks (EXO-90583): none -- the
+   * sender's own -- unless a shape is named, in which case it must name a shared mailbox
+   * and pass the owner's consent on it. The one place a request's shape becomes an
+   * identity, for the composer's send and the send of a draft alike.
+   *
+   * @param username the sender
+   * @param delegationId the share the mail belongs to, null for the sender's own mailbox
+   * @param sendMode the requested shape, as the request spells it
+   * @return the identity, or null for the sender's own name
+   * @throws ObjectNotFoundException when the share is not the sender's
+   * @throws SendModeMissingException when the owner's consent does not cover the shape
+   * @throws SendModeUnavailableException when the shape is unknown, has no shared
+   *           mailbox to be the owner's, or cannot be used now
+   */
+  private SendIdentity resolveSendIdentity(String username, Long delegationId, String sendMode) throws ObjectNotFoundException,
+                                                                                               SendModeMissingException {
+    if (StringUtils.isBlank(sendMode)) {
+      return null;
+    }
+    SendMode requested = SendMode.of(sendMode);
+    if (requested == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (requested == SendMode.NONE) {
+      return null;
+    }
+    if (delegationId == null) {
+      throw new SendModeUnavailableException(SendModeUnavailableException.NO_MAILBOX);
+    }
+    return emailDelegationService.checkSendMode(username, delegationId, requested);
+  }
+
+  /**
+   * Who sent a mail in the owner's name, for the copy filed in her Sent (EXO-90583, PO
+   * decision Q-7): the sender's address, resolved as the message's own sender is. Null
+   * for a mail in the sender's own name, whose From already says it.
+   *
+   * @param identity the name the mail was sent under, null for the sender's own
+   * @param emailConnector the sender's connector
+   * @param userEmailSetting the sender's connector binding
+   * @param username the sender
+   * @return the sender's address, or null
+   */
+  private String sentByOf(SendIdentity identity, EmailConnector emailConnector, UserEmailSetting userEmailSetting, String username) {
+    if (identity == null) {
+      return null;
+    }
+    try {
+      return resolveSenderAddress(emailConnector, userEmailSetting, username);
+    } catch (ConnectorCredentialsException | RuntimeException e) {
+      LOG.debug("The sender of a mail sent in another's name could not be resolved for the owner's copy", e);
+      return userEmailSetting.getEmailAddress();
     }
   }
 
@@ -8266,16 +10051,49 @@ public class EmailBoxService {
   private Session smtpSession(EmailConnector emailConnector,
                               String username,
                               boolean bounded) throws ConnectorCredentialsException {
+    return smtpSession(emailConnector, username, bounded, null);
+  }
+
+  /**
+   * {@link #smtpSession(EmailConnector, String, boolean)}, with the envelope sender set
+   * when a mail goes out in another's name (EXO-90583). JavaMail otherwise takes the
+   * envelope ({@code MAIL FROM}) from the {@code From} header, which in the owner's name
+   * is the owner's: a submission server that checks the envelope against the login --
+   * Stalwart by default, Postfix with a login map -- then refuses a mail on the owner's
+   * behalf, which should go out under the sender's own envelope (EXO-90586, J4). Unset
+   * for a mail in the sender's own name, whose envelope stays what it always was.
+   * <p>
+   * The session is the message's own, and {@code Transport.send} opens one connection
+   * for that one message and closes it: a server's sender policy is looked up per
+   * connection, so a withdrawn permission is seen by the next message (EXO-90586, L-8).
+   *
+   * @param emailConnector the connector the user is bound to
+   * @param username the eXo login the session is authenticated for
+   * @param bounded whether to bound the connect, read and write timeouts
+   * @param envelopeFrom the envelope sender, or null for JavaMail's default
+   * @return the session
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
+   */
+  private Session smtpSession(EmailConnector emailConnector,
+                              String username,
+                              boolean bounded,
+                              String envelopeFrom) throws ConnectorCredentialsException {
     Properties props = new Properties();
+    if (StringUtils.isNotBlank(envelopeFrom)) {
+      props.put("mail.smtp.from", envelopeFrom.trim());
+    }
     if (bounded) {
       props.put("mail.smtp.connectiontimeout", String.valueOf(SCHEDULED_SMTP_CONNECT_TIMEOUT_MS));
       props.put("mail.smtp.timeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
       props.put("mail.smtp.writetimeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
     }
     props.put("mail.smtp.auth", "true");
-    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
-    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
-    props.put("mail.smtp.port", emailConnector.getSmtpPort());
+    // Trimmed where used too: a stored value may carry surrounding whitespace, and
+    // JavaMail resolves the host and reads the port verbatim.
+    props.put("mail.smtp." + StringUtils.trim(emailConnector.getSmtpSecurityType()) + ".enable", "true");
+    props.put("mail.smtp.host", StringUtils.trim(emailConnector.getSmtpUrl()));
+    props.put("mail.smtp.port", StringUtils.trim(emailConnector.getSmtpPort()));
     // The props are connector configuration and stay where they were; only the
     // authenticator moves, from one built here out of the stored setting to one
     // the configured provider produces.
@@ -8315,7 +10133,7 @@ public class EmailBoxService {
                                            List<String> uploadIds,
                                            String username) throws MessagingException, UnsupportedEncodingException,
                                                                    ConnectorCredentialsException {
-    return buildOutgoingMessage(email, userEmailSetting, emailConnector, pinnedMessageId, uploadIds, username, false);
+    return buildOutgoingMessage(email, userEmailSetting, emailConnector, pinnedMessageId, uploadIds, username, false, null);
   }
 
   /**
@@ -8330,6 +10148,8 @@ public class EmailBoxService {
    * @param uploadIds mutable list populated with the upload ids that were attached
    * @param username the sender
    * @param boundedTimeouts whether the session bounds its socket timeouts
+   * @param identity the owner's name the mail goes out in (EXO-90583), null for the
+   *          sender's own -- the only default there is
    * @return the message
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the display name cannot be encoded
@@ -8341,23 +10161,33 @@ public class EmailBoxService {
                                            String pinnedMessageId,
                                            List<String> uploadIds,
                                            String username,
-                                           boolean boundedTimeouts) throws MessagingException, UnsupportedEncodingException,
-                                                                    ConnectorCredentialsException {
-    // The address the message is sent AS, which is the provider's to name and not
-    // the setting's: Personal answers the stored address, so nothing changes for
-    // it, but a provider authenticating as a technical account sends for someone
-    // else. A provider naming no target leaves the stored address in place.
-    String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
-                                                          emailConnector.getAuthProviderName(),
-                                                          username);
-    String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
-    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts), pinnedMessageId);
+                                           boolean boundedTimeouts,
+                                           SendIdentity identity) throws MessagingException, UnsupportedEncodingException,
+                                                                  ConnectorCredentialsException {
+    String emailAddress = resolveSenderAddress(emailConnector, userEmailSetting, username);
+    // The one seam where a mail's name is decided (EXO-90583): every send builds its
+    // message here -- the composer's send, the interactive send of a draft and the
+    // scheduled one (both through buildOutgoingDraftMessage), the MCP tools' -- and only
+    // an identity checkSendMode made puts the owner in it. On behalf: From the owner,
+    // Sender the sender, envelope the sender. As: From the owner, envelope the owner.
+    // Never a Reply-To: replies go to the owner, whose correspondence it is (Q-6).
+    String envelopeFrom = identity == null ? null : identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
+    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts, envelopeFrom),
+                                                         pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-    message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
-    // Here, because every send builds its message here: the composer's send, the
-    // interactive send of a draft and the scheduled one (both through
-    // buildOutgoingDraftMessage), the MCP tools'. One place, so no path can forget it.
-    applyReadReceiptRequest(message, email, emailAddress);
+    InternetAddress sender = new InternetAddress(emailAddress, displayName(userProfile != null ? userProfile.getFullName() : null));
+    if (identity == null) {
+      message.setFrom(sender);
+      // Here, for the same reason: one place, so no path can forget it.
+      applyReadReceiptRequest(message, email, emailAddress);
+    } else {
+      message.setFrom(new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())));
+      if (identity.namesTheSender()) {
+        message.setSender(sender);
+      }
+      // No read receipt in the owner's name: it would come back into her mailbox as hers,
+      // and receipts are never the sender's business on the owner's mail.
+    }
     if (!CollectionUtils.isEmpty(email.getTo())) {
       String toRecipients = email.getTo()
                                  .stream()
@@ -8434,16 +10264,33 @@ public class EmailBoxService {
                        Email email,
                        boolean reply,
                        String username,
-                       UserEmailSetting userEmailSetting) throws MessagingException {
+                       UserEmailSetting userEmailSetting,
+                       SendIdentity identity) throws MessagingException {
     try {
+      // The static send: one connection for this one message (EXO-90586, L-8). Never a
+      // pooled or kept-open transport for a mail in another's name.
       Transport.send(message);
     } catch (MessagingException e) {
+      if (identity != null && isSenderPolicyRefusal(e)) {
+        throw refusedInOwnersName(username, identity, e);
+      }
       EmailConnector retryConnector = EmailCredentialsResolver.isAuthenticationFailure(e) ? retryConnector(userEmailSetting, e)
                                                                                            : null;
       if (retryConnector == null) {
         throw e;
       }
-      resendWithFreshCredentials(message, username, retryConnector, e);
+      try {
+        resendWithFreshCredentials(message, username, retryConnector, e);
+      } catch (MessagingException retryFailure) {
+        // The retry on fresh material is still a mail in the owner's name (EXO-90583).
+        if (identity != null && isSenderPolicyRefusal(retryFailure)) {
+          throw refusedInOwnersName(username, identity, retryFailure);
+        }
+        throw retryFailure;
+      }
+    }
+    if (identity != null) {
+      recordSentInOwnersName(message, username, identity);
     }
     afterTransmission(message, email, reply, username, userEmailSetting);
   }
@@ -8529,6 +10376,159 @@ public class EmailBoxService {
     } finally {
       transport.close();
     }
+  }
+
+  /**
+   * The owner's mail server refused a mail sent in her name (EXO-90583): recorded on the
+   * share -- so the owner's sharing screen and the sender's band say so, and the shape is
+   * no longer offered until the owner sets it again -- and answered with a fixed code.
+   * Nothing was sent, so nothing is retried: whether to send it in their own name
+   * instead is the sender's choice. The server's words go to DEBUG only.
+   *
+   * @param username the sender
+   * @param identity what the mail was sent under
+   * @param refusal what the server answered
+   * @return the refusal to throw
+   */
+  private SendModeUnavailableException refusedInOwnersName(String username, SendIdentity identity, Throwable refusal) {
+    LOG.debug("The mail server's refusal of a mail sent in another's name by {}", username, refusal);
+    try {
+      emailDelegationService.markSendRefused(username, identity);
+    } catch (RuntimeException e) {
+      LOG.warn("The mail server refused a mail of user {} sent in another's name, and the refusal could not be recorded", username, e);
+    }
+    return new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER, refusal);
+  }
+
+  /**
+   * The trail of a mail sent in another's name (EXO-90583): an INFO line naming who sent
+   * what in whose name, and an event the analytics count by shape. A mail sent as the
+   * owner carries nothing naming its sender, by definition, so this, the owner's copy's
+   * {@code X-Exo-Sent-By} and the share's consent are its whole record. Never fails the
+   * send: the mail is out.
+   *
+   * @param message the message that went out
+   * @param username the sender
+   * @param identity what it was sent under
+   */
+  private void recordSentInOwnersName(MimeMessage message, String username, SendIdentity identity) {
+    try {
+      Address[] recipients = message.getAllRecipients();
+      LOG.info("Mail sent in another's name: actor={} mode={} ownerMailbox={} messageId={} recipients={}",
+               username,
+               identity.mode(),
+               identity.ownerMailbox(),
+               message.getMessageID(),
+               recipients == null ? 0 : recipients.length);
+      listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, username, identity.mode().name());
+    } catch (Exception e) {
+      LOG.warn("A mail of user {} was sent in another's name, and its trail could not be written", username, e);
+    }
+  }
+
+  /**
+   * Whether a failed transmission is the mail server refusing the envelope or the author
+   * a mail in another's name may carry (EXO-90583) -- a sender-policy refusal -- rather
+   * than anything else a send can meet. Read from what the server said, anywhere in the
+   * failure: its reply code (5xx) and its text, never the exception's type, because the
+   * same refusal arrives in different shapes. Stalwart refuses at MAIL, which JavaMail
+   * reports as a send failure caused by a sender failure ({@code 501 5.5.4 You are not
+   * allowed to send from this address}); Postfix with a login map refuses at RCPT, which
+   * JavaMail reports as INVALID RECIPIENTS ({@code 553 5.7.1 <owner>: Sender address
+   * rejected: not owned by user <sender>}) -- a recipient-refusal reading of that would
+   * be wrong (EXO-90586). A recipient the server does not know is not one of these.
+   * Package-visible and static for the scheduled send's classifier (EXO-90584), which
+   * must ask it before reading invalid addresses as refused recipients.
+   *
+   * @param failure the failure
+   * @return true when some part of it is a sender-policy refusal
+   */
+  static boolean isSenderPolicyRefusal(Throwable failure) {
+    Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> toRead = new ArrayDeque<>();
+    if (failure != null) {
+      toRead.add(failure);
+    }
+    while (!toRead.isEmpty() && seen.size() < SENDER_REFUSAL_CHAIN_LIMIT) {
+      Throwable link = toRead.poll();
+      if (!seen.add(link)) {
+        continue;
+      }
+      if (isSenderPolicyReply(link)) {
+        return true;
+      }
+      if (link.getCause() != null) {
+        toRead.add(link.getCause());
+      }
+      if (link instanceof MessagingException messaging && messaging.getNextException() != null) {
+        toRead.add(messaging.getNextException());
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether one failure is a server's permanent refusal worded as a sender-policy one:
+   * a 5xx reply -- the SMTP exceptions' code, else a code opening the text -- whose text
+   * says the sender may not use that address.
+   *
+   * @param link one failure of the chain
+   * @return true for a sender-policy refusal
+   */
+  private static boolean isSenderPolicyReply(Throwable link) {
+    String text = StringUtils.defaultString(link.getMessage()).toLowerCase(Locale.ROOT);
+    int code = -1;
+    if (link instanceof SMTPSendFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else if (link instanceof SMTPSenderFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else if (link instanceof SMTPAddressFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else {
+      Matcher leading = SMTP_REPLY_CODE.matcher(text);
+      if (leading.find()) {
+        code = Integer.parseInt(leading.group(1));
+      }
+    }
+    if (code < 500 || code > 599) {
+      return false;
+    }
+    return SENDER_POLICY_TEXT.matcher(text).find();
+  }
+
+  /**
+   * The address a user's mail is sent from: the provider's to name and not the
+   * setting's -- Personal answers the stored address, so nothing changes for it, but a
+   * provider authenticating as a technical account sends for someone else. A provider
+   * naming no target leaves the stored address in place.
+   *
+   * @param emailConnector the user's connector
+   * @param userEmailSetting the user's connector binding
+   * @param username the user
+   * @return the address
+   * @throws ConnectorCredentialsException when the configured provider cannot answer
+   */
+  private String resolveSenderAddress(EmailConnector emailConnector,
+                                      UserEmailSetting userEmailSetting,
+                                      String username) throws ConnectorCredentialsException {
+    String resolved = credentialsResolver().senderAddress(emailConnector.getId(), emailConnector.getAuthProviderName(), username);
+    return StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
+  }
+
+  /**
+   * A profile name as a mail's display name: without control characters, which JavaMail
+   * neither encodes nor refuses -- a line break in a name comes out quoted and folded, a
+   * broken display name (EXO-90586, J6) -- and null when nothing is left.
+   *
+   * @param name the profile name, may be null
+   * @return the display name, or null
+   */
+  static String displayName(String name) {
+    if (name == null) {
+      return null;
+    }
+    String cleaned = CONTROL_CHARACTERS.matcher(name).replaceAll(" ").trim().replaceAll(" {2,}", " ");
+    return cleaned.isEmpty() ? null : cleaned;
   }
 
   /**
@@ -9085,6 +11085,20 @@ public class EmailBoxService {
    * {@link #sendEmail} gives it) on the first save only; on every later save it is
    * ignored, because a resumed draft carries its OWN minted id in that field and
    * threading it against itself is exactly the loop that would follow.
+   * <p>
+   * The mailbox the draft is written in is part of that identity (EXO-90595): a first
+   * save naming a share ({@code sendDelegationId}) records it once the share resolves as
+   * one of the writer's own shares, and no later save can move it -- a draft
+   * opened while the switcher shows another mailbox stays the draft of the mailbox it
+   * was written in.
+   * <p>
+   * The name the draft is to go out in is the writer's to change until it is sent
+   * (EXO-90584): a save carrying {@code sendMode} writes it with the revision, a save
+   * carrying none leaves the stored one as it is. It is not checked against the owner's
+   * consent here -- an autosave must never lose words because the owner changed her
+   * mind -- but every send of the draft, interactive or scheduled, checks it again. A
+   * draft written in the owner's name at its first save gets its Message-ID from the
+   * owner's domain, as a mail sent in her name does.
    *
    * @param draft the composed draft; a blank {@code draftLocalId} means a first save
    * @param username the mailbox owner
@@ -9093,6 +11107,10 @@ public class EmailBoxService {
    *         null when the save carried a local id the user has no draft under (the
    *         draft has since been sent or discarded — see below)
    * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws IllegalArgumentException {@value #MAILBOX_NOT_FOUND_CODE} when a first save
+   *           names a share that is not the writer's; {@link SendModeUnavailableException}
+   *           when {@code sendMode} is unknown, or names the owner's name on a draft of
+   *           the writer's own mailbox -- nothing is saved then
    */
   public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
@@ -9121,8 +11139,21 @@ public class EmailBoxService {
         // autosave landing now would change a mail the owner already decided to send.
         requireNotScheduled(username, draftLocalId);
       }
-      Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
-                                     : buildNextDraftRevision(draft, stored);
+      Email toStore;
+      if (stored == null) {
+        EmailDelegation share = firstSaveShare(draft, username);
+        Long shareId = share == null ? null : share.getId();
+        String sendMode = incomingDraftSendMode(draft.getSendMode(), shareId);
+        toStore = buildFirstDraftRevision(draft,
+                                          draftLocalId,
+                                          username,
+                                          userEmailSetting,
+                                          messageIdAddress(share, sendMode, userEmailSetting));
+        toStore.setSendDelegationId(shareId);
+        toStore.setSendMode(sendMode);
+      } else {
+        toStore = buildNextDraftRevision(draft, stored);
+      }
       Email saved = emailBoxStorage.saveDraft(toStore);
       if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())) {
         return saved;
@@ -9218,26 +11249,69 @@ public class EmailBoxService {
   }
 
   /**
-   * {@link #sendDraft(Email, String)}, from a mailbox shared with the sender when a share
-   * is named (EXO-90551): the composer's own draft of a mail written there is sent as
-   * any draft is, and a copy is filed in the owner's Sent folder, as
-   * {@link #sendEmail(Email, String, Long)} files it. The share is resolved before the
-   * draft is claimed, so a refusal leaves the draft exactly where it was.
+   * {@link #sendDraft(Email, String)} of a draft written in a mailbox shared with the
+   * sender (EXO-90551): sent as any draft is, and a copy is filed in the owner's Sent
+   * folder, as {@link #sendEmail(Email, String, Long)} files it.
+   * <p>
+   * The mailbox is the DRAFT's (EXO-90595): the share its first save recorded, whatever
+   * the composer's switcher shows now. A {@code delegationId} naming another mailbox --
+   * the draft's own mailbox included, when the request names a share for a draft of the
+   * sender's own -- is refused, never followed: the composer shows the user which
+   * mailbox the mail goes from, and the server never sends from one it did not show.
+   * None named means the draft's. The share is resolved again here, before the draft is
+   * claimed, so a refusal leaves the draft exactly where it was.
    *
    * @param draft the composed draft as the composer is showing it, carrying the local id
    *          of the row it is editing
    * @param username the sender
-   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
-   * @return what became of the owner's copy, null when no share is named
+   * @param delegationId the share the composer believes the draft belongs to, or null
+   * @return what became of the owner's copy, null for a draft of the sender's own mailbox
    * @throws IllegalAccessException if the user may not send from their mailbox
    * @throws ObjectNotFoundException if the user has no draft under that local id, or the
-   *           named share is not theirs
-   * @throws DelegationRevokedException when the named share is no longer accepted
+   *           draft's share is not theirs
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   * @throws IllegalArgumentException {@value #MAILBOX_MISMATCH_CODE} when
+   *           {@code delegationId} is not the draft's
    */
   public OwnerCopy sendDraft(Email draft, String username, Long delegationId) throws IllegalAccessException,
                                                                                   ObjectNotFoundException {
-    String ownerSentKey = ownerSentKeyFor(username, delegationId);
+    return sendDraft(draft, username, delegationId, null);
+  }
+
+  /**
+   * {@link #sendDraft(Email, String, Long)}, in the owner's name when the draft says so
+   * (EXO-90583, EXO-90584), as {@link #sendEmail(Email, String, Long, String)} sends one:
+   * the shape is the draft's own -- the one the composer shows, saved onto the row with
+   * the text before the send, else the one the row holds -- and is checked against the
+   * consent on the DRAFT's share -- the mailbox it was written in, never another --
+   * before the draft is claimed, so a refusal leaves it exactly where it was, and so does
+   * a refusal by the owner's mail server. {@code sendMode} is read only for a draft that
+   * never recorded a shape; one that names another shape than the draft's is refused. The
+   * draft keeps the Message-ID it was given at its first save.
+   *
+   * @param draft the composed draft as the composer is showing it
+   * @param username the sender
+   * @param delegationId the share the composer believes the draft belongs to, or null
+   * @param sendMode the shape the caller believes the draft goes out in, read only for a
+   *          draft that never recorded one: {@code ON_BEHALF} or {@code AS} for the
+   *          owner's name, {@code NONE} for the sender's own; null or blank to go by the
+   *          draft
+   * @return what became of the owner's copy, null for a draft of the sender's own mailbox
+   * @throws IllegalAccessException if the user may not send from their mailbox;
+   *           {@link SendModeMissingException} when the consent does not cover the shape
+   * @throws ObjectNotFoundException if the user has no draft under that local id, or the
+   *           draft's share is not theirs
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   * @throws IllegalArgumentException {@value #MAILBOX_MISMATCH_CODE} when
+   *           {@code delegationId} is not the draft's; {@link SendModeUnavailableException}
+   *           as {@link #sendEmail(Email, String, Long, String)} says, and
+   *           {@link SendModeUnavailableException#MISMATCH} when {@code sendMode} is not
+   *           the draft's
+   */
+  public OwnerCopy sendDraft(Email draft, String username, Long delegationId, String sendMode) throws IllegalAccessException,
+                                                                                                ObjectNotFoundException {
     OwnerCopy ownerCopy = null;
+    Long share = null;
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9270,6 +11344,17 @@ public class EmailBoxService {
       // A scheduled draft is sent by its schedule ("send now"), never from a composer:
       // two senders of one draft is how a mail goes out twice.
       requireNotScheduled(username, draftLocalId);
+      share = stored.getSendDelegationId();
+      if (delegationId != null && !delegationId.equals(share)) {
+        throw new IllegalArgumentException(MAILBOX_MISMATCH_CODE);
+      }
+      String ownerSentKey = draftShareSentKey(username, stored);
+      // The name it goes out under (EXO-90584): the draft's, as the save below leaves it --
+      // the request's parameter only for a draft that never said, and refused when it
+      // says otherwise -- checked against the consent on the draft's own share.
+      SendIdentity identity = resolveSendIdentity(username,
+                                                  share,
+                                                  draftSendModeFor(draftSendModeAfterSave(draft, stored), sendMode));
       // The files the draft has been carrying since some earlier session, read once and
       // checked BEFORE anything is written or claimed. A send that cannot carry every
       // file it shows must leave the draft exactly where it was: nothing saved, nothing
@@ -9279,7 +11364,7 @@ public class EmailBoxService {
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
-        ownerCopy = transmitDraft(draft, stored, storedAttachments, username, userEmailSetting, ownerSentKey);
+        ownerCopy = transmitDraft(draft, stored, storedAttachments, username, userEmailSetting, ownerSentKey, identity);
       } catch (RuntimeException e) {
         // Nothing has been removed, here or on the server. Put the claim back down at
         // exactly the state the row was in and let the composer report the refusal.
@@ -9297,7 +11382,7 @@ public class EmailBoxService {
         draftLocks.remove(lockKey);
       }
     }
-    return delegationId == null ? null : ownerCopy;
+    return share == null ? null : ownerCopy;
   }
 
   /**
@@ -9409,6 +11494,8 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param ownerSentKey the shared mailbox owner's Sent to file a copy into, or null
+   * @param identity the owner's name the draft goes out in (EXO-90583), null for the
+   *          sender's own
    * @return what became of the owner's copy: SKIPPED when there is none to file
    */
   private OwnerCopy transmitDraft(Email draft,
@@ -9416,7 +11503,8 @@ public class EmailBoxService {
                                   List<EmailAttachment> storedAttachments,
                                   String username,
                                   UserEmailSetting userEmailSetting,
-                                  String ownerSentKey) {
+                                  String ownerSentKey,
+                                  SendIdentity identity) {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
@@ -9428,11 +11516,17 @@ public class EmailBoxService {
                                                       userEmailSetting,
                                                       emailConnector,
                                                       uploadIds,
-                                                      false);
-      deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
+                                                      false,
+                                                      identity);
+      deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting, identity);
       // The owner's copy of a mail sent from a shared mailbox (EXO-90551), here and not
       // after: its parts stream from the uploads freed below, as the sender's own copy's.
-      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+      return ownerSentKey == null ? OwnerCopy.SKIPPED
+                                  : copyToOwnerSent(message,
+                                                    username,
+                                                    userEmailSetting,
+                                                    ownerSentKey,
+                                                    sentByOf(identity, emailConnector, userEmailSetting, username));
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -9470,6 +11564,8 @@ public class EmailBoxService {
    * @param emailConnector the connector the user is bound to
    * @param uploadIds mutable list populated with the upload ids that were attached
    * @param boundedTimeouts whether the SMTP session bounds its socket timeouts
+   * @param identity the owner's name the draft goes out in (EXO-90583), null for the
+   *          sender's own; its Message-ID stays the one minted at the first save
    * @return the message, ready for the wire
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the display name cannot be encoded
@@ -9482,7 +11578,8 @@ public class EmailBoxService {
                                                 UserEmailSetting userEmailSetting,
                                                 EmailConnector emailConnector,
                                                 List<String> uploadIds,
-                                                boolean boundedTimeouts) throws MessagingException,
+                                                boolean boundedTimeouts,
+                                                SendIdentity identity) throws MessagingException,
                                                                          UnsupportedEncodingException,
                                                                          ConnectorCredentialsException {
     content.setStoredAttachments(storedAttachments);
@@ -9492,7 +11589,8 @@ public class EmailBoxService {
                                                stored.getMailHeaderId(),
                                                uploadIds,
                                                username,
-                                               boundedTimeouts);
+                                               boundedTimeouts,
+                                               identity);
     applyStoredThreadingHeaders(message, stored);
     return message;
   }
@@ -9667,6 +11765,12 @@ public class EmailBoxService {
    *           {@code scheduler} refuses with
    * @throws ScheduledSendConflictException when the draft is already scheduled or being
    *           sent
+   * @throws DelegationRevokedException when the draft was written in a mailbox no longer
+   *           shared with the user (EXO-90595); {@code ObjectNotFoundException} when that
+   *           share is not theirs at all
+   * @throws SendModeMissingException when the draft is in the owner's name and her
+   *           consent does not cover it (EXO-90584); {@link SendModeUnavailableException}
+   *           when that name cannot be used now -- nothing is saved or scheduled then
    * @throws IllegalStateException {@code emailConnector.scheduled.serverCopyRemains} when
    *           the server copy could not be removed
    */
@@ -9701,6 +11805,13 @@ public class EmailBoxService {
         throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
       }
       requireNotScheduled(username, draftLocalId);
+      // A draft of a mailbox no longer shared with its writer would only fail at its date
+      // (EXO-90595): refused now, while the writer is there to be told.
+      draftShareSentKey(username, stored);
+      // So would one in the owner's name that her consent does not cover (EXO-90584): the
+      // name it is scheduled in -- the composer's, saved with the text just below, else
+      // the row's -- is checked now, and again when it goes out.
+      resolveSendIdentity(username, stored.getSendDelegationId(), draftSendModeAfterSave(draft, stored));
       try {
         readSendableDraftFiles(stored, username, userEmailSetting);
       } catch (IllegalStateException e) {
@@ -9714,7 +11825,13 @@ public class EmailBoxService {
       long serverCopyUid = serverDraftCopyUid(stored);
       if (serverCopyUid > 0 && isServerDraftsEnabled()) {
         if (!removeServerDraftCopy(serverCopyUid, stored.getMailHeaderId(), username, userEmailSetting)) {
-          emailScheduledSendStorage.delete(schedule.getId());
+          if (!emailScheduledSendStorage.deleteWaiting(schedule.getId())) {
+            // Claimed while the removal was failing: the mail is on its way, and its send
+            // removes the leftover copy (sendStoredDraft). Saying "nothing scheduled"
+            // now would be false.
+            LOG.warn("The server copy of a scheduled draft of user {} remains, but its send has started", username);
+            return schedule;
+          }
           throw new IllegalStateException("emailConnector.scheduled.serverCopyRemains");
         }
         emailBoxStorage.detachDraftFromServerCopy(username, draftLocalId);
@@ -9773,6 +11890,9 @@ public class EmailBoxService {
    *           {@code emailConnector.drafts.attach.unknown} or
    *           {@code emailConnector.drafts.send.attachmentGone}
    * @throws ScheduledSendConflictException from {@code takeSchedule}
+   * @throws SendModeMissingException when the mail is to go out in the owner's name and
+   *           her consent does not cover it (EXO-90584); {@link SendModeUnavailableException}
+   *           when that name cannot be used now or is unknown -- nothing is changed then
    */
   @Transactional(rollbackFor = Exception.class)
   public Email updateScheduledDraft(Email draft,
@@ -9795,6 +11915,10 @@ public class EmailBoxService {
       if (stored == null) {
         throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
       }
+      // The name it is to go out in (EXO-90584), as the edit leaves it, checked against the
+      // owner's consent while the writer is here to be told; checked again when it goes.
+      String sendMode = draftSendModeAfterSave(draft, stored);
+      resolveSendIdentity(username, stored.getSendDelegationId(), sendMode);
       // The schedule row first: past this line no dispatcher can claim the mail until
       // the edit is committed, and a refusal here has written nothing.
       takeSchedule.take();
@@ -9844,6 +11968,7 @@ public class EmailBoxService {
       content.setTo(draft.getTo());
       content.setCc(draft.getCc());
       content.setBcc(draft.getBcc());
+      content.setSendMode(sendMode);
       Email current = withFiles != null ? withFiles : stored;
       saveDraftBeforeSend(content, current);
       return emailBoxStorage.getDraftByLocalId(username, draftLocalId);
@@ -9867,18 +11992,35 @@ public class EmailBoxService {
    * If the node stops between the acceptance and the record, the caller's recovery
    * finds the send interrupted and never sends again (see
    * {@code EmailScheduledSendService}).
+   * <p>
+   * A draft written in a mailbox shared with its owner (EXO-90595) goes through that
+   * share: checked again before anything else -- no longer the owner's, or no longer
+   * accepted, and the send fails PERMANENT with {@link ScheduledSendError#MAILBOX_UNSHARED},
+   * nothing sent -- and, once transmitted, a copy is filed in the mailbox owner's Sent
+   * as an interactive send files it. What became of that copy is answered, for the
+   * caller to tell the sender when it could not be filed; the send stays a success.
+   * <p>
+   * A draft scheduled in the owner's name (EXO-90584) goes out in that name, from the row,
+   * after the owner's consent is checked again: withdrawn or narrowed since, the send
+   * fails PERMANENT with {@link ScheduledSendError#SEND_MODE_WITHDRAWN}; a name that can
+   * no longer be used (switched off, not declared, a refusal recorded) with
+   * {@link ScheduledSendError#SEND_MODE_UNAVAILABLE}; refused by the owner's mail server
+   * now, with {@link ScheduledSendError#SEND_MODE_REFUSED}, the refusal recorded on the
+   * share. Never in the sender's own name instead (PO decision Q-5).
    *
    * @param username the mailbox owner, as whom the mail is sent
    * @param draftLocalId the draft's handle
    * @param onTransmitted run once the mail server accepted the message
+   * @return the sent mail's subject and what became of the owner's copy
    * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
-   *           PERMANENT (refused before anything was accepted), AMBIGUOUS (may have
-   *           been accepted)
+   *           PERMANENT (refused before anything was accepted, a mailbox no longer
+   *           shared or a name no longer allowed included), AMBIGUOUS (may have been
+   *           accepted)
    * @throws ObjectNotFoundException if the draft is gone
    */
-  public void sendStoredDraft(String username,
-                              String draftLocalId,
-                              Runnable onTransmitted) throws ScheduledSendFailure, ObjectNotFoundException {
+  public StoredDraftSent sendStoredDraft(String username,
+                                         String draftLocalId,
+                                         Runnable onTransmitted) throws ScheduledSendFailure, ObjectNotFoundException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9893,6 +12035,7 @@ public class EmailBoxService {
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
     lock.lock();
     boolean sent = false;
+    OwnerCopy ownerCopy = null;
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
@@ -9904,6 +12047,20 @@ public class EmailBoxService {
         // the retry finds the draft gone (sent) or back to its state (refused).
         throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.NETWORK, null);
       }
+      // The mailbox the mail was written in, checked again now and before anything else
+      // (EXO-90595): a share that has ended since fails the send, which is then never
+      // made from the owner's own mailbox instead.
+      String ownerSentKey;
+      try {
+        ownerSentKey = draftShareSentKey(username, stored);
+      } catch (ObjectNotFoundException | DelegationRevokedException e) {
+        throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED, e);
+      }
+      // The name it was scheduled in, from the row, checked again against the owner's
+      // consent now (EXO-90584, PO decision Q-5): a consent withdrawn or narrowed since, or
+      // a name that can no longer be used, fails the send -- it never goes out in the
+      // sender's own name instead.
+      SendIdentity identity = scheduledSendIdentity(username, stored);
       List<EmailAttachment> storedAttachments;
       try {
         storedAttachments = readSendableDraftFiles(stored, username, userEmailSetting);
@@ -9915,7 +12072,7 @@ public class EmailBoxService {
       // the lock landed): taken away before the send, so no other client can send it
       // too. Not a reason to refuse: the cleanup after the send retries its removal.
       removeLeftoverServerCopy(stored, username, userEmailSetting);
-      MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+      MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector, identity);
       try {
         try {
           smtpTransmitter.transmit(message);
@@ -9933,11 +12090,16 @@ public class EmailBoxService {
                                            emailConnector.getAuthProviderName(),
                                            username,
                                            ConnectorCredentialsChannel.SMTP);
-          message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+          // Rebuilt in the name the draft was scheduled in, as the first attempt was (EXO-90584).
+          message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector, identity);
           smtpTransmitter.transmit(message);
         }
       } catch (SmtpTransmitter.TransmissionException e) {
-        ScheduledSendFailure failure = classifyTransmissionFailure(e);
+        ScheduledSendFailure failure = classifyScheduledFailure(e, username, identity);
+        if (failure.getError() == ScheduledSendError.SEND_MODE_REFUSED) {
+          // Logged where it is recorded, without the server's words (DEBUG only).
+          throw failure;
+        }
         LOG.warn("The scheduled send of a draft of user {} through {}:{} failed ({}, {})",
                  username,
                  emailConnector.getSmtpUrl(),
@@ -9959,18 +12121,45 @@ public class EmailBoxService {
                  username,
                  e);
       }
+      if (identity != null) {
+        // The trail of a mail in another's name, as the interactive send writes it.
+        recordSentInOwnersName(message, username, identity);
+      }
       try {
         afterTransmission(message, stored, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
       } catch (RuntimeException e) {
         LOG.warn("A scheduled mail of user {} was sent but its post-send bookkeeping failed", username, e);
       }
+      if (ownerSentKey != null) {
+        // The owner's copy of a mail sent from their mailbox (EXO-90551), before the
+        // cleanup frees the stored files its parts stream from. Fenced: the mail is out.
+        // Its outcome is answered to the caller, never recorded as a send failure.
+        ownerCopy = copyToOwnerSent(message,
+                                    username,
+                                    userEmailSetting,
+                                    ownerSentKey,
+                                    sentByOf(identity, emailConnector, userEmailSetting, username));
+      } else if (stored.getSendDelegationId() != null) {
+        ownerCopy = OwnerCopy.SKIPPED;
+      }
       cleanupSentDraft(stored, username, userEmailSetting);
+      return new StoredDraftSent(stored.getSubject(), ownerCopy);
     } finally {
       lock.unlock();
       if (sent) {
         draftLocks.remove(lockKey);
       }
     }
+  }
+
+  /**
+   * What a scheduled send answers once its mail went out (EXO-90595).
+   *
+   * @param subject the sent mail's subject, for a notification about it
+   * @param ownerCopy what became of the copy in the shared mailbox owner's Sent, null
+   *          for a mail of the sender's own mailbox
+   */
+  public record StoredDraftSent(String subject, OwnerCopy ownerCopy) {
   }
 
   /**
@@ -10027,10 +12216,14 @@ public class EmailBoxService {
    * how a scheduled send whose outcome is unknown is resolved (EXO-90434). A server
    * that files its own copy of what it relays (Gmail, Outlook) has it at once; on
    * others the copy exists only if the send got as far as appending it.
+   * <p>
+   * Looked up through {@link #searchByMessageId}, so on every server (Stalwart matches
+   * only the bare id, EXO-90597) and exactly: a longer id the server's substring match
+   * returns is not this mail, and must not confirm it as sent.
    *
    * @param username the mailbox owner
    * @param messageId the Message-ID the draft was pinned with
-   * @return true when a message with that id is in the Sent folder
+   * @return true when a message carrying exactly that id is in the Sent folder
    * @throws IllegalStateException when the mailbox cannot be read
    */
   public boolean isInSentFolder(String username, String messageId) {
@@ -10050,8 +12243,7 @@ public class EmailBoxService {
         return false;
       }
       sentFolder.open(Folder.READ_ONLY);
-      Message[] found = sentFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
-      return found != null && found.length > 0;
+      return !searchByMessageId(sentFolder, messageId).isEmpty();
     } catch (Exception e) {
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
     } finally {
@@ -10070,6 +12262,8 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param emailConnector the connector the user is bound to
+   * @param identity the owner's name the draft was scheduled in, checked at dispatch
+   *          (EXO-90584); null for the sender's own
    * @return the message
    * @throws ScheduledSendFailure PERMANENT: TOO_LARGE, AUTHENTICATION (no credentials
    *           produced), RECIPIENT_REFUSED (an address that does not parse) or INTERNAL
@@ -10078,12 +12272,23 @@ public class EmailBoxService {
                                             List<EmailAttachment> storedAttachments,
                                             String username,
                                             UserEmailSetting userEmailSetting,
-                                            EmailConnector emailConnector) throws ScheduledSendFailure {
+                                            EmailConnector emailConnector,
+                                            SendIdentity identity) throws ScheduledSendFailure {
     // No upload ever rides along: a stored draft has only its stored files, which the
     // send must not free (they belong to the draft until cleanupSentDraft).
     List<String> uploadIds = new ArrayList<>();
     try {
-      return buildOutgoingDraftMessage(stored, stored, storedAttachments, username, userEmailSetting, emailConnector, uploadIds, true);
+      // In the name the row records, as checkSendMode resolved it at dispatch (EXO-90584);
+      // the draft's own pinned Message-ID either way.
+      return buildOutgoingDraftMessage(stored,
+                                       stored,
+                                       storedAttachments,
+                                       username,
+                                       userEmailSetting,
+                                       emailConnector,
+                                       uploadIds,
+                                       true,
+                                       identity);
     } catch (ConnectorCredentialsException e) {
       throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.AUTHENTICATION, e);
     } catch (AddressException e) {
@@ -10098,6 +12303,62 @@ public class EmailBoxService {
     } finally {
       removeUploadResources(uploadIds);
     }
+  }
+
+  /**
+   * The name a scheduled draft goes out in (EXO-90584), from its row, checked against the
+   * owner's consent at dispatch -- the dispatcher acts as the sender, on the consent the
+   * owner recorded, and never widens it. A draft that never named a shape, or named the
+   * sender's own, goes out in the sender's name.
+   *
+   * @param username the sender
+   * @param stored the draft's row
+   * @return the identity, or null for the sender's own name
+   * @throws ScheduledSendFailure PERMANENT: {@link ScheduledSendError#SEND_MODE_WITHDRAWN}
+   *           when the consent no longer covers the shape,
+   *           {@link ScheduledSendError#SEND_MODE_UNAVAILABLE} when the shape cannot be
+   *           used now (or is unknown, or has no shared mailbox),
+   *           {@link ScheduledSendError#MAILBOX_UNSHARED} when the share is no longer the
+   *           sender's or no longer accepted
+   */
+  private SendIdentity scheduledSendIdentity(String username, Email stored) throws ScheduledSendFailure {
+    try {
+      return resolveSendIdentity(username, stored.getSendDelegationId(), stored.getSendMode());
+    } catch (SendModeMissingException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_WITHDRAWN, e);
+    } catch (SendModeUnavailableException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_UNAVAILABLE, e);
+    } catch (ObjectNotFoundException | DelegationRevokedException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED, e);
+    }
+  }
+
+  /**
+   * What a failed scheduled transmission means (EXO-90584): a mail in the owner's name
+   * that her mail server refused for being in her name is that, and nothing else -- a
+   * Postfix refusal of the sender arrives as refused RECIPIENTS, which the generic
+   * classification would report as the recipients' fault. It is recorded on the share, as
+   * the interactive send records it, and fails the send for good: nothing was accepted,
+   * and it is never retried in the sender's own name. A refusal the server reports after
+   * accepting the mail for some recipients stays the generic "maybe sent". Anything else
+   * is {@link #classifyTransmissionFailure}'s.
+   *
+   * @param e the failure and its step
+   * @param username the sender
+   * @param identity the name the mail was sent in, null for the sender's own
+   * @return the classified failure
+   */
+  private ScheduledSendFailure classifyScheduledFailure(SmtpTransmitter.TransmissionException e,
+                                                        String username,
+                                                        SendIdentity identity) {
+    boolean acceptedForSome = e.getCause() instanceof SendFailedException sendFailed
+        && !ArrayUtils.isEmpty(sendFailed.getValidSentAddresses());
+    if (identity != null && !acceptedForSome && isSenderPolicyRefusal(e)) {
+      return new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                      ScheduledSendError.SEND_MODE_REFUSED,
+                                      refusedInOwnersName(username, identity, e));
+    }
+    return classifyTransmissionFailure(e);
   }
 
   /**
@@ -10990,9 +13251,15 @@ public class EmailBoxService {
    * @param draftLocalId the local id, minted by the caller
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding, for their own address
+   * @param messageIdAddress the address whose domain the draft's Message-ID names: the
+   *          user's own, or the shared mailbox owner's for a draft in her name (EXO-90584)
    * @return the row to store
    */
-  private Email buildFirstDraftRevision(Email draft, String draftLocalId, String username, UserEmailSetting userEmailSetting) {
+  private Email buildFirstDraftRevision(Email draft,
+                                        String draftLocalId,
+                                        String username,
+                                        UserEmailSetting userEmailSetting,
+                                        String messageIdAddress) {
     Date now = new Date();
     Email toStore = new Email();
     toStore.setUserId(username);
@@ -11019,8 +13286,9 @@ public class EmailBoxService {
     // already require it. NOT EmailThreadingUtils#synthesizeMessageId: that mints an
     // @email-connector.local id for messages whose sender omitted one, and such an id
     // is a local placeholder that must never leave this box. This one goes out on the
-    // wire, so it carries the user's own domain, as RFC 5322 §3.6.4 intends.
-    toStore.setMailHeaderId(mintMessageId(userEmailSetting.getEmailAddress()));
+    // wire, so it carries the domain of the address the mail goes out from, as RFC 5322
+    // §3.6.4 intends: the user's own, or the shared mailbox owner's in her name.
+    toStore.setMailHeaderId(mintMessageId(messageIdAddress));
     String parentMessageId = draft.getMailHeaderId();
     if (StringUtils.isNotBlank(parentMessageId)) {
       toStore.setInReplyTo(parentMessageId);
@@ -11081,6 +13349,10 @@ public class EmailBoxService {
     // row's UID is, because a row can be left LOCAL_ONLY while carrying one (see
     // serverDraftCopyUid); reading the state for that left orphaned copies behind.
     toStore.setDraftState(DraftState.LOCAL_ONLY.equals(stored.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
+    // The name it goes out in (EXO-90584), as the composer shows it now; a save that
+    // says nothing keeps the stored one. Written with the revision, so a late autosave
+    // that is dropped cannot bring back a name the user has moved on from either.
+    toStore.setSendMode(draftSendModeAfterSave(draft, stored));
     return toStore;
   }
 
@@ -11419,21 +13691,94 @@ public class EmailBoxService {
   }
 
   /**
-   * What to search a folder for to find a Message-ID whatever the spelling of its
-   * domain: the id itself when its domain is a plain name, else its local part and the
-   * "@" -- a substring every spelling of the raw header contains.
+   * The messages of an open folder that carry the given Message-ID, exactly: an IMAP
+   * search on the keys of {@link #messageIdSearchKeys}, then every hit's raw header
+   * compared with {@link #sameMessageId}. The server's search only narrows; this filter
+   * decides, because a {@code HEADER} search is a substring match on most servers
+   * (Dovecot answers {@code a@host} with a message carrying {@code xa@host.org}) and a
+   * part of an identifier is not an identity. A blank id searches nothing, since a
+   * blank {@code HEADER} search would answer the whole folder.
    *
-   * @param messageId the Message-ID, as the row remembers it
-   * @return the search key
+   * @param folder the OPEN folder to look in
+   * @param messageId the Message-ID to look for, as the row or the draft remembers it
+   * @return the messages carrying exactly that id, in the server's order; empty when none
+   * @throws MessagingException if the folder cannot be searched or a hit's header read
    */
-  static String messageIdSearchKey(String messageId) {
-    String normalized = normalizeMessageId(messageId);
-    if (normalized == null || normalized.indexOf('@') < 0) {
-      return messageId;
+  static List<Message> searchByMessageId(Folder folder, String messageId) throws MessagingException {
+    SearchTerm term = messageIdSearchTerm(messageId);
+    if (term == null) {
+      return List.of();
     }
-    String domain = StringUtils.substringAfterLast(normalized, "@");
-    boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || StringUtils.contains(messageId, "[");
-    return literal ? StringUtils.substringBeforeLast(normalized, "@") + "@" : messageId;
+    Message[] hits = folder.search(term);
+    List<Message> exact = new ArrayList<>();
+    for (Message hit : hits == null ? new Message[0] : hits) {
+      String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
+      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+      if (sameMessageId(actual, messageId)) {
+        exact.add(hit);
+      }
+    }
+    return exact;
+  }
+
+  /**
+   * The IMAP search that finds a Message-ID on every server: one {@code HEADER
+   * Message-ID} term per key of {@link #messageIdSearchKeys} (always two or more for a
+   * non-blank id), OR'd into a single SEARCH command.
+   *
+   * @param messageId the Message-ID, as the row or the draft remembers it
+   * @return the search term, or null when the id is blank (nothing to search)
+   */
+  static SearchTerm messageIdSearchTerm(String messageId) {
+    List<String> keys = messageIdSearchKeys(messageId);
+    if (keys.isEmpty()) {
+      return null;
+    }
+    return new OrTerm(keys.stream().map(key -> (SearchTerm) new MessageIDTerm(key)).toArray(SearchTerm[]::new));
+  }
+
+  /**
+   * What to search a folder for to find a Message-ID on both server behaviours seen in
+   * the field (EXO-90597). Servers disagree on what {@code HEADER Message-ID} matches:
+   * <ul>
+   * <li>Stalwart (v0.11.8) matches the parsed id <em>exactly</em> and case-sensitively,
+   * without its angle brackets: {@code <x@host>} finds nothing, {@code x@host} finds it,
+   * {@code x@} and {@code x@HOST} find nothing;</li>
+   * <li>Dovecot matches any case-insensitive substring of the raw header, so any key
+   * below that is a substring of the raw header finds it;</li>
+   * <li>the bracketed id, the form the header itself carries, is kept as a conservative
+   * extra for a server that would match the raw value as a whole; none is known.</li>
+   * </ul>
+   * So the keys are the bare id and the bracketed id, and, when the domain is a literal,
+   * also the local part and the "@": the row may hold an ENVELOPE's spelling of a
+   * literal ({@code x@10.0.0.1} for {@code x@[10.0.0.1]}, EXO-90437), which the raw
+   * header does not contain but on a substring server contains {@code x@}. Such a row
+   * is not findable on an exact-match server; none is known to produce it, Stalwart's
+   * ENVELOPE keeping the square brackets, and the row always holds what the same
+   * server's ENVELOPE gave. Every key over-matches somewhere, which
+   * {@link #searchByMessageId}'s exact filter answers.
+   *
+   * @param messageId the Message-ID, as the row or the draft remembers it
+   * @return the distinct search keys, bare id first; empty when the id is blank
+   */
+  static List<String> messageIdSearchKeys(String messageId) {
+    String bare = StringUtils.trimToEmpty(messageId);
+    bare = StringUtils.removeEnd(StringUtils.removeStart(bare, "<"), ">").trim();
+    if (bare.isEmpty()) {
+      return List.of();
+    }
+    Set<String> keys = new LinkedHashSet<>();
+    keys.add(bare);
+    keys.add("<" + bare + ">");
+    int at = bare.lastIndexOf('@');
+    if (at > 0) {
+      String domain = StringUtils.removeEnd(StringUtils.removeStart(bare.substring(at + 1), "["), "]");
+      boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || bare.startsWith("[", at + 1);
+      if (literal) {
+        keys.add(bare.substring(0, at + 1));
+      }
+    }
+    return List.copyOf(keys);
   }
 
   /**
@@ -11610,11 +13955,11 @@ public class EmailBoxService {
     if (StringUtils.isBlank(messageId)) {
       return -1;
     }
-    Message[] found = draftsFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
-    if (found == null || found.length == 0) {
+    List<Message> found = searchByMessageId(draftsFolder, messageId);
+    if (found.isEmpty()) {
       return -1;
     }
-    return draftsFolder.getUID(found[found.length - 1]);
+    return draftsFolder.getUID(found.get(found.size() - 1));
   }
 
   /**
@@ -11715,6 +14060,15 @@ public class EmailBoxService {
     }
     if (StringUtils.isNotBlank(draft.getMailReferences())) {
       message.setHeader(HEADER_REFERENCES, draft.getMailReferences());
+    }
+    // The mailbox shared with the writer the draft belongs to, and the name it goes out
+    // in (EXO-90598): what a re-import needs to put it back where it was written. Only on
+    // this Drafts copy -- a send builds its own message -- and only for a shared mailbox.
+    if (draft.getSendDelegationId() != null && draft.getSendDelegationId() > 0) {
+      message.setHeader(HEADER_EXO_DRAFT_MAILBOX, String.valueOf(draft.getSendDelegationId()));
+      if (StringUtils.isNotBlank(draft.getSendMode())) {
+        message.setHeader(HEADER_EXO_DRAFT_SEND_MODE, draft.getSendMode());
+      }
     }
     message.setFlag(Flags.Flag.DRAFT, true);
     message.setFlag(Flags.Flag.SEEN, true);
@@ -12492,6 +14846,10 @@ public class EmailBoxService {
           List<EmailRecipient> emailReplyToRecipients = EmailConnectorUtils.getEmailRecipients(message.getReplyTo(),
                                                                                                username,
                                                                                                false);
+          // The receiving server's sender-authentication verdict, which only the live
+          // message carries (EXO-90841): read now, kept with the row for the reader's banner.
+          emailContent.setAuthFailure(EmailSecurityUtils.authenticationFailure(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS),
+                                                                              emailSender != null ? emailSender.getAddress() : null));
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
           String references = firstHeader(message, HEADER_REFERENCES);
@@ -12542,7 +14900,10 @@ public class EmailBoxService {
                                                 // attachments are parts of a message on the server.
                                                 null, false, null, null, null,
                                                 // The read-receipt fields, set by name just below.
-                                                false, null, null, false, null, null, null);
+                                                false, null, null, false, null, null, null,
+                                                // A synced message is no draft of a shared mailbox (EXO-90595),
+                                                // and names no identity to send it in (EXO-90584).
+                                                null, null, null);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -13010,6 +15371,12 @@ public class EmailBoxService {
    * quietest way there is to hand somebody back what they threw away. The remote
    * {@link #searchEmails} agrees, by covering INBOX / SENT / ARCHIVE and no other
    * folder.
+   * <p>
+   * It also reads the user's mirror of the mailboxes shared with them whose search
+   * toggle is on (EXO-90554, {@link EmailDelegationService#getSharedMailboxSearchFolders}):
+   * never the owner's Trash or Spam, and each such hit carries its share and its
+   * owner's name, so it is never offered as the user's own mail. The Favorites filter
+   * leaves them out: a shared mailbox's star is its owner's favorite, not the user's.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject, the sender and the body
@@ -13048,11 +15415,17 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     String term = query.trim().toLowerCase();
-    // Not the mailboxes somebody shared with the user (EXO-90557): a hit says nothing
-    // of whose mail it is, and it would be offered as theirs.
-    List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
-    List<Email> cached = sharedKeys.isEmpty() ? emailBoxStorage.getEmailsForSearch(username)
-                                              : emailBoxStorage.getEmailsForSearch(username, sharedKeys);
+    // The user's own mail is read without any folder of a mailbox shared with them
+    // (EXO-90557): those come back only through the scope below, each hit labelled with
+    // its owner (EXO-90554) -- never as the user's own.
+    SharedMailboxSearchFolders shared = emailDelegationService.getSharedMailboxSearchFolders(username);
+    List<String> sharedKeys = shared.sharedKeys();
+    List<Email> cached = new ArrayList<>(sharedKeys.isEmpty() ? emailBoxStorage.getEmailsForSearch(username)
+                                                              : emailBoxStorage.getEmailsForSearch(username, sharedKeys));
+    // Not under the Favorites filter: a shared mailbox's star is its owner's favorite,
+    // never the user's (EXO-90550), so a favorites-only search is the user's own mail.
+    Map<String, SharedMailboxSearchScope> sharedScopes = favoritesOnly ? Map.of() : shared.searchable();
+    cached.addAll(emailBoxStorage.getEmailsForSearchInFolders(username, sharedScopes.keySet()));
     List<Email> matches = cached
                                          .stream()
                                          .filter(email -> !favoritesOnly || email.isStarred())
@@ -13062,17 +15435,34 @@ public class EmailBoxService {
                                          .toList();
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.max(limit, 1))
-                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
-                                                                                 email.getFolder(),
-                                                                                 email.getSubject(),
-                                                                                 email.getSender(),
-                                                                                 email.getReceivedDate(),
-                                                                                 email.isRead(),
-                                                                                 email.isStarred(),
-                                                                                 true,
-                                                                                 buildExcerpt(email, term)))
+                                             .map(email -> cachedSearchResult(email, term, sharedScopes.get(email.getFolder())))
                                              .toList();
     return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
+  }
+
+  /**
+   * One hit of the search over cached mail: the user's own, or labelled with the shared
+   * mailbox it was read from (EXO-90554), so the card names the owner and the click
+   * opens that mailbox.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @param sharedScope whose mailbox it is, null for the user's own
+   * @return the hit
+   */
+  private EmailSearchResult cachedSearchResult(Email email, String term, SharedMailboxSearchScope sharedScope) {
+    return new EmailSearchResult(email.getMailRemoteId(),
+                                 email.getFolder(),
+                                 email.getSubject(),
+                                 email.getSender(),
+                                 email.getReceivedDate(),
+                                 email.isRead(),
+                                 email.isStarred(),
+                                 true,
+                                 buildExcerpt(email, term),
+                                 null,
+                                 sharedScope == null ? null : sharedScope.delegationId(),
+                                 sharedScope == null ? null : sharedScope.ownerFullName());
   }
 
   /**
@@ -13187,6 +15577,13 @@ public class EmailBoxService {
    * asking for everything and dropping the rest here would return the newest hits and
    * then throw most of them away, leaving an older favorite invisible behind a page of
    * discarded matches.
+   * <p>
+   * A folder of a mailbox shared with the user (EXO-90590) is searched in the user's
+   * mirror of it instead, never on the server: only while its share is accepted, and
+   * only a folder the unified search would read there too
+   * ({@link EmailDelegationService#isSearchableSharedFolder}) -- the mirror holds that
+   * folder's recent window, so its hits are what the mailbox's list shows, not the
+   * owner's whole history.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject or the sender
@@ -13197,10 +15594,14 @@ public class EmailBoxService {
    * @param unreadOnly when {@code true}, only unread messages match
    * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
    * @param sinceDays only messages received in the last N days match, null for no limit
-   * @param folder the folder to search: INBOX, SENT or ARCHIVE
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE, or a searchable folder
+   *          of a mailbox shared with the user
    * @param limit how many hits to return
    * @return the newest matching messages plus the total match count
    * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of an unusable criterion
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchEmails(String username,
                                             String query,
@@ -13211,24 +15612,61 @@ public class EmailBoxService {
                                             Integer sinceDays,
                                             String folder,
                                             int limit) throws IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setFavoritesOnly(favoritesOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchEmails(username, criteria, folder, limit);
+  }
+
+  /**
+   * The same search, with every criterion of the mailbox's advanced search (EXO-90838):
+   * besides the text, the sender, the recipients, the unread and starred narrowings and
+   * the age window, the words of the subject or the body, a range of days and the
+   * messages carrying an attachment. All of them are terms of the one IMAP SEARCH for the
+   * user's own folders ({@link #buildEmailSearchTerm(EmailSearchCriteria, Date)}), and
+   * filters of the user's copy for a folder of a mailbox shared with them.
+   *
+   * @param username the mailbox owner
+   * @param criteria what to match, at least one criterion
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE, or a searchable folder
+   *          of a mailbox shared with the user
+   * @param limit how many hits to return
+   * @return the newest matching messages plus the total match count
+   * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of {@link #validateSearchCriteria}
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
+   */
+  public EmailSearchResultPage searchEmails(String username,
+                                            EmailSearchCriteria criteria,
+                                            String folder,
+                                            int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
     }
     if (!isSearchableFolder(folder)) {
+      if (emailDelegationService.isSearchableSharedFolder(username, folder)) {
+        // A folder of a mailbox shared with the user, where the mail drawer's own search
+        // box runs while it shows that mailbox (EXO-90590): answered from the user's
+        // mirror of that folder -- what that mailbox's list shows -- and never from the
+        // server, which the user's own session reaches only under the shared namespace.
+        // The key is re-checked against the user's own accepted shares on every search.
+        return searchMirror(username, folder, criteria, limit);
+      }
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    if (sinceDays != null && sinceDays < 0) {
-      // A negative window is a future-dated lower bound: it matches nothing, silently,
-      // and reads to the caller as "the search is broken" rather than "the input was".
-      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
-    }
-    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    SearchTerm searchTerm = buildEmailSearchTerm(query, from, to, unreadOnly, favoritesOnly, since);
-    if (searchTerm == null) {
-      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
-    }
+    validateSearchCriteria(criteria);
+    Date since = criteria.getSinceDays() == null ? null
+                                                 : new Date(System.currentTimeMillis()
+                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
+    SearchTerm searchTerm = buildEmailSearchTerm(criteria, since);
+    boolean favoritesOnly = criteria.isFavoritesOnly();
     int cappedLimit = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
     Store store = null;
     Folder remoteFolder = null;
@@ -13240,25 +15678,57 @@ public class EmailBoxService {
         return new EmailSearchResultPage(List.of(), 0);
       }
       remoteFolder.open(Folder.READ_ONLY);
-      Message[] found = remoteFolder.search(searchTerm);
+      // The attachment criterion alone leaves no term: the newest messages of the folder
+      // are examined instead (see below), never the whole folder.
+      Message[] found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
       if (found == null || found.length == 0) {
         return new EmailSearchResultPage(List.of(), 0);
       }
-      // The server lists matches in mailbox order (oldest first): the page is the
-      // TAIL — the newest hits — because "the mail I'm looking for" skews recent
-      // even when the query matches years of history.
-      Message[] page = found.length <= cappedLimit ? found : Arrays.copyOfRange(found, found.length - cappedLimit, found.length);
-      // One batched round-trip for the whole page: reading subject/from/date/flags
-      // below is then served from memory. Without this every getter is its own
-      // per-message FETCH — the regression that must never come back.
-      remoteFolder.fetch(page, buildSearchResultFetchProfile());
+      int totalMatches = searchTerm == null ? remoteFolder.getMessageCount() : found.length;
+      int scanned = 0;
+      Message[] page;
+      if (criteria.isAttachmentsOnly()) {
+        // The attachment criterion is eXo's (the paperclip of the list), never an IMAP
+        // term (EXO-90838): the newest matches are examined against the attachment rows
+        // eXo would write for them, from their MIME structure -- one batched FETCH with
+        // the page's own items, no body -- and the count covers those examined.
+        Message[] window = newest(found, ATTACHMENT_SCAN_LIMIT);
+        FetchProfile structureProfile = buildSearchResultFetchProfile();
+        structureProfile.add(FetchProfile.Item.CONTENT_INFO);
+        remoteFolder.fetch(window, structureProfile);
+        List<Message> withAttachment = new ArrayList<>();
+        for (Message message : window) {
+          if (hasStoredAttachment(message, username)) {
+            withAttachment.add(message);
+          }
+        }
+        scanned = totalMatches > window.length ? window.length : 0;
+        totalMatches = withAttachment.size();
+        page = newest(withAttachment.toArray(new Message[0]), cappedLimit);
+      } else {
+        // The server lists matches in mailbox order (oldest first): the page is the
+        // TAIL — the newest hits — because "the mail I'm looking for" skews recent
+        // even when the query matches years of history.
+        page = newest(found, cappedLimit);
+        // One batched round-trip for the whole page: reading subject/from/date/flags
+        // below is then served from memory. Without this every getter is its own
+        // per-message FETCH — the regression that must never come back.
+        remoteFolder.fetch(page, buildSearchResultFetchProfile());
+      }
+      if (page.length == 0) {
+        EmailSearchResultPage empty = new EmailSearchResultPage(List.of(), 0, favoritesOnly);
+        empty.setScanned(scanned);
+        return empty;
+      }
       UIDFolder uidFolder = (UIDFolder) remoteFolder;
       List<Long> pageUids = new ArrayList<>(page.length);
       for (Message message : page) {
         pageUids.add(uidFolder.getUID(message));
       }
       // One IN query for the whole page — never a per-hit lookup.
-      Set<Long> cachedUids = new HashSet<>(emailBoxStorage.getCachedMailRemoteIds(username, folder, pageUids));
+      // The same single statement also names each cached hit's row (EXO-90555): the
+      // email_id an agent tool takes, which a UID -- numbered per folder -- is not.
+      Map<Long, Long> cachedIds = emailBoxStorage.getCachedEmailIds(username, folder, pageUids);
       List<EmailSearchResult> results = new ArrayList<>(page.length);
       for (int i = page.length - 1; i >= 0; i--) {
         try {
@@ -13272,16 +15742,19 @@ public class EmailBoxService {
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
                                             page[i].isSet(Flags.Flag.FLAGGED),
-                                            cachedUids.contains(messageUid),
+                                            cachedIds.containsKey(messageUid),
                                             // Envelope-only: quoting the body would cost
                                             // one round-trip per hit.
-                                            null));
+                                            null,
+                                            cachedIds.get(messageUid)));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
         }
       }
-      return new EmailSearchResultPage(results, found.length, favoritesOnly);
+      EmailSearchResultPage resultPage = new EmailSearchResultPage(results, totalMatches, favoritesOnly);
+      resultPage.setScanned(scanned);
+      return resultPage;
     } catch (SearchException e) {
       // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
       // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
@@ -13295,7 +15768,7 @@ public class EmailBoxService {
       // Folder.search — a CLIENT-side scan that pulls the whole folder down to match
       // locally. That fallback is silent and, on the 161k-message mailboxes this
       // feature targets, is the linear scan the design avoids everywhere else (see
-      // buildEmailSearchTerm on why there is no BODY term); it reads as a hang, not an
+      // buildEmailSearchTerm on why the search box text has no BODY term); it reads as a hang, not an
       // error. Flipping that property is the real fix but it is not search's to make
       // alone — the same Session serves the sync and the archive thread-completion
       // search, which would start throwing where they now degrade. Mapped here so the
@@ -13514,30 +15987,162 @@ public class EmailBoxService {
                                          boolean unreadOnly,
                                          boolean favoritesOnly,
                                          Date since) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setFavoritesOnly(favoritesOnly);
+    return buildEmailSearchTerm(criteria, since);
+  }
+
+  /**
+   * The IMAP search term of every criterion of the mailbox's advanced search
+   * (EXO-90838), combined with AND.
+   * <ul>
+   * <li>The words are matched against the subject or the body ({@code BODY}); the search
+   * box's own text never is. On a server without a full-text index a body search is a
+   * scan of the folder, so the body is searched only while the user has set words in the
+   * advanced search -- and every search sent meanwhile, the search box's included,
+   * searches it again.</li>
+   * <li>The days are IMAP {@code SINCE} (that day included) and {@code BEFORE} (that day
+   * excluded); JavaMail writes the day of the date it is given in eXo's JVM zone, so
+   * each bound is that day's first instant there ({@link #startOfServerDay}), which is
+   * also correct when JavaMail falls back to matching on the client.</li>
+   * <li>The attachment criterion is never a term: IMAP has no key for it, and a
+   * {@code HEADER Content-Type} search is a scan of the folder some servers time out on.
+   * {@link #searchEmails(String, EmailSearchCriteria, String, int)} examines the newest
+   * matches' structure instead ({@link #hasStoredAttachment}).</li>
+   * </ul>
+   *
+   * @param criteria the criteria; its {@code sinceDays} is read through {@code since}
+   * @param since only messages received at or after this date match, may be null
+   * @return the IMAP search term, or {@code null} when no criterion was given
+   */
+  static SearchTerm buildEmailSearchTerm(EmailSearchCriteria criteria, Date since) {
     List<SearchTerm> terms = new ArrayList<>();
-    if (StringUtils.isNotBlank(query)) {
-      terms.add(new OrTerm(new SubjectTerm(query.trim()), new FromStringTerm(query.trim())));
+    String query = StringUtils.trimToNull(criteria.getQuery());
+    if (query != null) {
+      terms.add(new OrTerm(new SubjectTerm(query), new FromStringTerm(query)));
     }
-    if (StringUtils.isNotBlank(from)) {
-      terms.add(new FromStringTerm(from.trim()));
+    String from = StringUtils.trimToNull(criteria.getFrom());
+    if (from != null) {
+      terms.add(new FromStringTerm(from));
     }
-    if (StringUtils.isNotBlank(to)) {
-      terms.add(new OrTerm(new RecipientStringTerm(Message.RecipientType.TO, to.trim()),
-                           new RecipientStringTerm(Message.RecipientType.CC, to.trim())));
+    String to = StringUtils.trimToNull(criteria.getTo());
+    if (to != null) {
+      terms.add(new OrTerm(new RecipientStringTerm(Message.RecipientType.TO, to),
+                           new RecipientStringTerm(Message.RecipientType.CC, to)));
     }
-    if (unreadOnly) {
+    String words = StringUtils.trimToNull(criteria.getWords());
+    if (words != null) {
+      terms.add(new OrTerm(new SubjectTerm(words), new BodyTerm(words)));
+    }
+    if (criteria.isUnreadOnly()) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
     }
-    if (favoritesOnly) {
+    if (criteria.isFavoritesOnly()) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.FLAGGED), true));
     }
     if (since != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));
     }
+    if (criteria.getAfter() != null) {
+      terms.add(new ReceivedDateTerm(ComparisonTerm.GE, startOfServerDay(criteria.getAfter())));
+    }
+    if (criteria.getBefore() != null) {
+      terms.add(new ReceivedDateTerm(ComparisonTerm.LT, startOfServerDay(criteria.getBefore())));
+    }
     if (terms.isEmpty()) {
       return null;
     }
     return terms.size() == 1 ? terms.get(0) : new AndTerm(terms.toArray(new SearchTerm[0]));
+  }
+
+  /**
+   * The newest messages of a list in mailbox order (oldest first): its tail.
+   *
+   * @param messages the messages, oldest first
+   * @param count how many at most
+   * @return the last {@code count} of them, oldest first
+   */
+  private static Message[] newest(Message[] messages, int count) {
+    return messages.length <= count ? messages : Arrays.copyOfRange(messages, messages.length - count, messages.length);
+  }
+
+  /**
+   * The newest messages of an open folder, by sequence number, without a SEARCH: what a
+   * search with the attachment criterion alone examines.
+   *
+   * @param folder the open folder
+   * @param count how many at most
+   * @return the last {@code count} messages, oldest first
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static Message[] newestMessages(Folder folder, int count) throws MessagingException {
+    int total = folder.getMessageCount();
+    return total <= 0 ? new Message[0] : folder.getMessages(Math.max(1, total - count + 1), total);
+  }
+
+  /**
+   * Whether eXo would write an attachment row for a message -- the paperclip of the list
+   * (EXO-90838): read from its MIME structure as the sync's extractor
+   * ({@code EmailConnectorUtils#getHtmlFromMimeMultipart}) reads its parts, one level at
+   * a time. In a multipart, the first {@code text/html} and the first {@code text/plain}
+   * are the body, any other part with no disposition or an {@code attachment} one is an
+   * attachment -- a part marked {@code inline}, an image of the body or not, never is --
+   * and a nested multipart is walked, its attachments kept only when it holds a body
+   * too, as the extractor keeps a nested level's only when that level gave it text. A
+   * message that is not a multipart has none. Only the structure is read: on a message
+   * fetched with {@code FetchProfile.Item.CONTENT_INFO} no body is downloaded. A message
+   * whose structure cannot be read counts as having none.
+   *
+   * @param message the message
+   * @param username the mailbox owner, for the log
+   * @return true when eXo would list an attachment for it
+   */
+  static boolean hasStoredAttachment(Part message, String username) {
+    try {
+      return message.isMimeType(MULTIPART_ANY) && message.getContent() instanceof Multipart multipart
+          && readStructure(multipart)[1];
+    } catch (MessagingException | IOException e) {
+      LOG.debug("Could not read the structure of a searched message of user {}", username, e);
+      return false;
+    }
+  }
+
+  /**
+   * One level of {@link #hasStoredAttachment}: whether it holds a body, and whether it
+   * holds an attachment eXo would keep.
+   *
+   * @param multipart the multipart
+   * @return {@code [hasBody, hasAttachment]}
+   * @throws MessagingException when a part cannot be read
+   * @throws IOException when a nested multipart cannot be read
+   */
+  private static boolean[] readStructure(Multipart multipart) throws MessagingException, IOException {
+    boolean html = false;
+    boolean plain = false;
+    boolean nestedBody = false;
+    boolean attachment = false;
+    for (int i = 0; i < multipart.getCount(); i++) {
+      BodyPart part = multipart.getBodyPart(i);
+      String disposition = part.getDisposition();
+      if (part.isMimeType("text/html") && !html) {
+        html = true;
+      } else if (part.isMimeType("text/plain") && !plain) {
+        plain = true;
+      } else if (part.isMimeType(MULTIPART_ANY)) {
+        if (part.getContent() instanceof Multipart nested) {
+          boolean[] level = readStructure(nested);
+          nestedBody |= level[0];
+          attachment |= level[0] && level[1];
+        }
+      } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
+        attachment = true;
+      }
+    }
+    return new boolean[] { html || plain || nestedBody, attachment };
   }
 
   /**
@@ -14082,8 +16687,10 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param windowSize the number of most recent drafts to keep
+   * @return true when every Drafts message the window holds was imported or known; false
+   *         when one could not be, which the next sync must retry
    */
-  private void syncDraftRows(UIDFolder uidFolder,
+  private boolean syncDraftRows(UIDFolder uidFolder,
                              Message[] serverMessages,
                              List<Email> cachedDrafts,
                              Map<Long, Email> knownDraftsByUid,
@@ -14094,7 +16701,9 @@ public class EmailBoxService {
     // the janitor removes them on its own connection and must be able to prove, at that
     // point, that the message still sitting at that number is the one it judged.
     Map<Long, String> strayCopies = new LinkedHashMap<>();
-    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayCopies);
+    AtomicInteger failedImports = new AtomicInteger();
+    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayCopies,
+                                      failedImports);
     int detached = detachDraftsDeletedElsewhere(uidFolder, serverMessages, cachedDrafts, username);
     // The same cleanup every other folder gets, and the moment its draft guard stops
     // being theoretical: rows the server no longer has go, EXCEPT the ones this
@@ -14111,6 +16720,7 @@ public class EmailBoxService {
              detached,
              strayCopies.size(),
              removedStrays);
+    return failedImports.get() == 0;
   }
 
   /**
@@ -14131,6 +16741,8 @@ public class EmailBoxService {
    * @param userEmailSetting the user's connector binding
    * @param strayCopies collects the copies of already-sent mail, by UID and by the
    *          Message-ID they were recognised through, for the janitor to remove
+   * @param failedImports counts the messages that could not be imported, for the
+   *          caller to have them retried
    * @return the number of drafts imported
    */
   private int importServerDrafts(UIDFolder uidFolder,
@@ -14138,7 +16750,8 @@ public class EmailBoxService {
                                  Map<Long, Email> knownDraftsByUid,
                                  String username,
                                  UserEmailSetting userEmailSetting,
-                                 Map<Long, String> strayCopies) {
+                                 Map<Long, String> strayCopies,
+                                 AtomicInteger failedImports) {
     int imported = 0;
     for (Message message : serverMessages) {
       try {
@@ -14159,6 +16772,7 @@ public class EmailBoxService {
         // Per message, like the rest of the sync: one unreadable draft must not stop
         // the others from arriving.
         LOG.warn("Error importing a draft of user {} from the Drafts folder", username, e);
+        failedImports.incrementAndGet();
       }
     }
     return imported;
@@ -14264,7 +16878,66 @@ public class EmailBoxService {
     draft.setMailReferences(references);
     draft.setThreadIndexRoot(threadIndexRoot != null ? threadIndexRoot : "");
     draft.setThreadId(computeThreadId(username, messageId, messageUid, inReplyTo, references, threadIndexRoot));
+    ImportedDraftMailbox mailbox = importedDraftMailbox(message, username);
+    draft.setSendDelegationId(mailbox.delegationId());
+    draft.setSendMode(mailbox.sendMode());
     emailBoxStorage.createEmail(draft);
+  }
+
+  /**
+   * The mailbox an imported draft was written in, and the name it goes out in, as its
+   * private headers claim them (EXO-90598) -- confirmed, never trusted:
+   * <ul>
+   * <li>no {@link #HEADER_EXO_DRAFT_MAILBOX}: the writer's own mailbox, as for any draft
+   * another client wrote;</li>
+   * <li>a share of the writer's own ({@link EmailDelegationService#requireOwnShare},
+   * whatever its status, as a draft's first save resolves it): that mailbox, and the
+   * name the header gives when it is one a draft can hold -- the row then reads exactly
+   * as it did before it was lost, so a share ended since is named "no longer shared"
+   * and refused at the send, and a consent withdrawn since is caught by the composer
+   * and by the send guard, as for any stored draft;</li>
+   * <li>anything else -- somebody else's share, an unknown or unreadable id: not a
+   * mailbox this writer can be told about, and not the writer's own either;
+   * {@link #UNRESOLVED_DRAFT_MAILBOX}, which every reader names as a mailbox no longer
+   * shared and no send takes from the writer's own mailbox. The header's id is never
+   * stored.</li>
+   * </ul>
+   * A failure to read the writer's shares is not an answer: it propagates, the draft is
+   * skipped by this sync, which keeps the snapshot it had -- older than this draft -- so
+   * the next one reads the folder again and retries it.
+   *
+   * @param message the Drafts message
+   * @param username the writer, whose Drafts folder it is
+   * @return the mailbox and the name, both null for the writer's own mailbox
+   * @throws MessagingException if the headers cannot be read
+   */
+  private ImportedDraftMailbox importedDraftMailbox(Message message, String username) throws MessagingException {
+    String named = StringUtils.trimToNull(firstHeader(message, HEADER_EXO_DRAFT_MAILBOX));
+    if (named == null) {
+      return new ImportedDraftMailbox(null, null);
+    }
+    EmailDelegation share = null;
+    try {
+      share = emailDelegationService.requireOwnShare(username, Long.parseLong(named));
+    } catch (NumberFormatException | ObjectNotFoundException e) {
+      LOG.warn("A draft of user {} names a mailbox that is not one of theirs; it is imported as written in a mailbox no longer shared",
+               username);
+    }
+    if (share == null || share.getId() == null) {
+      return new ImportedDraftMailbox(UNRESOLVED_DRAFT_MAILBOX, null);
+    }
+    SendMode mode = SendMode.of(firstHeader(message, HEADER_EXO_DRAFT_SEND_MODE));
+    return new ImportedDraftMailbox(share.getId(), mode == null ? null : mode.name());
+  }
+
+  /**
+   * What an imported draft's headers resolve to (EXO-90598).
+   *
+   * @param delegationId the share the draft belongs to, {@link #UNRESOLVED_DRAFT_MAILBOX}
+   *          for one that did not resolve, null for the writer's own mailbox
+   * @param sendMode the name it goes out in, as a draft row stores it, or null
+   */
+  private record ImportedDraftMailbox(Long delegationId, String sendMode) {
   }
 
   /**
@@ -15170,7 +17843,7 @@ public class EmailBoxService {
     Part current = root;
     int levelIndex = 0;
     for (String level : levels) {
-      if (!current.isMimeType("multipart/*")) {
+      if (!current.isMimeType(MULTIPART_ANY)) {
         throw new IllegalStateException("Trying to go deeper but part is not multipart at level " + levelIndex);
       }
       Multipart multipart = (Multipart) current.getContent();
@@ -15498,6 +18171,201 @@ public class EmailBoxService {
   }
 
   /**
+   * The mailbox shared with the user that one of their drafts belongs to (EXO-90595), as
+   * the composer names it when the draft is resumed: its owner, and whether it is still
+   * shared -- the server's word, whatever the drawer's switcher has loaded. A share that
+   * no longer resolves reads as not shared, never as the user's own mailbox.
+   *
+   * @param draftLocalId the draft's handle
+   * @param username the draft's owner
+   * @return the mailbox, or null for a draft of the user's own mailbox
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException if the user has no draft under that local id
+   */
+  public DraftMailbox getDraftMailbox(String draftLocalId, String username) throws IllegalAccessException,
+                                                                             ObjectNotFoundException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (stored == null) {
+      throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+    }
+    Long delegationId = stored.getSendDelegationId();
+    if (delegationId == null) {
+      return null;
+    }
+    return emailDelegationService.draftMailboxes(username, List.of(delegationId)).get(delegationId);
+  }
+
+  /**
+   * Names, on each draft of a listing, the shared mailbox it was written in
+   * (EXO-90595), each share looked up once for the whole listing. A draft of the user's
+   * own mailbox names none.
+   *
+   * @param username the drafts' owner
+   * @param drafts the listing's drafts
+   */
+  private void nameDraftMailboxes(String username, List<Email> drafts) {
+    List<Long> shares = drafts.stream().map(Email::getSendDelegationId).filter(Objects::nonNull).distinct().toList();
+    if (shares.isEmpty()) {
+      return;
+    }
+    Map<Long, DraftMailbox> mailboxes = emailDelegationService.draftMailboxes(username, shares);
+    for (Email draft : drafts) {
+      if (draft.getSendDelegationId() != null) {
+        draft.setSendMailbox(mailboxes.get(draft.getSendDelegationId()));
+      }
+    }
+  }
+
+  /**
+   * The share a draft's first save records (EXO-90595): the one the composer names, once
+   * it resolves as one of the writer's own shares -- the client's id is never stored on
+   * its word. Null for a draft of the writer's own mailbox. A share that ended meanwhile
+   * is still recorded, so the words are kept; the sends refuse it.
+   *
+   * @param draft the draft as the composer sent it
+   * @param username the writer
+   * @return the share, or null
+   * @throws IllegalArgumentException {@value #MAILBOX_NOT_FOUND_CODE} when the named share
+   *           is not the writer's
+   */
+  private EmailDelegation firstSaveShare(Email draft, String username) {
+    Long named = draft.getSendDelegationId();
+    if (named == null) {
+      return null;
+    }
+    try {
+      return emailDelegationService.requireOwnShare(username, named);
+    } catch (ObjectNotFoundException e) {
+      // Not a 404: on this endpoint that answer means "the draft is gone".
+      throw new IllegalArgumentException(MAILBOX_NOT_FOUND_CODE, e);
+    }
+  }
+
+  /**
+   * The name a save writes on a draft (EXO-90584), from what the composer sent: the
+   * shape's stored form -- {@code NONE}, {@code ON_BEHALF} or {@code AS} -- or null when
+   * the save says nothing, which keeps what the row holds. A draft of the writer's own
+   * mailbox has no owner to write in the name of: saying the writer's own name there
+   * records nothing, saying another's is refused.
+   *
+   * @param sendMode the shape as the request spells it, may be blank
+   * @param share the draft's share, null for the writer's own mailbox
+   * @return the stored form, or null
+   * @throws SendModeUnavailableException {@code emailConnector.sendMode.invalid} for an
+   *           unknown shape, {@code emailConnector.sendMode.noMailbox} for the owner's name
+   *           on a draft of the writer's own mailbox
+   */
+  static String incomingDraftSendMode(String sendMode, Long share) {
+    if (StringUtils.isBlank(sendMode)) {
+      return null;
+    }
+    SendMode mode = SendMode.of(sendMode);
+    if (mode == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (share != null) {
+      return mode.name();
+    }
+    if (mode == SendMode.NONE) {
+      return null;
+    }
+    throw new SendModeUnavailableException(SendModeUnavailableException.NO_MAILBOX);
+  }
+
+  /**
+   * The name a stored draft is to go out in (EXO-90584): the one the composer is showing,
+   * when the request carries the draft's text with it -- written onto the row by the
+   * save that precedes every send, like the text itself -- else the one the row holds.
+   *
+   * @param draft the draft as the request carries it
+   * @param stored the draft's row
+   * @return the stored form, or null when neither says
+   * @throws SendModeUnavailableException as {@link #incomingDraftSendMode} refuses
+   */
+  private String draftSendModeAfterSave(Email draft, Email stored) {
+    String incoming = incomingDraftSendMode(draft == null ? null : draft.getSendMode(), stored.getSendDelegationId());
+    return incoming != null ? incoming : stored.getSendMode();
+  }
+
+  /**
+   * The shape an interactive send of a draft goes out in (EXO-90584): the draft's row
+   * decides, as it stands once the text on screen is saved onto it. The request's
+   * {@code sendMode} parameter is read only for a draft that never recorded one -- saved
+   * before the draft's name was stored, or by a composer that did not send it -- and a
+   * parameter naming another shape than the row's is refused, never obeyed and never
+   * ignored: the row decides, and a request that disagrees with it is refused (the
+   * mailbox's rule, EXO-90595).
+   *
+   * @param recorded the draft's shape after the save, null when it never said
+   * @param requested the request's parameter, may be blank
+   * @return the shape to resolve, or null for the sender's own name
+   * @throws SendModeUnavailableException {@link SendModeUnavailableException#MISMATCH}
+   *           when the parameter names another shape than the row's;
+   *           {@code emailConnector.sendMode.invalid} for an unknown parameter
+   */
+  static String draftSendModeFor(String recorded, String requested) {
+    if (StringUtils.isBlank(requested)) {
+      return recorded;
+    }
+    SendMode asked = SendMode.of(requested);
+    if (asked == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (recorded == null) {
+      return asked.name();
+    }
+    if (asked != SendMode.of(recorded)) {
+      throw new SendModeUnavailableException(SendModeUnavailableException.MISMATCH);
+    }
+    return recorded;
+  }
+
+  /**
+   * The address whose domain a new draft's Message-ID names (EXO-90584): the owner's,
+   * when the draft is written in her name from her mailbox and her consent covers that
+   * name, as a mail sent in her name gets its id from her domain; the writer's own
+   * otherwise. Settled at the first save and kept after, whatever name the draft is
+   * finally sent in: the id is what its copy on the server and its Sent copy are matched
+   * by, so it is never minted again.
+   *
+   * @param share the draft's share, null for the writer's own mailbox
+   * @param sendMode the draft's shape, as stored
+   * @param userEmailSetting the writer's connector binding
+   * @return the address to mint from
+   */
+  private String messageIdAddress(EmailDelegation share, String sendMode, UserEmailSetting userEmailSetting) {
+    SendMode mode = SendMode.of(sendMode);
+    if (share != null && mode != null && mode != SendMode.NONE && share.allowsSend(mode)
+        && StringUtils.isNotBlank(share.getOwnerMailbox())) {
+      return share.getOwnerMailbox();
+    }
+    return userEmailSetting.getEmailAddress();
+  }
+
+  /**
+   * The one place a stored draft's mailbox is resolved before it is sent, interactively,
+   * scheduled or by its schedule (EXO-90595): the share the draft recorded, checked again
+   * now -- still the sender's, still accepted -- and the owner's Sent it files its copy
+   * into (EXO-90551, and the administrator's switch). A draft of the sender's own mailbox
+   * resolves to no copy. Called before anything is sent, claimed or taken apart, so an
+   * ended share refuses the send rather than let it leave from the sender's own mailbox.
+   *
+   * @param username the sender
+   * @param stored the draft's row
+   * @return the owner's Sent folder key, or null when no copy is to be filed
+   * @throws ObjectNotFoundException when the draft's share is not the sender's
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   */
+  private String draftShareSentKey(String username, Email stored) throws ObjectNotFoundException {
+    return ownerSentKeyFor(username, stored.getSendDelegationId());
+  }
+
+  /**
    * Files the copy of a mail just sent from a shared mailbox in its owner's Sent folder
    * (EXO-90551): an APPEND of the very message that went out, marked read, on the
    * sender's own session, into the folder the registry names for that share's Sent --
@@ -15509,9 +18377,17 @@ public class EmailBoxService {
    * @param username the sender
    * @param userEmailSetting the sender's connector binding
    * @param ownerSentKey the owner's Sent folder key, as {@link EmailDelegationService#ownerSentFolderKey} resolved it
+   * @param sentBy for a mail sent in the owner's name (EXO-90583), the sender's address,
+   *          stamped on this copy only as {@code X-Exo-Sent-By} (PO decision Q-7) -- after
+   *          the send and after the sender's own copy, so neither the recipients' mail nor
+   *          the sender's copy carries it; null for a mail in the sender's own name
    * @return FILED, or FAILED
    */
-  private OwnerCopy copyToOwnerSent(MimeMessage message, String username, UserEmailSetting userEmailSetting, String ownerSentKey) {
+  private OwnerCopy copyToOwnerSent(MimeMessage message,
+                                    String username,
+                                    UserEmailSetting userEmailSetting,
+                                    String ownerSentKey,
+                                    String sentBy) {
     Store store = null;
     IMAPFolder ownerSent = null;
     try {
@@ -15527,6 +18403,11 @@ public class EmailBoxService {
       // The owner's copy of mail that was sent, not new mail to them: the flag travels
       // with the APPEND.
       message.setFlag(Flags.Flag.SEEN, true);
+      if (StringUtils.isNotBlank(sentBy)) {
+        // For the owner reading her own Sent in any client: a mail sent as her carries
+        // nothing else saying she did not write it. The Message-ID is not re-minted.
+        message.setHeader(HEADER_EXO_SENT_BY, sentBy.trim());
+      }
       ownerSent.appendMessages(new Message[] { message });
       scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.SENT_COPY);
       return OwnerCopy.FILED;

@@ -154,8 +154,34 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             class="px-0 height-auto">
             <v-list-item-content class="py-0">
-              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': threadUnread }]" v-text="subject" />
+              <v-list-item-subtitle :class="['mb-1 text-color d-flex align-center', { 'font-weight-bold': threadUnread }]">
+                <!-- The suggestions of an assistant waiting for the user on this mail, or on
+                     the mails of its conversation (EXO-90669), as a count before the subject:
+                     the left edge is never under the row's hover actions. A native title,
+                     not a v-tooltip: this list streams thousands of rows. -->
+                <span
+                  v-if="waitingSuggestionCount"
+                  :title="waitingSuggestionsLabel"
+                  :aria-label="waitingSuggestionsLabel"
+                  role="img"
+                  class="primary white--text rounded-pill px-2 me-2 flex-shrink-0 caption font-weight-bold">{{ waitingSuggestionCount }}</span>
+                <span class="text-truncate">{{ subject }}</span>
+              </v-list-item-subtitle>
               <v-list-item-subtitle v-text="excerpt" />
+              <!-- The shared mailbox a draft was written in (EXO-90595), as the Scheduled
+                   view names it; nothing for the user's own. -->
+              <v-list-item-subtitle
+                v-if="draftMailboxLabel"
+                :class="email.sendMailbox.shared ? 'text-light-color' : 'warning--text'"
+                class="caption text-truncate draft-mailbox">
+                <v-icon
+                  :class="email.sendMailbox.shared ? 'icon-default-color' : 'warning--text'"
+                  size="11"
+                  class="me-1">
+                  fas fa-user-friends
+                </v-icon>
+                {{ draftMailboxLabel }}
+              </v-list-item-subtitle>
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
               v-if="!selectMode && !isMobile"
@@ -180,6 +206,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { waitingSuggestionCount } from '../../js/EmailConnectorMailFilters.js';
 import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 export default {
@@ -265,6 +292,25 @@ export default {
       return !!drag && drag.folder === (this.email.folder || 'INBOX')
         && this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread).some(id => drag.ids.includes(id));
     },
+    /**
+     * How many suggestions of an assistant wait for the user on the row's mail, or on the
+     * mails of its conversation that the list holds, as the list last read them.
+     *
+     * @returns {number} the count, 0 when none
+     */
+    waitingSuggestionCount() {
+      return waitingSuggestionCount(this.thread?.emails || [this.email]);
+    },
+    /**
+     * What the count before the subject says, for the tooltip and screen readers.
+     *
+     * @returns {string} the label
+     */
+    waitingSuggestionsLabel() {
+      return this.waitingSuggestionCount === 1
+        ? this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsOne')
+        : this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsCount', { 0: this.waitingSuggestionCount });
+    },
     gapSize() {
       return Math.abs(this.left);
     },
@@ -312,6 +358,15 @@ export default {
     // context menu already key on, rather than which folder happens to be listed.
     isDraft() {
       return !!this.email.draftLocalId;
+    },
+    /**
+     * The line naming the shared mailbox this draft was written in (EXO-90595), when the
+     * Drafts listing named one.
+     *
+     * @returns {String} the line, or an empty string
+     */
+    draftMailboxLabel() {
+      return this.isDraft ? this.$emailConnectorMailBoxService.draftMailboxLabel(this.email.sendMailbox, this, this.email.sendMode) : '';
     },
     // Who the row names, which is not the same question for a draft as for a message.
     //
