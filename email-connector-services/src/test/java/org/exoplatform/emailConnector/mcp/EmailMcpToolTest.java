@@ -302,6 +302,11 @@ class EmailMcpToolTest {
     IllegalArgumentException badUntil = assertThrows(IllegalArgumentException.class,
                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "yesterday", null));
     assertTrue(badUntil.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), badUntil.getMessage());
+    // A signed year parses as an ISO date, and its next day does not exist: refused as a
+    // day, never a DateTimeException out of the range's last day.
+    IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "+999999999-12-31", null));
+    assertTrue(farYear.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), farYear.getMessage());
     verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
 
     when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
