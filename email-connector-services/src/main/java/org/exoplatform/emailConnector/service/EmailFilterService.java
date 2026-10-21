@@ -526,7 +526,7 @@ public class EmailFilterService {
     filter.setMailboxScope(EmailFilter.SCOPE_OWN);
     filter.setMatchAll(true);
     filter.setConditions(List.of(new ServerRule.Condition(FilterConditionEvaluator.CATEGORY,
-                                                          ServerRule.EQUALS,
+                                                          ServerRule.EQUALS_OPERATOR,
                                                           null,
                                                           SEED_IMPORTANT_CATEGORY)));
     filter.setActions(List.of(new FilterAction(FilterAction.AGENT,
@@ -2868,7 +2868,7 @@ public class EmailFilterService {
     if (FilterConditionEvaluator.CATEGORY.equals(field)) {
       // By the category's stable key: a rename, a translation or a re-import keeps it.
       String key = StringUtils.trimToEmpty(value);
-      if (!ServerRule.EQUALS.equals(operator) || !EmailBoxService.DEFAULT_EMAIL_CATEGORY_NAME_IDS.contains(key)) {
+      if (!ServerRule.EQUALS_OPERATOR.equals(operator) || !EmailBoxService.DEFAULT_EMAIL_CATEGORY_NAME_IDS.contains(key)) {
         throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
       }
       return new ServerRule.Condition(field, operator, null, key);
