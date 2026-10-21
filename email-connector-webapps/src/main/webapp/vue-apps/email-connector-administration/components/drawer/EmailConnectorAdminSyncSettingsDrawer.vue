@@ -147,7 +147,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="customFoldersEnabled"
+              :input-value="customFoldersShown"
               :loading="savingCustomFolders"
               :disabled="savingCustomFolders"
               @change="onCustomFoldersChange" />
@@ -238,6 +238,7 @@ export default {
       draftsServerShown: true,
       savingDraftsServer: false,
       customFoldersEnabled: true,
+      customFoldersShown: true,
       savingCustomFolders: false,
       sharedMailboxSentCopyEnabled: true,
       sharedMailboxSentCopyShown: true,
@@ -311,7 +312,10 @@ export default {
           this.draftsServerShown = enabled;
         });
       this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
-        .then(enabled => this.customFoldersEnabled = enabled);
+        .then(enabled => {
+          this.customFoldersEnabled = enabled;
+          this.customFoldersShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getSharedMailboxSentCopyEnabled()
         .then(enabled => {
           this.sharedMailboxSentCopyEnabled = enabled;
@@ -442,10 +446,14 @@ export default {
      * @returns {void}
      */
     onCustomFoldersChange(enabled) {
+      this.customFoldersShown = enabled;
       this.savingCustomFolders = true;
       this.$emailConnectorAdministrationService.updateCustomFoldersEnabled(enabled)
         .then(() => this.customFoldersEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.customFoldersShown = this.customFoldersEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingCustomFolders = false);
     },
     /**
