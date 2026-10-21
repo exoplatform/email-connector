@@ -640,7 +640,7 @@ public class EmailBoxRestTest {
   void aSendInTheOwnersNameCarriesItsShapeAndItsRefusals() throws Exception {
     Email email = new Email();
     email.setTo(List.of(new EmailRecipient()));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), eq("ON_BEHALF"))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), eq("ON_BEHALF"))).thenReturn(OwnerCopy.FILED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5&sendMode=ON_BEHALF").with(testSimpleUser())
                                                                                     .content(asJsonString(email))
                                                                                     .contentType(MediaType.APPLICATION_JSON)
