@@ -36,6 +36,9 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import javax.mail.Folder;
 import javax.mail.FolderNotFoundException;
@@ -854,30 +857,139 @@ class ImapAclEngineTest {
   }
 
   /**
-   * "Remove access" goes past a folder that refuses GETACL, but stops at a lost
-   * connection: what was found before it is returned, and no later folder is asked.
+   * EXO-90554 -- "Remove access" goes past a folder that refuses GETACL, but a lost
+   * connection answers UNREACHABLE rather than the folders found before it: no later
+   * folder is asked, and the caller never takes a part for the whole.
    */
   @Test
-  void foldersHoldingStopsAtALostConnectionButNotAtARefusal() throws MessagingException {
-    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
-    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
-    Folder root = mock(Folder.class);
-    when(store.getDefaultFolder()).thenReturn(root);
-    when(root.list("%")).thenReturn(new Folder[0]);
+  void foldersHoldingAnswersUnreachableAtALostConnectionButSkipsARefusal() throws MessagingException {
     IMAPFolder sent = (IMAPFolder) listed("Sent", "Sent");
     IMAPFolder locked = (IMAPFolder) listed("Locked", "Locked");
     IMAPFolder projects = (IMAPFolder) listed("Projects", "Projects");
     IMAPFolder dropped = (IMAPFolder) listed("Dropped", "Dropped");
     IMAPFolder archive = (IMAPFolder) listed("Archive", "Archive");
-    when(root.list("*")).thenReturn(new Folder[] { sent, locked, projects, dropped, archive });
+    ownListing(sent, locked, projects, dropped, archive);
     when(sent.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
     when(locked.getACL()).thenThrow(new MessagingException("NO"));
     when(projects.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
     when(dropped.getACL()).thenThrow(new StoreClosedException(store, "BYE"));
-    when(archive.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
 
-    assertEquals(List.of("Sent", "Projects"), engine.foldersHolding(session(), IDENTIFIER));
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(projects).getACL();
     verify(archive, never()).getACL();
+  }
+
+  /**
+   * EXO-90554 -- the sweep has a time budget counted from before the LIST: once it is
+   * spent, no further folder is asked and the answer is UNREACHABLE. The budget is
+   * reached at equality, here on the second folder's turn.
+   */
+  @Test
+  void foldersHoldingAnswersUnreachableOnceTheSweepBudgetIsSpent() throws MessagingException {
+    IMAPFolder first = (IMAPFolder) listed("First", "First");
+    IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+    ownListing(first, second);
+    lenient().when(first.getACL()).thenReturn(new ACL[0]);
+    lenient().when(second.getACL()).thenReturn(new ACL[0]);
+    engine.clock = steppedClock(0L, TimeUnit.SECONDS.toNanos(ImapAclEngine.DEFAULT_SWEEP_SECONDS / 2));
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(first).getACL();
+    verify(second, never()).getACL();
+  }
+
+  /**
+   * A sweep that ends within its budget answers every folder found, on a clock whose
+   * deadline lies past {@link Long#MAX_VALUE}: the comparison holds across the overflow.
+   */
+  @Test
+  void foldersHoldingAnswersTheWholeSweepWithinItsBudgetAcrossTheClocksOverflow() throws MessagingException {
+    IMAPFolder first = (IMAPFolder) listed("First", "First");
+    IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+    ownListing(first, second);
+    when(first.getACL()).thenReturn(new ACL[0]);
+    when(second.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    engine.clock = steppedClock(Long.MAX_VALUE - TimeUnit.SECONDS.toNanos(1), TimeUnit.SECONDS.toNanos(1));
+
+    assertEquals(List.of("Second"), engine.foldersHolding(session(), IDENTIFIER));
+  }
+
+  /**
+   * The sweep's budget is read from {@value ImapAclEngine#SWEEP_SECONDS_PROPERTY}, the
+   * default when it is blank, not a number, or not positive.
+   */
+  @Test
+  void theSweepBudgetIsReadFromItsPropertyWithTheDefaultWhenMisconfigured() throws MessagingException {
+    try {
+      System.clearProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY);
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, " 120 ");
+      assertEquals(120, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "0");
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "soon");
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+
+      // A budget of 120 s outlasts two steps of 40 s; the default would not.
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "120");
+      IMAPFolder first = (IMAPFolder) listed("First", "First");
+      IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+      ownListing(first, second);
+      when(first.getACL()).thenReturn(new ACL[0]);
+      when(second.getACL()).thenReturn(new ACL[0]);
+      engine.clock = steppedClock(0L, TimeUnit.SECONDS.toNanos(40));
+
+      assertEquals(List.of(), engine.foldersHolding(session(), IDENTIFIER));
+      verify(second).getACL();
+    } finally {
+      System.clearProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY);
+    }
+  }
+
+  /**
+   * DELETEACL on a lost connection is UNREACHABLE, kept apart from the server's NO, so
+   * "Remove access" can tell a folder that refuses from a server it can no longer ask.
+   */
+  @Test
+  void revokeTellsALostConnectionFromARefusal() throws MessagingException {
+    doThrow(new StoreClosedException(store, "BYE")).when(inbox).removeACL(IDENTIFIER);
+    assertEquals(MailboxAclException.UNREACHABLE,
+                 assertThrows(MailboxAclException.class, () -> engine.revoke(session(), "INBOX", IDENTIFIER)).getCode());
+
+    doThrow(new MessagingException("NO")).when(inbox).removeACL(IDENTIFIER);
+    assertEquals(MailboxAclException.SERVER_REFUSED,
+                 assertThrows(MailboxAclException.class, () -> engine.revoke(session(), "INBOX", IDENTIFIER)).getCode());
+  }
+
+  /**
+   * The owner's own LIST answers these folders, with no other namespace.
+   *
+   * @param folders the folders, in listing order
+   * @throws MessagingException never
+   */
+  private void ownListing(Folder... folders) throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenReturn(folders);
+  }
+
+  /**
+   * A clock that answers its start, then one step more on each reading.
+   *
+   * @param start the first reading
+   * @param step what each later reading adds
+   * @return the clock
+   */
+  private static LongSupplier steppedClock(long start, long step) {
+    AtomicLong now = new AtomicLong(start - step);
+    return () -> now.addAndGet(step);
   }
 
   /**
