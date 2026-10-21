@@ -1455,7 +1455,7 @@
     <rollback/>
   </changeSet>
 
-  <changeSet author="email-connector" id="1.0.0-70" dbms="oracle,postgresql,hsqldb">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-01" dbms="oracle,postgresql,hsqldb">
     <comment>
       The mail filters' sequence (EXO-90654), on the vendors that have sequences, created
       before its table for the reason 1.0.0-43 records. Ids 70 to 75 were reserved for
@@ -1467,7 +1467,7 @@
       <dropSequence sequenceName="SEQ_EMAIL_FILTER_ID"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-71">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-02">
     <comment>
       The rules eXo runs itself, after each sync of the user's own inbox (EXO-90654). The
       rules the mail server runs at delivery are NOT here: the server is their only
@@ -1549,7 +1549,7 @@
       <dropTable tableName="EMAIL_FILTER"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-72" dbms="mysql">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-03" dbms="mysql">
     <comment>
       The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
       accent-insensitive 0900 collation), applied to EMAIL_FILTER as literal SQL for the
@@ -1557,14 +1557,14 @@
       keyword: a rule is its owner's, and two user names or two keywords that differ by
       case or accent must never collate onto one another. The rollback is explicit and
       empty on purpose, as 1.0.0-59's is: sql has no automatic rollback, and the table
-      goes with 1.0.0-71's.
+      goes with 1.0.0-exo-90654-02's.
     </comment>
     <sql>ALTER TABLE EMAIL_FILTER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
     <sql>ALTER TABLE EMAIL_FILTER MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
     <sql>ALTER TABLE EMAIL_FILTER MODIFY TAG_KEYWORD VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL</sql>
     <rollback/>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-73" dbms="oracle,postgresql,hsqldb">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-04" dbms="oracle,postgresql,hsqldb">
     <comment>
       The filter matches' sequence (EXO-90654), created before its table for the reason
       1.0.0-43 records.
@@ -1574,7 +1574,7 @@
       <dropSequence sequenceName="SEQ_EMAIL_FILTER_MATCH_ID"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-74">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-05">
     <comment>
       One row per eXo rule and mail it matched (EXO-90654): the log, the data an undo
       needs, the assistant's work item and the at-most-once key. What the server does at
@@ -1650,11 +1650,11 @@
       <dropTable tableName="EMAIL_FILTER_MATCH"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-75" dbms="mysql">
+  <changeSet author="email-connector" id="1.0.0-exo-90654-06" dbms="mysql">
     <comment>
-      The table options of 1.0.0-72, applied to EMAIL_FILTER_MATCH, with the binary
+      The table options of 1.0.0-exo-90654-03, applied to EMAIL_FILTER_MATCH, with the binary
       collation on USER_ID for the same reason. MAIL_HEADER_HASH is lower-case hex by
-      construction and needs none. Rolled back with 1.0.0-74's table, explicitly empty.
+      construction and needs none. Rolled back with 1.0.0-exo-90654-05's table, explicitly empty.
     </comment>
     <sql>ALTER TABLE EMAIL_FILTER_MATCH ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
     <sql>ALTER TABLE EMAIL_FILTER_MATCH MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
@@ -1904,7 +1904,7 @@
       <dropColumn tableName="EMAIL_FOLDER" columnName="NOTIFIED_UID"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-85">
+  <changeSet author="email-connector" id="1.0.0-exo-90554-01">
     <comment>
       EMAIL_DELEGATION.SEARCH_INCLUDED (EXO-90554, phase-2 slice 2.6, PO decision Q-6):
       whether the platform's unified search returns the grantee's mirror of this shared
@@ -1922,7 +1922,7 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEARCH_INCLUDED"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-87">
+  <changeSet author="email-connector" id="1.0.0-exo-90595-01">
     <comment>
       EMAIL_BOX.DRAFT_DELEGATION_ID (EXO-90595): on a draft row, the mailbox shared with
       the row's user that the draft was written in -- an EMAIL_DELEGATION id, resolved on
@@ -1942,7 +1942,7 @@
       <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_DELEGATION_ID"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-86">
+  <changeSet author="email-connector" id="1.0.0-exo-90556-01">
     <comment>
       EMAIL_DELEGATION.FOLDER_ACCESS (EXO-90556, phase-2 slice 2.8): the owner's
       per-folder exceptions to the share's preset on the role folders a grant covers
@@ -1960,7 +1960,7 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="FOLDER_ACCESS"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-88">
+  <changeSet author="email-connector" id="1.0.0-exo-90582-01">
     <comment>
       EMAIL_DELEGATION.SEND_MODE, SEND_MODE_DATE, SEND_REFUSED_DATE (EXO-90582, phase-3
       slice 3.1): the owner's consent to the grantee writing mail in the owner's name --
@@ -1984,7 +1984,7 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_MODE"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-89">
+  <changeSet author="email-connector" id="1.0.0-exo-90584-01">
     <comment>
       EMAIL_BOX.DRAFT_SEND_MODE (EXO-90584, phase-3 slice 3.3): on a draft row of a mailbox
       shared with the row's user (DRAFT_DELEGATION_ID), the name the draft is to go out
@@ -1994,7 +1994,7 @@
       owner's consent again then: a consent withdrawn or narrowed fails the send, which
       never goes out in the writer's own name instead. Null means the draft never said
       (every row written before this, and every draft of the writer's own mailbox).
-      Never a right: the consent lives on EMAIL_DELEGATION.SEND_MODE (1.0.0-88).
+      Never a right: the consent lives on EMAIL_DELEGATION.SEND_MODE (1.0.0-exo-90582-01).
       Nullable, no default, no index (a draft is read by USER_ID and DRAFT_LOCAL_ID).
       Rolled back explicitly.
     </comment>
@@ -2005,9 +2005,9 @@
       <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_SEND_MODE"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-90">
+  <changeSet author="email-connector" id="1.0.0-exo-90626-01">
     <comment>
-      EMAIL_DELEGATION.SEND_REFUSED_MODE (EXO-90626): beside SEND_REFUSED_DATE (1.0.0-88),
+      EMAIL_DELEGATION.SEND_REFUSED_MODE (EXO-90626): beside SEND_REFUSED_DATE (1.0.0-exo-90582-01),
       the shape the owner's mail server refused a mail in the owner's name in -- ON_BEHALF
       or AS -- so a refusal of writing as the owner blocks that shape only, and writing
       on her behalf, which the server may well accept, stays usable. A refusal on behalf
@@ -2023,7 +2023,7 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_REFUSED_MODE"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-94" dbms="oracle,postgresql,hsqldb">
+  <changeSet author="email-connector" id="1.0.0-exo-90659-01" dbms="oracle,postgresql,hsqldb">
     <comment>
       The mail filters' tool-call proposals' sequence (EXO-90659), created before its
       table for the reason 1.0.0-43 records. 1.0.0-91 and -92 are reserved by the
@@ -2035,11 +2035,11 @@
       <dropSequence sequenceName="SEQ_EMAIL_FILTER_PROPOSAL_ID"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-95">
+  <changeSet author="email-connector" id="1.0.0-exo-90659-02">
     <comment>
       One row per tool call a mail filter's assistant made and that was recorded instead
       of run (EXO-90659), until the mail's owner approves, rejects or hands it to the AI
-      chat. MATCH_ID is the match whose assistant made it (EMAIL_FILTER_MATCH, 1.0.0-74),
+      chat. MATCH_ID is the match whose assistant made it (EMAIL_FILTER_MATCH, 1.0.0-exo-90654-05),
       FILTER_ID that match's rule. TOOL_NAME is the tool, TOOL_TITLE and TOOL_DESCRIPTION
       what its definition said of it when the call was made -- the card shows those, not
       what the model said. ARGUMENTS is the call's JSON as the model gave it, run as is on
@@ -2051,7 +2051,7 @@
       CONVERSATION_ID is the assistant run's, which the per-run cap counts by. RESULT is
       what the tool answered, LAST_ERROR why it did not run.
       IDX_EMAIL_FILTER_PROPOSAL_USER serves the mailbox's pending cap and the expiry. The
-      foreign key to the match is 1.0.0-97's, after the MySQL options of -96. Rolled back
+      foreign key to the match is 1.0.0-exo-90659-04's, after the MySQL options of -03. Rolled back
       explicitly, indexes then table.
     </comment>
     <createTable tableName="EMAIL_FILTER_PROPOSAL">
@@ -2107,18 +2107,18 @@
       <dropTable tableName="EMAIL_FILTER_PROPOSAL"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-96" dbms="mysql">
+  <changeSet author="email-connector" id="1.0.0-exo-90659-03" dbms="mysql">
     <comment>
-      The table options of 1.0.0-72, applied to EMAIL_FILTER_PROPOSAL, with the binary
-      collation on USER_ID for the same reason, and BEFORE the foreign key of 1.0.0-97,
+      The table options of 1.0.0-exo-90654-03, applied to EMAIL_FILTER_PROPOSAL, with the binary
+      collation on USER_ID for the same reason, and BEFORE the foreign key of 1.0.0-exo-90659-04,
       which needs both tables on InnoDB. CALL_HASH is lower-case hex by construction and
-      needs none. Rolled back with 1.0.0-95's table, explicitly empty.
+      needs none. Rolled back with 1.0.0-exo-90659-02's table, explicitly empty.
     </comment>
     <sql>ALTER TABLE EMAIL_FILTER_PROPOSAL ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
     <sql>ALTER TABLE EMAIL_FILTER_PROPOSAL MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
     <rollback/>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-97">
+  <changeSet author="email-connector" id="1.0.0-exo-90659-04">
     <comment>
       A proposal goes with its match, in the database: the match log's retention removes
       matches with a bulk JPQL DELETE, which no JPA cascade sees; ON DELETE CASCADE is the
@@ -2135,7 +2135,7 @@
       <dropForeignKeyConstraint baseTableName="EMAIL_FILTER_PROPOSAL" constraintName="FK_EMAIL_FILTER_PROPOSAL_MATCH"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-98">
+  <changeSet author="email-connector" id="1.0.0-exo-90841-01">
     <comment>
       EMAIL_BOX.AUTH_FAILURE (EXO-90841): the sender-authentication method the receiving
       server reported as failed in the message's own Authentication-Results header --
@@ -2151,7 +2151,7 @@
       <dropColumn tableName="EMAIL_BOX" columnName="AUTH_FAILURE"/>
     </rollback>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-99">
+  <changeSet author="email-connector" id="1.0.0-exo-90893-01">
     <comment>
       EMAIL_BOX.DMARC_PASS (EXO-90893): whether the receiving server reported, in the
       message's own Authentication-Results header, that it passed DMARC for its From

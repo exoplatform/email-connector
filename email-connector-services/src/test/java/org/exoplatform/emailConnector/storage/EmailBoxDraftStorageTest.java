@@ -118,7 +118,7 @@ public class EmailBoxDraftStorageTest {
    * EXO-90595 -- the mailbox a draft was written in is written by its first save, read
    * back on every read, and never moved by a later save, even one that names another:
    * the edit path mutates the loaded row column by column and leaves this one alone.
-   * Over the shipped changelog, so the column itself is the one 1.0.0-87 adds.
+   * Over the shipped changelog, so the column itself is the one 1.0.0-exo-90595-01 adds.
    */
   @Test
   void aDraftsMailboxIsSettledByItsFirstSaveAndNeverMoved() {
@@ -144,7 +144,7 @@ public class EmailBoxDraftStorageTest {
    * EXO-90584 -- the name a draft goes out in is written by its first save and by every
    * later one -- the edit path writes it column by column, as it writes the text -- and
    * read back on every read. Over the shipped changelog, so the column itself is the one
-   * 1.0.0-89 adds.
+   * 1.0.0-exo-90584-01 adds.
    */
   @Test
   void aDraftsNameIsWrittenByEverySaveAndReadBack() {

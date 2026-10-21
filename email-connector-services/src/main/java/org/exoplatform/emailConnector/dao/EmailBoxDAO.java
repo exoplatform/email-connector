@@ -297,7 +297,7 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   /**
    * The newest rows of a folder whose DMARC verdict was never recorded (EXO-90909):
-   * cached before changeset 1.0.0-99, so the list cannot offer their sender's brand
+   * cached before changeset 1.0.0-exo-90893-01, so the list cannot offer their sender's brand
    * logo. The key projection {@code [id, folder, mailHeaderId, mailRemoteId, sender]}
    * the verdict is filled in from.
    *
