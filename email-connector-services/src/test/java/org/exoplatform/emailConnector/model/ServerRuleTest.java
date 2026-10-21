@@ -167,6 +167,8 @@ public class ServerRuleTest {
 
   /**
    * A domain of a great many labels is matched, or refused, without overflowing the stack.
+   * Out of reach today: {@code validated} refuses a value over {@code MAX_VALUE_LENGTH}
+   * before the pattern runs; this keeps the pattern safe on its own (Sonar S5998).
    */
   @Test
   void aLongDomainIsMatchedWithoutAStackOverflow() {
