@@ -1038,8 +1038,14 @@ public class EmailBoxService {
   // recipient sees.
   private static final String     DEFAULT_ATTACHMENT_NAME                                     = "attachment";
 
-  // The most documents one call may attach to a draft.
-  static final int                MAX_DOCUMENTS_PER_CALL                                      = 20;
+  /**
+   * The most documents one call may attach to a draft, counted once trimmed and
+   * deduplicated. The draft tools refuse a call over it before saving anything
+   * ({@code EmailMcpTool#requireDraftDocuments}), and their schemas carry it as the
+   * {@code maxItems} of {@code document_ids} in {@code ai-tool-definitions.json}, which
+   * {@code AiToolDefinitionsTest} holds equal to it.
+   */
+  public static final int         MAX_DOCUMENTS_PER_CALL                                      = 20;
 
   private static final String     DEFAULT_ATTACHMENT_MIME_TYPE                                = "application/octet-stream";
 
@@ -13393,6 +13399,9 @@ public class EmailBoxService {
           total += attachDocument(draftLocalId, username, documentId, MAX_OUTGOING_ATTACHMENTS_SIZE - total);
         } catch (DocumentRefusedException e) {
           refused.add(new RefusedDocument(documentId, e.getDocumentName(), e.getReason()));
+        } catch (RuntimeException e) {
+          LOG.warn("The document {} of user {} could not be attached to draft {}", documentId, username, draftLocalId, e);
+          refused.add(new RefusedDocument(documentId, null, DocumentRefusalReason.UNREADABLE));
         }
       }
       LOG.info("Documents for user {}: {} of {} attached to draft {}, {} refused",
