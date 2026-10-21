@@ -28,6 +28,7 @@
     <!-- 3rd party libraries versions -->
     <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
     <io.meeds.mcp-server.version>7.3.x-ai-contribution-SNAPSHOT</io.meeds.mcp-server.version>
+    <org.exoplatform.documents.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.documents.version>
     <!-- vCard parsing for the CardDAV address book sync -->
     <ez-vcard.version>0.12.1</ez-vcard.version>
     <!-- iCalendar parsing of the invitations a mail carries: the version the agenda
@@ -52,6 +53,23 @@
         <version>${io.meeds.mcp-server.version}</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+      <!-- The Documents API, read on the server to attach a user's document to a draft an
+           assistant prepares. Provided and optional at runtime: the reader bean is
+           conditional on its class, so the Email app runs without the Documents add-on.
+           Its own dependencies are excluded: the Documents add-on brings them when it is
+           there, and only its service interface and models are compiled against. -->
+      <dependency>
+        <groupId>org.exoplatform.documents</groupId>
+        <artifactId>documents-api</artifactId>
+        <version>${org.exoplatform.documents.version}</version>
+        <scope>provided</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>*</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <!-- TEMPORARY: the version belongs in maven-exo-depmgt-pom, where it is
            declared by https://github.com/exoplatform/maven-exo-depmgt-pom/pull/30.
