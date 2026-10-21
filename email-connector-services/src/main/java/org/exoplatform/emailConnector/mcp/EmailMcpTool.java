@@ -142,9 +142,6 @@ public class EmailMcpTool implements McpToolPlugin {
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
 
-  /** The most documents one call attaches to a draft, as the mailbox service bounds it. */
-  private static final int              MAX_DRAFT_DOCUMENTS  = 20;
-
   /** Why a document named for a draft is not on it, in words the caller can relay. */
   private static final Map<DocumentRefusalReason, String> DOCUMENT_REFUSALS =
                                                             Map.of(DocumentRefusalReason.NOT_FOUND,
@@ -159,6 +156,16 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    "The file could not be read.",
                                                                    DocumentRefusalReason.DOCUMENTS_UNAVAILABLE,
                                                                    "Documents are not available on this platform.");
+
+  /**
+   * Why no document named for a scheduled draft is on it: the draft was scheduled between
+   * the change and the attachment.
+   */
+  private static final String           SCHEDULED_DOCUMENT_REFUSAL = "The draft is scheduled to be sent, so no file can be "
+      + "added to it here: the user cancels the schedule in the Email app first.";
+
+  /** Why a document is not on the draft when attaching it failed. */
+  private static final String           FAILED_DOCUMENT_REFUSAL = "The file could not be attached.";
 
   /**
    * The address of the user's signature logo, as the signature service writes it, with
@@ -2324,29 +2331,36 @@ public class EmailMcpTool implements McpToolPlugin {
    * saved.
    *
    * @param documentIds the ids given, possibly null
-   * @throws IllegalArgumentException when there are more than 20 of them
+   * @throws IllegalArgumentException when there are more than
+   *           {@link EmailBoxService#MAX_DOCUMENTS_PER_CALL} of them, counted as the
+   *           service counts them
    */
   private static void requireDraftDocuments(List<String> documentIds) {
-    if (documentIds != null && documentIds.stream().filter(StringUtils::isNotBlank).distinct().count() > MAX_DRAFT_DOCUMENTS) {
+    if (documentIds != null && documentIds.stream()
+                                          .filter(StringUtils::isNotBlank)
+                                          .map(String::trim)
+                                          .distinct()
+                                          .count() > EmailBoxService.MAX_DOCUMENTS_PER_CALL) {
       throw new IllegalArgumentException(String.format("document_ids names more than %d documents: attach the others with "
-          + "update_email_draft. Nothing was saved.", MAX_DRAFT_DOCUMENTS));
+          + "update_email_draft. Nothing was saved.", EmailBoxService.MAX_DOCUMENTS_PER_CALL));
     }
   }
 
   /**
    * Attaches the documents a call names to the draft it saved, and answers with the
    * draft as it then stands. Without documents, the saved draft as it is.
+   * <p>
+   * The draft, or its change, is saved by then, so nothing past this point answers with
+   * an error: one would tell the caller the call did nothing, and a caller retrying a
+   * create would make a second draft. A failure to attach is answered as the documents
+   * it kept off the draft, with the draft as saved.
    *
    * @param saved the draft as the call saved it
    * @param username the user
    * @param documentIds the ids of the documents to attach, possibly null or empty
    * @return the draft, its files and the documents that were not attached
-   * @throws ObjectNotFoundException when the draft is gone meanwhile
-   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  private EmailDraftModel withDocuments(Email saved,
-                                        String username,
-                                        List<String> documentIds) throws ObjectNotFoundException, IllegalAccessException {
+  private EmailDraftModel withDocuments(Email saved, String username, List<String> documentIds) {
     if (documentIds == null || documentIds.stream().noneMatch(StringUtils::isNotBlank)) {
       return toDraftModel(saved, true);
     }
@@ -2354,16 +2368,35 @@ public class EmailMcpTool implements McpToolPlugin {
     try {
       attached = emailBoxService.addDocumentAttachments(saved.getDraftLocalId(), username, documentIds);
     } catch (ScheduledSendConflictException e) {
-      throw scheduledDraftRefusal(saved.getDraftLocalId(), "changed");
+      return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
+    } catch (IllegalAccessException | RuntimeException e) {
+      LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
+      return toDraftModel(saved, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     if (attached == null || attached.getDraft() == null) {
-      throw new ObjectNotFoundException(draftNotFound(saved.getDraftLocalId()));
+      return toDraftModel(saved, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     List<RefusedDocumentModel> refused = attached.getRefused()
                                                  .stream()
                                                  .map(this::toRefusedDocumentModel)
                                                  .toList();
     return toDraftModel(attached.getDraft(), true, refused);
+  }
+
+  /**
+   * Every document a call named, refused for one reason.
+   *
+   * @param documentIds the ids as given
+   * @param reason the reason, in words
+   * @return one refusal per distinct id
+   */
+  private static List<RefusedDocumentModel> refusedAll(List<String> documentIds, String reason) {
+    return documentIds.stream()
+                      .filter(StringUtils::isNotBlank)
+                      .map(String::trim)
+                      .distinct()
+                      .map(documentId -> new RefusedDocumentModel(documentId, null, reason))
+                      .toList();
   }
 
   /**

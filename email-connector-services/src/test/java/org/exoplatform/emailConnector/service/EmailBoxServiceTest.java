@@ -8972,6 +8972,33 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A document whose file the store fails to write is refused as unreadable, and the
+   * documents after it are still attached: the failure is one file's, not the call's.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aDocumentTheStoreFailsToWriteIsRefusedAndTheOthersAreStillAttached() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    new byte[1]));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("b.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    new byte[1]));
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("a.pdf"), any(), any()))
+                                                                                                    .thenThrow(new IllegalStateException("store down"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.UNREADABLE)), attached.getRefused());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("b.pdf"), any(), any());
+  }
+
+  /**
    * An id named twice is attached once, and a blank one is ignored.
    *
    * @throws Exception when the mocked plumbing misbehaves
