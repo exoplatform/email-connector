@@ -991,8 +991,16 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
 
-  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
-  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
+  /**
+   * The most megabytes the attachments of one outgoing email may weigh together
+   * (SMTP-friendly). The draft tools state it in their refusals and in the
+   * {@code create_email_draft} description, which {@code AiToolDefinitionsTest} holds to
+   * it.
+   */
+  public static final int         MAX_OUTGOING_ATTACHMENTS_MB                                 = 25;
+
+  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email.
+  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = MAX_OUTGOING_ATTACHMENTS_MB * 1024L * 1024;
 
   // The message code a scheduling carrying files not yet stored on the draft is refused with.
   private static final String     ATTACHMENTS_NOT_STORED_CODE                                 =

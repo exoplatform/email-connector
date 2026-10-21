@@ -81,14 +81,21 @@ public class DocumentsEmailDocumentReader implements EmailDocumentReader {
    * its name and declared size: a folder, or a file declared larger than
    * {@code maxSize}, is refused without its content being read. The content is then
    * read as the user too, and never beyond {@code maxSize + 1} bytes, so a file whose
-   * declared size is missing or wrong -- a link to another file declares none -- is
-   * still refused before it fills memory.
+   * declared size is wrong -- Documents declares 0 when it cannot read the size -- is
+   * still refused before it fills memory. A failure of Documents itself while reading is
+   * refused as unreadable, which keeps it this document's: the next one is still read.
    */
   @Override
   public EmailDocumentContent readDocument(String documentId,
                                            String username,
                                            long maxSize) throws DocumentRefusedException {
-    DocumentFileService service = documentFileService.getIfAvailable();
+    DocumentFileService service;
+    try {
+      service = documentFileService.getIfAvailable();
+    } catch (RuntimeException e) {
+      LOG.warn("The Documents service could not be resolved to read document {} for user {}", documentId, username, e);
+      throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, null);
+    }
     if (service == null) {
       throw new DocumentRefusedException(DocumentRefusalReason.DOCUMENTS_UNAVAILABLE, null);
     }
@@ -105,7 +112,7 @@ public class DocumentsEmailDocumentReader implements EmailDocumentReader {
     String mimeType = StringUtils.firstNonBlank(content.getMimeType(), file.getMimeType(), DEFAULT_MIME_TYPE);
     try (InputStream stream = content.getContent()) {
       return new EmailDocumentContent(name, mimeType, readAtMost(stream, maxSize, name));
-    } catch (IOException e) {
+    } catch (IOException | RuntimeException e) {
       LOG.warn("The document {} of user {} could not be read to be attached to a draft", documentId, username, e);
       throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, name);
     }
