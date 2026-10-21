@@ -79,6 +79,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
@@ -643,9 +644,9 @@ public class EmailScheduledSendServiceTest {
   void aSentMailWhoseOwnerCopyFailedTellsItsSenderAndStaysSent() throws Exception {
     when(emailBoxService.sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class)))
                                                                                     .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
-                                                                                                                                    EmailBoxService.OwnerCopy.FILED))
+                                                                                                                                    OwnerCopy.FILED))
                                                                                     .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
-                                                                                                                                    EmailBoxService.OwnerCopy.FAILED));
+                                                                                                                                    OwnerCopy.FAILED));
     service.runClaimed(claimedRow(1));
     assertTrue(notified.isEmpty(), "a filed copy tells nothing");
 

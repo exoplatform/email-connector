@@ -3238,7 +3238,7 @@ public class EmailBoxServiceTest {
     email.setReadReceiptRequested(true);
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
-      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email, TEST_USER, 100L, "ON_BEHALF"));
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email, TEST_USER, 100L, "ON_BEHALF"));
 
       MimeMessage sent = sentMessage(transportMock);
       InternetAddress from = (InternetAddress) sent.getFrom()[0];
@@ -3373,7 +3373,7 @@ public class EmailBoxServiceTest {
       transportMock.when(() -> Transport.send(any(Message.class)))
                    .thenAnswer(invocation -> sentByOnTheWire.add(headerOf(invocation.getArgument(0), "X-Exo-Sent-By")));
 
-      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
 
       MimeMessage sent = sentMessage(transportMock);
       ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
@@ -3396,7 +3396,7 @@ public class EmailBoxServiceTest {
     IMAPFolder ownerSent = givenTheOwnersSent();
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
-      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
 
       ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
       verify(ownerSent).appendMessages(filed.capture());
@@ -9484,7 +9484,7 @@ public class EmailBoxServiceTest {
     when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
-      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
 
       transportMock.verify(() -> Transport.send(any(Message.class)));
       verify(ownerSent).appendMessages(any(Message[].class));
@@ -16073,7 +16073,7 @@ public class EmailBoxServiceTest {
     EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
     });
 
-    assertEquals(EmailBoxService.OwnerCopy.FILED, sent.ownerCopy());
+    assertEquals(OwnerCopy.FILED, sent.ownerCopy());
     assertEquals("half a subject", sent.subject());
     ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
     InOrder order = inOrder(smtpTransmitter, ownerSent, emailBoxStorage);
@@ -16151,7 +16151,7 @@ public class EmailBoxServiceTest {
 
     EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
 
-    assertEquals(EmailBoxService.OwnerCopy.FAILED, sent.ownerCopy());
+    assertEquals(OwnerCopy.FAILED, sent.ownerCopy());
     verify(onTransmitted).run();
     verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
 
