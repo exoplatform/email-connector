@@ -456,10 +456,11 @@ public class ImapAclEngine implements MailboxAclEngine {
     List<IMAPFolder> folders = ownFolders(session);
     for (int index = 0; index < folders.size(); index++) {
       if (clock.getAsLong() - deadline >= 0) {
-        LOG.warn("Removing an access took longer than {} s: {} of {} folders were not asked, the access stays as it is",
+        LOG.warn("Removing an access took longer than {} s: {} of {} folders were not asked, the access stays as it is; raise {} for a mailbox this large",
                  budget,
                  folders.size() - index,
-                 folders.size());
+                 folders.size(),
+                 SWEEP_SECONDS_PROPERTY);
         throw new MailboxAclException(MailboxAclException.UNREACHABLE, "sweep deadline exceeded");
       }
       IMAPFolder folder = folders.get(index);
@@ -587,6 +588,9 @@ public class ImapAclEngine implements MailboxAclEngine {
       }
       return own;
     } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
       throw refused("LIST", "*", e);
     }
   }
