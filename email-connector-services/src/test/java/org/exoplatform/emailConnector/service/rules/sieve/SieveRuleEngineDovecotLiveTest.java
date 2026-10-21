@@ -428,7 +428,7 @@ class SieveRuleEngineDovecotLiveTest {
                           "File " + marker,
                           true,
                           true,
-                          List.of(new Condition(ServerRule.FROM, ServerRule.EQUALS, null, BOB),
+                          List.of(new Condition(ServerRule.FROM, ServerRule.EQUALS_OPERATOR, null, BOB),
                                   new Condition(ServerRule.SUBJECT, ServerRule.CONTAINS, null, marker)),
                           List.of(new Action(ServerRule.MOVE_TO_FOLDER, "CUSTOM:1", folder, null), new Action(ServerRule.STAR, null, null, null)),
                           stop);
