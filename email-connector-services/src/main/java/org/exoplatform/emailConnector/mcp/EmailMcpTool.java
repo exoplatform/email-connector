@@ -149,6 +149,13 @@ public class EmailMcpTool implements McpToolPlugin {
   private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed, and the file may be on the draft anyway: "
       + "check the draft's attachments in this answer, and name this document again only if its file is not among them.";
 
+  /**
+   * Why a document may not be on the draft when attaching failed and the draft could not
+   * be read again to say which files it carries.
+   */
+  private static final String           UNKNOWN_DOCUMENT_REFUSAL = "Attaching failed, and the draft could not be read again "
+      + "to say whether the file is on it: ask the user to check the draft in the Email app before naming this document again.";
+
   /** Why no document is on a draft that was gone when its files were added. */
   private static final String           GONE_DOCUMENT_REFUSAL = "The draft was no longer found when its files were added: "
       + "it was sent or deleted meanwhile.";
@@ -1020,7 +1027,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * attached to the draft as files, read with the user's own rights (see
    * {@link EmailBoxService#addDocumentAttachments}): a document that is not attached is
    * named in {@code refused_documents} with the reason, and the draft is saved with the
-   * others.
+   * others -- with the ones attached before a write that failed, when one does.
    *
    * @param to the recipients; for a reply draft, defaults to the original's sender
    * @param subject the subject; for a reply draft, defaults to "Re: " and the original's
@@ -2381,13 +2388,12 @@ public class EmailMcpTool implements McpToolPlugin {
       return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
     } catch (IllegalAccessException | RuntimeException e) {
       LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
-      return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
+      Email stored = readAgain(saved, username);
+      return stored == null ? toDraftModel(saved, true, refusedAll(documentIds, UNKNOWN_DOCUMENT_REFUSAL))
+                            : toDraftModel(stored, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
-    if (attached == null) {
+    if (attached == null || attached.getDraft() == null) {
       return toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL));
-    }
-    if (attached.getDraft() == null) {
-      return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     List<RefusedDocumentModel> refused = attached.getRefused()
                                                  .stream()
@@ -2398,20 +2404,18 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * The draft as it is stored now, after attaching failed, so the answer shows the files
-   * it carries rather than those it carried before; the draft as the call saved it, which
-   * carries no file of this call, when it cannot be read again.
+   * it carries rather than those it carried before.
    *
    * @param saved the draft as the call saved it
    * @param username the user
-   * @return the draft as stored now, or {@code saved}
+   * @return the draft as stored now, or null when it cannot be read again
    */
   private Email readAgain(Email saved, String username) {
     try {
-      Email stored = emailBoxService.getDraft(saved.getDraftLocalId(), username);
-      return stored == null ? saved : stored;
+      return emailBoxService.getDraft(saved.getDraftLocalId(), username);
     } catch (Exception e) {
       LOG.debug("Draft {} of user {} could not be read again after its documents failed", saved.getDraftLocalId(), username, e);
-      return saved;
+      return null;
     }
   }
 
