@@ -16290,8 +16290,10 @@ public class EmailBoxService {
   }
 
   /**
-   * Server-side mailbox search: an IMAP {@code SEARCH} over one remote folder, so a
-   * user finds mail anywhere in that folder — a 161k-message inbox, not just the
+   * Server-side mailbox search by free text, sender, unread state and age only: the
+   * legacy form of {@link #searchEmails(String, EmailSearchCriteria, String, int)}, which
+   * every production caller uses (EXO-91675). An IMAP {@code SEARCH} over one remote
+   * folder, so a user finds mail anywhere in that folder — a 161k-message inbox, not just the
    * ~1000-message local cache window (0.6% of it on the reference mailbox, which is
    * why filtering the cache was never a search).
    * <p>
@@ -16338,7 +16340,9 @@ public class EmailBoxService {
   }
 
   /**
-   * The same server-side search, narrowed to the messages the user favorited.
+   * The same server-side search, narrowed to the messages the user favorited: a legacy
+   * form too, building the criteria of
+   * {@link #searchEmails(String, EmailSearchCriteria, String, int)}.
    * <p>
    * The narrowing is done by the mail server, as one more term of the IMAP SEARCH:
    * asking for everything and dropping the rest here would return the newest hits and
