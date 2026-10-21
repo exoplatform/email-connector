@@ -411,9 +411,8 @@ export default {
     // without asking from now on, within the recipients' domain for a mail it sends
     // (EXO-90956). Offered only when the server says the rule may be allowed it.
     dontAskAgain: false,
-    // the checkbox's size and its label's id, as the AI chat's approval card has them
+    // the checkbox's size, as the AI chat's approval card has it
     CHECKBOX_SIZE: 18,
-    dontAskAgainLabelId: `email-proposal-dont-ask-${Math.random().toString(36).slice(2)}`,
     descriptionOpen: false,
     // Whether the folded description is cut: measured, since how many characters fit in
     // two lines depends on the drawer's width.
@@ -430,6 +429,14 @@ export default {
     ownerDomain: null,
   }),
   computed: {
+    /**
+     * The checkbox label's id, unique to this card's instance.
+     *
+     * @returns {String} the id
+     */
+    dontAskAgainLabelId() {
+      return `email-proposal-dont-ask-${this._uid}`;
+    },
     /**
      * The AI glue's part of the card: running an approved call and opening the chat.
      * Without it -- no AI add-on --, nothing could run the call, and the card offers
