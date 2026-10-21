@@ -401,6 +401,23 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
+   * A draft gone when its documents are added is answered as such, not as a failure to
+   * check the draft's attachments for.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSaysTheDraftWasGoneWhenItsDocumentsFindNoDraft() throws Exception {
+    saveDraftEchoes();
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("no longer found"));
+    verify(emailBoxService, never()).getDraft(anyString(), anyString());
+  }
+
+  /**
    * Documents named on update are added after the change is saved, to the draft the
    * change was saved on.
    *
@@ -467,7 +484,7 @@ class EmailMcpToolDraftsTest {
     assertEquals(List.of("brochure.pdf"), model.getAttachments());
     assertEquals(1, model.getRefusedDocuments().size());
     assertEquals("doc-1", model.getRefusedDocuments().get(0).getDocumentId());
-    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("attachments say which files it carries"));
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("may be on the draft anyway"));
   }
 
   // --- update_email_draft ----------------------------------------------------
