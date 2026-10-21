@@ -180,7 +180,7 @@ public final class FilterConditionEvaluator {
     if (categories == null) {
       return Result.UNKNOWN;
     }
-    return Result.of(ServerRule.EQUALS.equals(operator) && categories.contains(key));
+    return Result.of(ServerRule.EQUALS_OPERATOR.equals(operator) && categories.contains(key));
   }
 
   /**
@@ -240,7 +240,7 @@ public final class FilterConditionEvaluator {
     return switch (operator) {
     case ServerRule.CONTAINS -> text.contains(expected);
     case ServerRule.NOT_CONTAINS -> !text.contains(expected);
-    case ServerRule.EQUALS -> text.trim().equals(expected);
+    case ServerRule.EQUALS_OPERATOR -> text.trim().equals(expected);
     case ServerRule.STARTS_WITH -> text.startsWith(expected);
     case ServerRule.ENDS_WITH -> text.endsWith(expected);
     default -> false;
