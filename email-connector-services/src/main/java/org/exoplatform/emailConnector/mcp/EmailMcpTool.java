@@ -150,10 +150,10 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                  + "(?:\\?v=[0-9A-Za-z_-]{1,64})?");
 
   /**
-   * A day of the search's range as the tool takes it: four-digit year, so the day after
-   * the last one of the range always exists.
+   * A day of the search's range as the tool takes it: a year from 1000 to 9999, the four
+   * digits an IMAP SEARCH date carries.
    */
-  private static final Pattern          SEARCH_DAY           = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+  private static final Pattern          SEARCH_DAY           = Pattern.compile("[1-9]\\d{3}-\\d{2}-\\d{2}");
 
   /** A CSS call of any function that takes an image or an address. */
   private static final Pattern          CSS_IMAGE_CALL       = Pattern.compile("(?:url|src|image|image-set|cross-fade|element)\\s*\\(",
@@ -507,8 +507,10 @@ public class EmailMcpTool implements McpToolPlugin {
     criteria.setSinceDays(sinceDays);
     criteria.setAfter(searchDay(sinceDate, "since_date"));
     LocalDate lastDay = searchDay(untilDate, "until_date");
-    // The criteria's bound excludes its day; the tool's includes it.
-    criteria.setBefore(lastDay == null ? null : lastDay.plusDays(1));
+    // The criteria's bound excludes its day; the tool's includes it. The last day of 9999
+    // has no four-digit next day to search before, and excludes nothing: no bound.
+    criteria.setBefore(lastDay == null || lastDay.getYear() == 9999 && lastDay.getDayOfYear() == lastDay.lengthOfYear() ? null
+                                                                                                                : lastDay.plusDays(1));
     criteria.setMessageId(StringUtils.trimToNull(messageId));
     // A draft's message_id names a mail the user sent: SENT unless the caller says otherwise.
     String searchedFolder = StringUtils.isBlank(folder) && criteria.getMessageId() != null ? MailFolder.SENT : folder;
@@ -607,8 +609,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param day the day, yyyy-MM-dd, may be blank
    * @param argument the argument's name, for the refusal
    * @return the day, or null when none was given
-   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day, a signed or
-   *           five-digit year included
+   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day of a year from
+   *           1000 to 9999
    */
   private static LocalDate searchDay(String day, String argument) {
     if (StringUtils.isBlank(day)) {
