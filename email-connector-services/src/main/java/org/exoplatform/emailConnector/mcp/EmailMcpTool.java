@@ -20,6 +20,8 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -61,6 +63,7 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailSignature;
@@ -160,9 +163,12 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static final Map<String, String> SEARCH_MESSAGES   =
                                                             Map.of("emailConnector.search.criteriaRequired",
-                                                                   "Give at least one of query, from, unread or sinceDays: an empty search would return the whole folder.",
+                                                                   "Give at least one of query, from, words, unread, sinceDays, since_date, until_date or message_id: "
+                                                                       + "an empty search would return the whole folder.",
                                                                    "emailConnector.folder.notBrowsable",
-                                                                   "folder must be one of INBOX, SENT or ARCHIVE.");
+                                                                   "folder must be one of INBOX, SENT or ARCHIVE.",
+                                                                   "emailConnector.search.invalidDateRange",
+                                                                   "until_date must be the same day as since_date or a later one.");
 
   /**
    * The {@code identity} word for the user's own name (EXO-90585): the default, and what
@@ -441,8 +447,12 @@ public class EmailMcpTool implements McpToolPlugin {
    * add-on only caches a recent window.
    * <p>
    * Free text matches the subject or the sender, and the other filters narrow by
-   * sender, unread state and age. The newest matches come back with the total the
-   * server found, so the caller can tell how much of the answer it is holding.
+   * sender, unread state and age. The words are matched against the subject or the body
+   * (EXO-91675), the days from {@code since_date} to {@code until_date} both included,
+   * and a Message-ID -- the {@code message_id} a draft tool returned -- finds the mail
+   * that draft became once sent, in SENT unless a folder is named. The newest matches
+   * come back with the total the server found, so the caller can tell how much of the
+   * answer it is holding.
    * <p>
    * A hit chains into the other tools by its email_id, which it carries whenever the
    * message is in the local copy, whatever its folder. An IMAP UID is unique only within
@@ -457,15 +467,20 @@ public class EmailMcpTool implements McpToolPlugin {
    *          whole history
    * <p>
    * With a {@code mailbox} (EXO-90555), the search reads the user's mirror of that
-   * shared mailbox's folder -- the messages its sync brought in, subject or sender --
+   * shared mailbox's folder -- the messages its sync brought in, with the same criteria --
    * and a folder that is not in the mirror is said rather than answered as empty.
    *
    * @param folder INBOX (default), SENT or ARCHIVE
    * @param limit how many hits to return, newest first
    * @param mailbox the shared mailbox to search, blank for the user's own
+   * @param words text matched against the subject or the body, may be blank
+   * @param sinceDate the first day whose messages match, yyyy-MM-dd, may be blank
+   * @param untilDate the last day whose messages match, yyyy-MM-dd, may be blank
+   * @param messageId the Message-ID of the one mail to find, may be blank
    * @return the newest matching messages and the total number that matched
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when a day is not yyyy-MM-dd
    */
   public EmailSearchResultsModel searchEmails(String query,
                                               String from,
@@ -473,7 +488,45 @@ public class EmailMcpTool implements McpToolPlugin {
                                               Integer sinceDays,
                                               String folder,
                                               Integer limit,
-                                              String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+                                              String mailbox,
+                                              String words,
+                                              String sinceDate,
+                                              String untilDate,
+                                              String messageId) throws ObjectNotFoundException, IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setWords(words);
+    criteria.setUnreadOnly(Boolean.TRUE.equals(unread));
+    criteria.setSinceDays(sinceDays);
+    criteria.setAfter(searchDay(sinceDate, "since_date"));
+    LocalDate lastDay = searchDay(untilDate, "until_date");
+    // The criteria's bound excludes its day; the tool's includes it.
+    criteria.setBefore(lastDay == null ? null : lastDay.plusDays(1));
+    criteria.setMessageId(StringUtils.trimToNull(messageId));
+    // A draft's message_id names a mail the user sent: SENT unless the caller says otherwise.
+    String searchedFolder = StringUtils.isBlank(folder) && criteria.getMessageId() != null ? MailFolder.SENT : folder;
+    return searchEmails(criteria, searchedFolder, limit, mailbox);
+  }
+
+  /**
+   * The search of {@link #searchEmails(String, String, Boolean, Integer, String, Integer,
+   * String, String, String, String, String)} once its criteria are built: on the mail
+   * server for the user's own mailbox, in the user's mirror for a shared one, the service's
+   * refusals said in words a model can act on.
+   *
+   * @param criteria what to match
+   * @param folder INBOX (default), SENT or ARCHIVE
+   * @param limit how many hits to return, newest first
+   * @param mailbox the shared mailbox to search, blank for the user's own
+   * @return the newest matching messages and the total number that matched
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private EmailSearchResultsModel searchEmails(EmailSearchCriteria criteria,
+                                               String folder,
+                                               Integer limit,
+                                               String mailbox) throws ObjectNotFoundException, IllegalAccessException {
     // Resolved before the translation block below: its refusals are already in words.
     SharedMailboxEntry share = sharedMailbox(mailbox);
     String sharedFolderKey = null;
@@ -490,18 +543,12 @@ public class EmailMcpTool implements McpToolPlugin {
       String folderName = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder.trim().toUpperCase(Locale.ROOT);
       int hitLimit = limit == null ? DEFAULT_SEARCH_LIMIT : limit;
       EmailSearchResultPage page = share == null ? emailBoxService.searchEmails(getCurrentUserName(),
-                                                                                query,
-                                                                                from,
-                                                                                Boolean.TRUE.equals(unread),
-                                                                                sinceDays,
+                                                                                criteria,
                                                                                 folderName,
                                                                                 hitLimit)
                                                  : emailBoxService.searchSharedMailboxMirror(getCurrentUserName(),
                                                                                              sharedFolderKey,
-                                                                                             query,
-                                                                                             from,
-                                                                                             Boolean.TRUE.equals(unread),
-                                                                                             sinceDays,
+                                                                                             criteria,
                                                                                              hitLimit);
       List<EmailSearchHitModel> hits = page.getResults()
                                            .stream()
@@ -533,7 +580,7 @@ public class EmailMcpTool implements McpToolPlugin {
       // internal noise this block exists to keep away from the model.
       String message = SEARCH_MESSAGES.get(e.getMessage());
       if (message == null) {
-        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, unread, sinceDays, folder and limit.",
+        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, words, unread, sinceDays, since_date, until_date, message_id, folder and limit.",
                                            e);
       }
       throw new IllegalArgumentException(message, e);
@@ -545,6 +592,25 @@ public class EmailMcpTool implements McpToolPlugin {
       // on a call that keeps failing, and report that wrong diagnosis to the user.
       throw new IllegalStateException("The mail server could not be reached or searched. The mailbox connection may be broken; check the mail account settings.",
                                       e);
+    }
+  }
+
+  /**
+   * A day of the search's range, as the model writes it.
+   *
+   * @param day the day, yyyy-MM-dd, may be blank
+   * @param argument the argument's name, for the refusal
+   * @return the day, or null when none was given
+   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day
+   */
+  private static LocalDate searchDay(String day, String argument) {
+    if (StringUtils.isBlank(day)) {
+      return null;
+    }
+    try {
+      return LocalDate.parse(day.trim());
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException(argument + " must be a day written yyyy-MM-dd, such as 2026-10-21.", e);
     }
   }
 

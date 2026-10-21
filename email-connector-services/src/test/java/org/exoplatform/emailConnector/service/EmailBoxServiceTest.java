@@ -15645,6 +15645,87 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91675 -- a Message-ID is one more term of the server's SEARCH, which only narrows:
+   * the server's substring match also answers a longer id containing the searched one,
+   * and only the exact one is kept, counted and paged. A search where no hit carries it
+   * exactly is an empty page, with nothing fetched.
+   */
+  @Test
+  void aMessageIdSearchOfAnOwnFolderKeepsOnlyTheMailCarryingItExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage exact = searchHit("Our offer", "me@acme.com", new Date(), true);
+    when(exact.getHeader("Message-ID")).thenReturn(new String[] { "<draft.1@acme.com>" });
+    MimeMessage longer = searchHit("Another offer", "me@acme.com", new Date(), true);
+    when(longer.getHeader("Message-ID")).thenReturn(new String[] { "<xdraft.1@acme.com.org>" });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer, exact });
+    when(((UIDFolder) inbox).getUID(exact)).thenReturn(31L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(31L))).thenReturn(Map.of(31L, 310L));
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setMessageId("<draft.1@acme.com>");
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+
+    assertEquals(1, page.getTotalMatches(), "the longer id is not this mail");
+    assertEquals(List.of(310L), page.getResults().stream().map(EmailSearchResult::getEmailId).toList());
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertEquals(EmailBoxService.messageIdSearchTerm("<draft.1@acme.com>"), searched.getValue(), "the id is searched on the server");
+
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer });
+    EmailSearchResultPage none = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+    assertEquals(0, none.getTotalMatches());
+    assertTrue(none.getResults().isEmpty());
+    verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+  }
+
+  /**
+   * EXO-91675 -- the assistant's search of a shared mailbox takes every criterion: a
+   * Message-ID is matched exactly against the copy's rows, a longer id containing it
+   * never, and the words and days apply as they do in the advanced search.
+   */
+  @Test
+  void anAgentsSearchOfASharedMailboxMatchesAMessageIdExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    Email sent = mirrored(1L, "Our offer", "owner@acme.com", true, 1);
+    sent.setMailHeaderId("<draft.1@acme.com>");
+    sent.setContent(new EmailContent("<p>Pricing attached</p>"));
+    Email longer = mirrored(2L, "Another offer", "owner@acme.com", true, 1);
+    longer.setMailHeaderId("<xdraft.1@acme.com.org>");
+    Email noId = mirrored(3L, "Lunch", "owner@acme.com", true, 5);
+    noId.setContent(new EmailContent("<p>pricing for lunch</p>"));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(noId, longer, sent));
+    EmailSearchCriteria byId = new EmailSearchCriteria();
+    byId.setMessageId("draft.1@acme.com");
+
+    EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", byId, 10);
+
+    assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "bare or bracketed, exactly");
+    EmailSearchCriteria wordsThisWeek = new EmailSearchCriteria();
+    wordsThisWeek.setWords("pricing");
+    wordsThisWeek.setAfter(LocalDate.now().minusDays(2));
+    assertEquals(List.of(1L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", wordsThisWeek, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the body's words, from the first day of the range");
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:9")).thenReturn(null);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:9", byId, 10)).getMessage());
+  }
+
+  /**
    * EXO-90838 -- the attachment criterion never reaches the mail server: alone, it
    * examines the folder's newest messages without a SEARCH; with other criteria, the
    * newest matches of their SEARCH. Either way the hits are the messages eXo would list
