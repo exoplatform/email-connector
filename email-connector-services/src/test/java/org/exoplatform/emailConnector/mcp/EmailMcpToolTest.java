@@ -285,8 +285,9 @@ class EmailMcpToolTest {
     emailMcpTool.searchEmails(null, null, null, null, "inbox", null, null, null, null, null, "<d.1@acme.com>");
     emailMcpTool.searchEmails(null, null, null, null, null, null, null, "pricing", null, null, "  ");
 
-    verify(emailBoxService).searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.SENT), anyInt());
-    verify(emailBoxService, times(2)).searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.INBOX), anyInt());
+    ArgumentCaptor<String> folders = ArgumentCaptor.forClass(String.class);
+    verify(emailBoxService, times(3)).searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), folders.capture(), anyInt());
+    assertEquals(List.of(MailFolder.SENT, MailFolder.INBOX, MailFolder.INBOX), folders.getAllValues(), "call by call");
   }
 
   /**
