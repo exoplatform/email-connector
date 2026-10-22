@@ -1279,15 +1279,6 @@ public class EmailScheduledSendService {
   }
 
   /**
-   * What a transition that landed on no row means: no such scheduled mail (404), or one
-   * in a state that forbids it (409, the code naming the state).
-   *
-   * @param username the owner
-   * @param draftLocalId the draft's handle
-   * @throws ObjectNotFoundException when the owner has no such scheduled mail
-   * @throws ScheduledSendConflictException always otherwise
-   */
-  /**
    * Creates the schedule row of a draft just saved under its lock, once the owner is
    * known to be under the limit.
    *
@@ -1334,6 +1325,15 @@ public class EmailScheduledSendService {
     }
   }
 
+  /**
+   * What a transition that landed on no row means: no such scheduled mail (404), or one
+   * in a state that forbids it (409, the code naming the state).
+   *
+   * @param username the owner
+   * @param draftLocalId the draft's handle
+   * @throws ObjectNotFoundException when the owner has no such scheduled mail
+   * @throws ScheduledSendConflictException always otherwise
+   */
   private void rejectAsConflictOrNotFound(String username, String draftLocalId) throws ObjectNotFoundException {
     EmailScheduledSend row = emailScheduledSendStorage.get(username, draftLocalId);
     if (row == null) {
