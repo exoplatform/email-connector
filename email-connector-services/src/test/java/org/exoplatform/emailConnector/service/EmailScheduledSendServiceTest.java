@@ -48,6 +48,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.AfterEach;
@@ -1192,6 +1193,79 @@ public class EmailScheduledSendServiceTest {
    * @param code the code
    * @param call the call
    */
+  /**
+   * EXO-91996 -- a draft scheduled as stored is validated against the clock before the
+   * mailbox service is called, then scheduled through its stored-draft path: the
+   * caller's check runs on the stored row first, a stored row with no recipient is
+   * refused, and a valid one gets a SCHEDULED row due at the chosen instant.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aDraftScheduledAsStoredIsCheckedOnTheStoredRowThenScheduled() throws Exception {
+    long at = service.now().getTime() + 3_600_000L;
+    assertRefused(EmailScheduledSendService.DATE_TOO_SOON,
+                  () -> service.scheduleAsStored(LOCAL_ID, service.now().getTime() + 30_000, "UTC", USER, row -> {
+                  }));
+    assertRefused(EmailScheduledSendService.INVALID_TIME_ZONE, () -> service.scheduleAsStored(LOCAL_ID, at, "Mars/Olympus", USER, row -> {
+    }));
+    verify(emailBoxService, never()).scheduleDraftAsStored(anyString(), anyString(), any(), any());
+
+    Email stored = draft();
+    stored.setId(9L);
+    when(emailBoxService.scheduleDraftAsStored(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(3);
+      return scheduler.apply(stored);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    List<Email> checked = new ArrayList<>();
+
+    ScheduledEmail scheduled = service.scheduleAsStored(LOCAL_ID, at, "Europe/Paris", USER, checked::add);
+
+    assertEquals(List.of(stored), checked);
+    ArgumentCaptor<EmailScheduledSend> row = ArgumentCaptor.forClass(EmailScheduledSend.class);
+    verify(storage).create(row.capture());
+    assertEquals(9L, row.getValue().getEmailId());
+    assertEquals(ScheduledSendStatus.SCHEDULED, row.getValue().getStatus());
+    assertEquals(at, row.getValue().getScheduledDate().getTime());
+    assertEquals("Europe/Paris", scheduled.getTimeZone());
+
+    assertRefused("refused", () -> service.scheduleAsStored(LOCAL_ID, at, "UTC", USER, refused -> {
+      throw new IllegalArgumentException("refused");
+    }));
+    stored.setTo(List.of());
+    assertRefused(EmailScheduledSendService.RECIPIENTS_MANDATORY, () -> service.scheduleAsStored(LOCAL_ID, at, "UTC", USER, checked::add));
+    verify(storage, times(1)).create(any(EmailScheduledSend.class));
+  }
+
+  /**
+   * EXO-91996 -- one scheduled mail is read as the view lists it, and a handle that
+   * names none of the owner's is not found.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void oneScheduledMailIsReadAsTheViewListsIt() throws Exception {
+    EmailScheduledSend row = new EmailScheduledSend();
+    row.setUserId(USER);
+    row.setDraftLocalId(LOCAL_ID);
+    row.setScheduledDate(NOW);
+    row.setTimeZone("Europe/Paris");
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+
+    ScheduledEmail scheduled = service.getScheduledEmail(LOCAL_ID, USER);
+
+    assertEquals(LOCAL_ID, scheduled.getDraftLocalId());
+    assertEquals("See you tomorrow", scheduled.getSubject());
+    assertEquals(NOW.getTime(), scheduled.getScheduledDate());
+    assertThrows(ObjectNotFoundException.class, () -> service.getScheduledEmail("other", USER));
+    assertThrows(ObjectNotFoundException.class, () -> service.getScheduledEmail(" ", USER));
+  }
+
   private void assertRefused(String code, org.junit.jupiter.api.function.Executable call) {
     assertEquals(code, assertThrows(IllegalArgumentException.class, call).getMessage());
   }
