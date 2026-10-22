@@ -17190,11 +17190,12 @@ public class EmailBoxService {
   }
 
   /**
-   * The fetch profile of a search result page: flags + envelope + UID, everything a
-   * result row renders from, in one batched round-trip. Deliberately LIGHTER than
-   * {@link #buildSyncFetchProfile}: no MIME structure and none of the delivery
-   * headers, because a result list never reads a body or classifies a message —
-   * fetching them would tax every search with data nobody displays.
+   * The fetch profile of a search result page, in one batched round-trip: flags +
+   * envelope + UID, everything a result row renders from, plus the headers and the MIME
+   * structure each hit's message kind is decided on (EXO-91995), so classifying a hit
+   * costs no FETCH of its own -- only a delivery status report costs one more, of its
+   * status part. Still LIGHTER than {@link #buildSyncFetchProfile}: none of the other
+   * delivery headers, because a result list shows no body and caches no row.
    *
    * @return the profile to pass to {@link Folder#fetch(Message[], FetchProfile)}
    */
