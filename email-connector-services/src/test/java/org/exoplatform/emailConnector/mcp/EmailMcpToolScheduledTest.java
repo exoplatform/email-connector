@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.dao.CannotAcquireLockException;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -495,6 +496,16 @@ class EmailMcpToolScheduledTest {
     IllegalArgumentException sending = assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com")));
     assertTrue(sending.getMessage().contains("is being sent or was sent"), sending.getMessage());
+
+    when(emailScheduledSendService.cancel(eq(DRAFT_ID), eq(USERNAME), any()))
+                                                                          .thenThrow(new CannotAcquireLockException("Lock wait timeout exceeded"));
+    IllegalArgumentException held = assertThrows(IllegalArgumentException.class,
+                                                 () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com")));
+    assertTrue(held.getMessage().contains("is being changed in the Email app"), held.getMessage());
+    when(emailScheduledSendService.reschedule(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any()))
+                                                                                                       .thenThrow(new CannotAcquireLockException("Lock wait timeout exceeded"));
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("bob@acme.com")));
 
     when(emailScheduledSendService.getScheduledEmail("gone", USERNAME)).thenThrow(new ObjectNotFoundException("gone"));
     ObjectNotFoundException notFound = assertThrows(ObjectNotFoundException.class,

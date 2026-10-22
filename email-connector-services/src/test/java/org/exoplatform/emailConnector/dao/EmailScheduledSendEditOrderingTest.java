@@ -18,6 +18,9 @@ package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.Set;
@@ -146,6 +149,55 @@ public class EmailScheduledSendEditOrderingTest {
     } finally {
       commitEdit.countDown();
       pool.shutdownNow();
+      transaction.executeWithoutResult(status -> {
+        dao.findById(ids[1]).ifPresent(dao::delete);
+        emailBoxDAO.deleteById(ids[0]);
+      });
+    }
+  }
+
+  /**
+   * A check that refuses the mail, thrown inside the transaction that cancelled or
+   * rescheduled it, leaves the schedule as it was on the database: the cancelled row is
+   * back, a failed mail keeps its status and its date. The transaction is the one a
+   * {@code @Transactional(rollbackFor = Exception.class)} method opens, and the DAO's own
+   * writes join it.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void aRefusedCheckLeavesTheScheduleAsItWas() {
+    TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+    Long[] ids = transaction.execute(status -> {
+      EmailBoxEntity draft = draft();
+      EmailScheduledSendEntity row = schedule(draft);
+      row.setStatus(ScheduledSendStatus.FAILED);
+      return new Long[] { draft.getId(), dao.saveAndFlush(row).getId() };
+    });
+    Date originalDate = new Date(NOW.getTime() + 3_600_000L);
+    try {
+      IllegalArgumentException refused = new IllegalArgumentException("refused");
+      assertSame(refused, assertThrows(IllegalArgumentException.class, () -> transaction.executeWithoutResult(status -> {
+        assertEquals(1,
+                     dao.reschedule(USER,
+                                    LOCAL_ID,
+                                    new Date(NOW.getTime() + 7_200_000L),
+                                    "Europe/Paris",
+                                    NOW,
+                                    Set.of(ScheduledSendStatus.SCHEDULED, ScheduledSendStatus.FAILED),
+                                    ScheduledSendStatus.SCHEDULED));
+        throw refused;
+      })));
+      EmailScheduledSendEntity kept = dao.findById(ids[1]).orElseThrow();
+      assertEquals(ScheduledSendStatus.FAILED, kept.getStatus());
+      assertEquals(originalDate, kept.getScheduledDate());
+      assertEquals("UTC", kept.getTimeZone());
+
+      assertThrows(IllegalArgumentException.class, () -> transaction.executeWithoutResult(status -> {
+        assertEquals(1, dao.cancel(USER, LOCAL_ID, Set.of(ScheduledSendStatus.SENDING, ScheduledSendStatus.SENT)));
+        throw refused;
+      }));
+      assertTrue(dao.findById(ids[1]).isPresent(), "the cancelled schedule is back");
+    } finally {
       transaction.executeWithoutResult(status -> {
         dao.findById(ids[1]).ifPresent(dao::delete);
         emailBoxDAO.deleteById(ids[0]);
