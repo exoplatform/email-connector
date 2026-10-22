@@ -8166,6 +8166,7 @@ public class EmailBoxServiceTest {
     verify(inbox, times(1)).fetch(any(Message[].class), profile.capture());
     assertTrue(profile.getValue().contains("X-Failed-Recipients"));
     assertTrue(profile.getValue().contains("Auto-Submitted"));
+    assertTrue(profile.getValue().contains("Return-Path"));
     assertTrue(profile.getValue().contains(FetchProfile.Item.CONTENT_INFO));
   }
 

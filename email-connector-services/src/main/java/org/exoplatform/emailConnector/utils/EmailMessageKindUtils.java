@@ -60,6 +60,12 @@ import org.exoplatform.emailConnector.model.MessageClassification;
  * <li>A read receipt (RFC 8098 {@code disposition-notification}), {@code Auto-Submitted}
  * other than {@code no} (RFC 3834), {@code X-Autoreply}, {@code X-Autorespond} or
  * {@code Precedence: auto_reply} make an {@link MessageKind#AUTO_REPLY}.</li>
+ * <li>A bounce must come with the empty envelope sender every mail server sends it with:
+ * a {@code Return-Path} naming an address makes it an {@link MessageKind#AUTO_REPLY}, so
+ * a message merely claiming to report a failure cannot mark an address as invalid. A
+ * missing {@code Return-Path} is tolerated, since not every server stamps one.</li>
+ * <li>Any other message with the empty envelope sender is an
+ * {@link MessageKind#AUTO_REPLY}: a bounce in no standard form, or a vacation reply.</li>
  * <li>Anything else is {@link MessageKind#NORMAL}. {@code Precedence: list|bulk|junk}
  * and the {@code List-*} headers are deliberately not read: mailing lists stamp them on
  * the human messages they relay.</li>
@@ -85,12 +91,19 @@ public final class EmailMessageKindUtils {
   /** Set by several vacation responders. */
   public static final String       HEADER_X_AUTORESPOND        = "X-Autorespond";
 
+  /**
+   * The envelope sender the delivering server stamped: {@code <>} on every bounce and on
+   * most automatic replies (RFC 5321 §4.5.5, RFC 3834 §3.3).
+   */
+  public static final String       HEADER_RETURN_PATH          = "Return-Path";
+
   /** Every header {@link #classify} reads, to prefetch with the message. */
   public static final List<String> HEADERS                     = List.of(HEADER_AUTO_SUBMITTED,
                                                                          HEADER_PRECEDENCE,
                                                                          HEADER_X_FAILED_RECIPIENTS,
                                                                          HEADER_X_AUTOREPLY,
-                                                                         HEADER_X_AUTORESPOND);
+                                                                         HEADER_X_AUTORESPOND,
+                                                                         HEADER_RETURN_PATH);
 
   /** The separator of the failed addresses as stored in one column. */
   public static final String       RECIPIENTS_SEPARATOR        = ", ";
@@ -126,23 +139,48 @@ public final class EmailMessageKindUtils {
   public static MessageClassification classify(Message message) {
     try {
       String failedHeader = firstHeader(message, HEADER_X_FAILED_RECIPIENTS);
+      String returnPath = firstHeader(message, HEADER_RETURN_PATH);
+      List<String> failed = null;
       if (isReportOf(message, DELIVERY_STATUS_REPORTS)) {
-        List<String> failed = failedRecipientsOfReport(message);
-        if (failed != null) {
-          return new MessageClassification(MessageKind.BOUNCE, failed);
+        failed = failedRecipientsOfReport(message);
+        if (failed == null && StringUtils.isBlank(failedHeader)) {
+          // A report that failed nobody: a delay, a delivery or a relay notice.
+          return MessageClassification.of(MessageKind.AUTO_REPLY);
         }
-        return StringUtils.isBlank(failedHeader) ? MessageClassification.of(MessageKind.AUTO_REPLY)
-                                                 : new MessageClassification(MessageKind.BOUNCE, addressesOf(failedHeader));
       }
-      if (StringUtils.isNotBlank(failedHeader)) {
-        return new MessageClassification(MessageKind.BOUNCE, addressesOf(failedHeader));
+      if ((failed == null || failed.isEmpty()) && StringUtils.isNotBlank(failedHeader)) {
+        failed = addressesOf(failedHeader);
       }
-      if (isReportOf(message, Set.of("disposition-notification")) || isAutomatic(message)) {
+      if (failed != null) {
+        // A mail server sends its bounce with an empty envelope sender: one stamped with a
+        // sender address only claims to be a bounce, and is never trusted as one.
+        return returnPath == null || isNullPath(returnPath) ? new MessageClassification(MessageKind.BOUNCE, failed)
+                                                            : MessageClassification.of(MessageKind.AUTO_REPLY);
+      }
+      if (isReportOf(message, Set.of("disposition-notification")) || isAutomatic(message)
+          || returnPath != null && isNullPath(returnPath)) {
+        // The empty envelope sender also covers a bounce in no standard form (qmail's
+        // plain text): never a person's reply, though no address can be read from it.
         return MessageClassification.of(MessageKind.AUTO_REPLY);
       }
       return MessageClassification.of(MessageKind.NORMAL);
     } catch (MessagingException | IOException | RuntimeException e) {
       return null;
+    }
+  }
+
+  /**
+   * Whether a message is a read receipt: an RFC 8098 {@code multipart/report} of report
+   * type {@code disposition-notification}.
+   *
+   * @param message the message
+   * @return true for a read receipt; false too when its type cannot be read
+   */
+  public static boolean isReadReceipt(Message message) {
+    try {
+      return isReportOf(message, Set.of("disposition-notification"));
+    } catch (MessagingException | RuntimeException e) {
+      return false;
     }
   }
 
@@ -182,7 +220,7 @@ public final class EmailMessageKindUtils {
     if (StringUtils.isBlank(stored)) {
       return List.of();
     }
-    return Arrays.stream(stored.split(",")).map(String::trim).filter(StringUtils::isNotEmpty).toList();
+    return Arrays.stream(stored.split(Pattern.quote(RECIPIENTS_SEPARATOR))).map(String::trim).filter(StringUtils::isNotEmpty).toList();
   }
 
   /**
@@ -201,6 +239,16 @@ public final class EmailMessageKindUtils {
     ContentType type = new ContentType(contentType);
     String reportType = type.getParameter("report-type");
     return type.match("multipart/report") && reportType != null && reportTypes.contains(reportType.trim().toLowerCase(Locale.ROOT));
+  }
+
+  /**
+   * Whether an envelope sender is the null path {@code <>}.
+   *
+   * @param returnPath the Return-Path header's value
+   * @return true when it names no address
+   */
+  private static boolean isNullPath(String returnPath) {
+    return StringUtils.isBlank(StringUtils.strip(StringUtils.deleteWhitespace(returnPath), "<>"));
   }
 
   /**

@@ -225,6 +225,71 @@ class EmailMessageKindUtilsTest {
     assertEquals(List.of(), classification.bouncedRecipients());
   }
 
+  /**
+   * A bounce is trusted only with the empty envelope sender mail servers send it with: a
+   * report, or an X-Failed-Recipients header, from a sender address is no bounce, and
+   * names no address to mark invalid. A missing Return-Path is tolerated.
+   */
+  @Test
+  void aBounceFromASenderAddressIsNotTrusted() throws Exception {
+    String status = """
+        Reporting-MTA: dns; mx.corp.example
+
+        Final-Recipient: rfc822; customer@prospect.example
+        Action: failed
+        """;
+    MessageClassification forged = classify(report("delivery-status", "message/delivery-status", status,
+                                                    "Return-Path: <someone@attacker.example>\n"));
+    assertEquals(MessageKind.AUTO_REPLY, forged.kind());
+    assertEquals(List.of(), forged.bouncedRecipients());
+
+    MessageClassification genuine = classify(report("delivery-status", "message/delivery-status", status, "Return-Path: < >\n"));
+    assertEquals(MessageKind.BOUNCE, genuine.kind());
+    assertEquals(List.of("customer@prospect.example"), genuine.bouncedRecipients());
+
+    MessageClassification forgedHeader = classify(plain("Return-Path: <bob@prospect.example>\nX-Failed-Recipients: customer@prospect.example"));
+    assertEquals(MessageKind.AUTO_REPLY, forgedHeader.kind());
+    assertEquals(List.of(), forgedHeader.bouncedRecipients());
+  }
+
+  /**
+   * A bounce in no standard form (qmail's plain text) comes with the empty envelope
+   * sender: it is never taken for a person's reply. A person's mail names its sender.
+   */
+  @Test
+  void anUnrecognisedMessageWithTheEmptySenderIsAnAutomaticReply() throws Exception {
+    MessageClassification qmail = classify(message("""
+        Return-Path: <>
+        From: MAILER-DAEMON@mx.prospect.example
+        To: alice@corp.example
+        Subject: failure notice
+        Content-Type: text/plain
+
+        Hi. This is the qmail-send program at mx.prospect.example.
+        I'm afraid I wasn't able to deliver your message to the following addresses.
+        <gone@prospect.example>:
+        Sorry, no mailbox here by that name.
+        """));
+    assertEquals(MessageKind.AUTO_REPLY, qmail.kind());
+    assertEquals(MessageKind.NORMAL, classify(plain("Return-Path: <bob@prospect.example>")).kind());
+  }
+
+  /**
+   * A report that failed a recipient it names in no readable form takes the address from
+   * X-Failed-Recipients when the server wrote one.
+   */
+  @Test
+  void aFailedRecipientWithoutAddressFallsBackOnTheHeader() throws Exception {
+    MessageClassification classification = classify(report("delivery-status", "message/delivery-status", """
+        Reporting-MTA: dns; mx.corp.example
+
+        Final-Recipient: x400; not readable
+        Action: failed
+        """, "X-Failed-Recipients: gone@prospect.example\n"));
+    assertEquals(MessageKind.BOUNCE, classification.kind());
+    assertEquals(List.of("gone@prospect.example"), classification.bouncedRecipients());
+  }
+
   /** A read receipt is no bounce, though it is a multipart/report too. */
   @Test
   void aReadReceiptIsAnAutomaticReply() throws Exception {
@@ -259,6 +324,7 @@ class EmailMessageKindUtilsTest {
     assertEquals(List.of("a@x.example", "b@x.example"), EmailMessageKindUtils.splitRecipients("a@x.example, b@x.example"));
     assertEquals(List.of(), EmailMessageKindUtils.splitRecipients(null));
     assertEquals(List.of(), EmailMessageKindUtils.splitRecipients(" "));
+    assertEquals(List.of("\"a,b\"@x.example", "c@x.example"), EmailMessageKindUtils.splitRecipients("\"a,b\"@x.example, c@x.example"));
   }
 
   /**

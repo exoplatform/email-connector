@@ -17584,16 +17584,7 @@ public class EmailBoxService {
    * @return true for a read receipt; false too when the type cannot be read
    */
   private static boolean isDispositionNotification(Message message) {
-    try {
-      String contentType = message.getContentType();
-      if (contentType == null) {
-        return false;
-      }
-      ContentType type = new ContentType(contentType);
-      return type.match("multipart/report") && "disposition-notification".equalsIgnoreCase(type.getParameter("report-type"));
-    } catch (MessagingException | RuntimeException e) {
-      return false;
-    }
+    return EmailMessageKindUtils.isReadReceipt(message);
   }
 
   /**
