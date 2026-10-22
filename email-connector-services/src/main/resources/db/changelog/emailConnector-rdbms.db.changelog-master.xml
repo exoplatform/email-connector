@@ -2167,4 +2167,21 @@
       <dropColumn tableName="EMAIL_BOX" columnName="DMARC_PASS"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-exo-91995-01">
+    <comment>
+      EMAIL_BOX.MESSAGE_KIND and EMAIL_BOX.BOUNCED_RECIPIENTS (EXO-91995): who wrote a
+      received message -- BOUNCE, AUTO_REPLY or NORMAL -- decided at sync from its headers
+      and MIME structure, and on a bounce the addresses its report says could not be
+      reached. Null on every row written before this, read as unknown. Nullable, no
+      default, no index (read with their row only). Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="MESSAGE_KIND" type="VARCHAR(16)"/>
+      <column name="BOUNCED_RECIPIENTS" type="VARCHAR(1000)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="BOUNCED_RECIPIENTS"/>
+      <dropColumn tableName="EMAIL_BOX" columnName="MESSAGE_KIND"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

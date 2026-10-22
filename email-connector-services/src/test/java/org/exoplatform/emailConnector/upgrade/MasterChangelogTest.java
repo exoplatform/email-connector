@@ -1980,6 +1980,72 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-91995 -- 1.0.0-exo-91995-01 adds EMAIL_BOX.MESSAGE_KIND and BOUNCED_RECIPIENTS, null on
+   * a message cached before it (its kind was never decided); rolls back to a tag placed
+   * immediately before it, dropping those two columns and nothing else, the message kept;
+   * and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theMessageKindRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback100" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-91995-01"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-message-kind");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "not before 1.0.0-exo-91995-01");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
+            + " VALUES (1, 'bob', 's', 'Mail Delivery System,mailer-daemon@mx.example', CURRENT_TIMESTAMP, 'INBOX')");
+      }
+      liquibase.update("");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "MESSAGE_KIND"), "1.0.0-exo-91995-01 adds EMAIL_BOX.MESSAGE_KIND");
+      assertEquals(1000, columnSize(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"), "and EMAIL_BOX.BOUNCED_RECIPIENTS");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT MESSAGE_KIND, BOUNCED_RECIPIENTS FROM EMAIL_BOX WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "a message cached before it carries no kind");
+          assertNull(row.getString(2));
+        }
+        statement.executeUpdate("UPDATE EMAIL_BOX SET MESSAGE_KIND = 'BOUNCE', BOUNCED_RECIPIENTS = 'gone@prospect.example' WHERE ID = 1");
+      }
+      liquibase.rollback("before-message-kind", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "the rollback drops it");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"), "and the failed addresses");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "and nothing before them");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT SUBJECT FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the message itself survives the rollback");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "the changeset applies again after its rollback");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"));
+    }
+  }
+
+  /**
+   * EXO-91995 -- 1.0.0-exo-91995-01 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: two nullable VARCHAR columns, unquoted, and a rollback that drops them.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theMessageKindOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-91995-01", "1.0.0-exo-91995-01").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("MESSAGE_KIND VARCHAR(16)"), vendor + ": " + update);
+      assertTrue(update.contains("BOUNCED_RECIPIENTS VARCHAR(1000)"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the columns are nullable: " + update);
+      assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-91995-01", "1.0.0-exo-91995-01").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("DROP COLUMN BOUNCED_RECIPIENTS"), vendor + ": " + rollback);
+      assertTrue(rollback.contains("DROP COLUMN MESSAGE_KIND"), vendor + ": " + rollback);
+      assertFalse(rollback.contains("DMARC_PASS"), vendor + " rollback drops those columns only: " + rollback);
+    }
+  }
+
+  /**
    * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
    * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
    * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's
