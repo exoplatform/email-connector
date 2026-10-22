@@ -13480,6 +13480,80 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A server whose search does not find a message just copied into the folder
+   * (BlueMind, EXO-91916): the message is then found among the folder's last messages,
+   * by reading their Message-ID header, and moved back as the search path would.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoFindsAMessageTheServersSearchMissesAmongTheFolderLastMessages() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+    Message older = aMessageCarrying("<older@host>");
+    Message moved = aMessageCarrying("<a@host>");
+    Message[] recent = { older, moved };
+    when(factures.getMessageCount()).thenReturn(2);
+    when(factures.getMessages(1, 2)).thenReturn(recent);
+    when(factures.getUID(moved)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(moved);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(factures).fetch(eq(recent), argThat(profile -> Arrays.asList(profile.getHeaderNames()).contains("Message-ID")));
+    Folder inbox = trashStore().getFolder("INBOX");
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == moved), eq(inbox));
+    verify(moved).setFlag(Flags.Flag.DELETED, true);
+    verify(older, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+  }
+
+  /**
+   * The fallback keeps the search path's rule: two of the folder's last messages
+   * carrying the id is a guess, refused and counted, nothing copied or flagged.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoRefusesToGuessBetweenTwoOfTheFolderLastMessagesCarryingTheSameId() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+    Message first = aMessageCarrying("<a@host>");
+    Message second = aMessageCarrying("<a@HOST>");
+    when(factures.getMessageCount()).thenReturn(2);
+    when(factures.getMessages(1, 2)).thenReturn(new Message[] { first, second });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures, never()).copyMessages(any(), any());
+    verify(first, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(second, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+  }
+
+  /**
+   * The fallback reads the folder's end once per undo, however many ids the search
+   * misses, and only as far back as the ids plus a margin for mail delivered since the
+   * move: 2 ids in a folder of 200 read messages 149 to 200. A message outside that
+   * window, or carrying another id, is not taken.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoReadsTheFolderLastMessagesOnceAndOnlyAsFarAsItsIdsAndAMargin() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+    Message other = aMessageCarrying("<other@host>");
+    when(factures.getMessageCount()).thenReturn(200);
+    when(factures.getMessages(149, 200)).thenReturn(new Message[] { other });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>", "<b@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(2, failed);
+    verify(factures, times(2)).search(any(SearchTerm.class));
+    verify(factures, times(1)).getMessages(anyInt(), anyInt());
+    verify(factures, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+    verify(factures, never()).copyMessages(any(), any());
+  }
+
+  /**
    * Sent is a folder a move may come FROM but never one it may go INTO, so the undo
    * admits it as the origin all the same: a message moved out of Sent goes back to
    * Sent.

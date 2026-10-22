@@ -48,6 +48,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.Date;
 import java.util.Deque;
@@ -301,6 +302,14 @@ public class EmailBoxService {
   private static final String     HEADER_THREAD_INDEX                                         = "Thread-Index";
 
   private static final String     HEADER_MESSAGE_ID                                           = "Message-ID";
+
+  /**
+   * How many messages beyond the ones it names an undo reads at the end of the folder
+   * the move filed them into, when the server's search finds none of them
+   * ({@link #recentMessagesCarrying}): room for the mail delivered into that folder
+   * between the move and the click.
+   */
+  private static final int        UNDO_RECENT_SCAN_MARGIN                                     = 50;
 
   private static final String     HEADER_AUTO_SUBMITTED                                       = "Auto-Submitted";
 
@@ -4782,9 +4791,18 @@ public class EmailBoxService {
       boolean expungeOnClose = false;
       try {
         current.open(Folder.READ_WRITE);
+        // The folder's last messages, read once for the whole undo and only when the
+        // server's search misses one (recentMessagesCarrying).
+        AtomicReference<Map<String, List<Message>>> recentById = new AtomicReference<>();
+        int recentWindow = mailHeaderIds.size() + UNDO_RECENT_SCAN_MARGIN;
         for (String mailHeaderId : mailHeaderIds) {
           try {
-            Message message = findTheOneMessageCarrying(current, mailHeaderId, currentKey, username);
+            Message message = findTheOneMessageCarrying(current,
+                                                        mailHeaderId,
+                                                        currentKey,
+                                                        username,
+                                                        recentWindow,
+                                                        recentById);
             if (message == null) {
               failures++;
               continue;
@@ -4888,18 +4906,29 @@ public class EmailBoxService {
    * checks: IMAP's HEADER search is a substring match on most servers, so
    * {@code <a@host>} also answers {@code <a@host.example>}, and a match on part of an
    * identifier is not an identity.
+   * <p>
+   * When the search finds nothing, the folder's last messages are read instead
+   * ({@link #recentMessagesCarrying}): BlueMind's search does not find a message the
+   * move has just copied into the folder, by either key, while a plain read of the
+   * folder lists it. A copy always lands at the end of the folder, so that is where the
+   * message is; the same exact comparison and the same "exactly one" rule decide.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
    * @param folderKey the folder's key, for the log
    * @param username the mailbox owner
+   * @param recentWindow how many of the folder's last messages the fallback reads
+   * @param recentById the fallback's read, kept for the whole undo: empty until a
+   *          search first misses
    * @return the message, or null when the folder holds none or several
-   * @throws MessagingException if the folder cannot be searched
+   * @throws MessagingException if the folder cannot be searched or read
    */
   private Message findTheOneMessageCarrying(IMAPFolder folder,
                                             String mailHeaderId,
                                             String folderKey,
-                                            String username) throws MessagingException {
+                                            String username,
+                                            int recentWindow,
+                                            AtomicReference<Map<String, List<Message>>> recentById) throws MessagingException {
     if (StringUtils.isBlank(mailHeaderId)) {
       LOG.warn("A message with no Message-ID cannot be found again in folder {} of user {}; it was not moved back",
                folderKey,
@@ -4908,6 +4937,15 @@ public class EmailBoxService {
     }
     String expected = StringUtils.trim(mailHeaderId);
     List<Message> exact = searchByMessageId(folder, expected);
+    if (exact.isEmpty()) {
+      exact = recentMessagesCarrying(folder, expected, recentWindow, recentById);
+      if (!exact.isEmpty()) {
+        LOG.debug("The server's search found no message carrying {} in folder {} of user {}; found among its last messages",
+                  expected,
+                  folderKey,
+                  username);
+      }
+    }
     if (exact.isEmpty()) {
       LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
       return null;
@@ -4921,6 +4959,52 @@ public class EmailBoxService {
       return null;
     }
     return exact.get(0);
+  }
+
+  /**
+   * The messages among a folder's last ones that carry the given Message-ID, exactly:
+   * the fallback of {@link #findTheOneMessageCarrying} for a server whose search does
+   * not find a message just copied into the folder. Reads the Message-ID header of the
+   * last {@code window} messages, in one FETCH and without marking anything read, the
+   * first time it is asked, and answers every later id of the same undo from that read.
+   * The comparison is {@link #sameMessageId}'s, so it decides exactly as the search
+   * path's filter does.
+   *
+   * @param folder the OPEN folder to read
+   * @param messageId the Message-ID to look for
+   * @param window how many of the folder's last messages to read
+   * @param recentById the read, kept across the ids of one undo; filled on first use
+   * @return the messages carrying exactly that id, in the folder's order; empty when none
+   * @throws MessagingException if the folder cannot be read
+   */
+  static List<Message> recentMessagesCarrying(Folder folder,
+                                              String messageId,
+                                              int window,
+                                              AtomicReference<Map<String, List<Message>>> recentById) throws MessagingException {
+    String expected = normalizeMessageId(messageId);
+    if (expected == null || window <= 0) {
+      return List.of();
+    }
+    Map<String, List<Message>> byId = recentById.get();
+    if (byId == null) {
+      byId = new HashMap<>();
+      int count = folder.getMessageCount();
+      if (count > 0) {
+        Message[] recent = folder.getMessages(Math.max(1, count - window + 1), count);
+        FetchProfile profile = new FetchProfile();
+        profile.add(HEADER_MESSAGE_ID);
+        folder.fetch(recent, profile);
+        for (Message message : recent) {
+          String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
+          String actual = messageIds != null && messageIds.length > 0 ? normalizeMessageId(messageIds[0]) : null;
+          if (actual != null) {
+            byId.computeIfAbsent(actual, key -> new ArrayList<>()).add(message);
+          }
+        }
+      }
+      recentById.set(byId);
+    }
+    return byId.getOrDefault(expected, List.of());
   }
 
   /**
