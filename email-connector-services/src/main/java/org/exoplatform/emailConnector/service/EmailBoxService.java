@@ -4948,18 +4948,20 @@ public class EmailBoxService {
     String expected = StringUtils.trim(mailHeaderId);
     List<Message> exact = new ArrayList<>(searchByMessageId(folder, expected));
     int searched = exact.size();
-    for (Message recent : recentMessagesCarrying(folder, expected, recentWindow, recentById)) {
+    List<Message> recentCopies = recentMessagesCarrying(folder, expected, recentWindow, recentById);
+    for (Message recent : recentCopies) {
       // One message is one object in an open IMAPFolder, whichever call returned it.
       if (exact.stream().noneMatch(found -> found == recent)) {
         exact.add(recent);
       }
     }
     if (exact.size() > searched) {
-      LOG.debug("The server's search found {} of the messages carrying {} in folder {} of user {}; the folder's last messages hold {}",
+      LOG.debug("The server's search found {} message(s) carrying {} in folder {} of user {}, the folder's last messages {}: {} in all",
                 searched,
                 expected,
                 folderKey,
                 username,
+                recentCopies.size(),
                 exact.size());
     }
     if (exact.isEmpty()) {
