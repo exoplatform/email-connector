@@ -207,7 +207,8 @@ public class EmailScheduledSendEditOrderingTest {
 
   /**
    * The UNCERTAIN-only removal takes a mail whose sending could not be confirmed and no
-   * other, run by the engine against the status set the storage passes.
+   * other, and the confirmed removal takes neither it nor a mail being sent or sent, run
+   * by the engine against the status sets the storage passes.
    */
   @Test
   @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -232,12 +233,18 @@ public class EmailScheduledSendEditOrderingTest {
         });
         assertFalse(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelUncertain(USER, LOCAL_ID))), "a " + other + " mail is kept");
         assertTrue(dao.findById(ids[1]).isPresent());
+        if (other == ScheduledSendStatus.SENDING || other == ScheduledSendStatus.SENT) {
+          assertFalse(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelConfirmed(USER, LOCAL_ID))),
+                      "a " + other + " mail is not removed as confirmed");
+        }
       }
       transaction.executeWithoutResult(status -> {
         EmailScheduledSendEntity row = dao.findById(ids[1]).orElseThrow();
         row.setStatus(ScheduledSendStatus.UNCERTAIN);
         dao.saveAndFlush(row);
       });
+      assertFalse(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelConfirmed(USER, LOCAL_ID))),
+                  "an uncertain mail is not removed as confirmed");
       assertTrue(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelUncertain(USER, LOCAL_ID))));
       assertFalse(dao.findById(ids[1]).isPresent(), "the uncertain mail is taken back");
     } finally {
