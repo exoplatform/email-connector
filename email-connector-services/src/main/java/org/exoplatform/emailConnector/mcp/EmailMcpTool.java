@@ -23,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -1483,7 +1482,13 @@ public class EmailMcpTool implements McpToolPlugin {
     ZoneId zone = zoneOf(timeZone, username, current.getTimeZone(), RESCHEDULED);
     long instant = instantOf(sendAt, zone, RESCHEDULED);
     try {
-      return toScheduledModel(emailScheduledSendService.reschedule(current.getDraftLocalId(), instant, zone.getId(), username));
+      // Checked again on the mail as it stands, under its draft's lock: the user may edit
+      // it in the Email app between the check above and the change.
+      return toScheduledModel(emailScheduledSendService.reschedule(current.getDraftLocalId(),
+                                                                   instant,
+                                                                   zone.getId(),
+                                                                   username,
+                                                                   mail -> requireSameScheduledEmail(mail, subject, to, RESCHEDULED)));
     } catch (ScheduledSendConflictException e) {
       throw scheduledStateRefusal(e, draftId, RESCHEDULED);
     } catch (ObjectNotFoundException e) {
@@ -1513,7 +1518,10 @@ public class EmailMcpTool implements McpToolPlugin {
     ScheduledEmail current = scheduledEmail(draftId, username);
     requireSameScheduledEmail(current, subject, to, CANCELLED);
     try {
-      emailScheduledSendService.cancel(current.getDraftLocalId(), username);
+      // Checked again on the mail as it stands, under its draft's lock, as reschedule does.
+      emailScheduledSendService.cancel(current.getDraftLocalId(),
+                                       username,
+                                       mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
     } catch (ScheduledSendConflictException e) {
       throw scheduledStateRefusal(e, draftId, CANCELLED);
     } catch (ObjectNotFoundException e) {
@@ -2301,30 +2309,42 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * The instant a time to send at names: a local date and time read in the zone, or a
-   * date and time that carries its own offset.
+   * The instant a local date and time names in a zone. A time the zone skips (clocks
+   * moved forward) or shows twice (clocks moved back) is refused rather than moved, since
+   * the user approved the time as written.
    *
-   * @param sendAt the time, such as 2026-10-23T08:30 or 2026-10-23T08:30+02:00
-   * @param zone the zone a local time is read in
+   * @param sendAt the local time, such as 2026-10-23T08:30
+   * @param zone the zone it is read in
    * @param what what is refused when it cannot be read: scheduled or rescheduled
    * @return the instant, epoch milliseconds
-   * @throws IllegalArgumentException when it is blank or cannot be read
+   * @throws IllegalArgumentException when it is blank, cannot be read, is not one
+   *           instant in the zone, or is out of any reach
    */
   private static long instantOf(String sendAt, ZoneId zone, String what) {
-    String value = StringUtils.trimToNull(sendAt);
-    if (value != null) {
-      try {
-        return LocalDateTime.parse(value).atZone(zone).toInstant().toEpochMilli();
-      } catch (DateTimeParseException e) {
-        try {
-          return OffsetDateTime.parse(value).toInstant().toEpochMilli();
-        } catch (DateTimeParseException ignored) {
-          // Refused below, with the form it takes.
-        }
-      }
+    LocalDateTime local;
+    try {
+      local = LocalDateTime.parse(StringUtils.trimToEmpty(sendAt));
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException(String.format("send_at must be a local date and time, such as 2026-10-23T08:30, with no "
+          + "offset: it is read in time_zone. Nothing was %s.", what), e);
     }
-    throw new IllegalArgumentException(String.format("send_at must be a date and time, such as 2026-10-23T08:30, in time_zone. "
-        + "Nothing was %s.", what));
+    List<ZoneOffset> offsets = zone.getRules().getValidOffsets(local);
+    if (offsets.size() != 1) {
+      throw new IllegalArgumentException(String.format("%s does not name one moment in %s: the clocks change then (%s). Ask the user "
+          + "for another time. Nothing was %s.",
+                                                       sendAt.trim(),
+                                                       zone.getId(),
+                                                       offsets.isEmpty() ? "that hour is skipped" : "that hour comes twice",
+                                                       what));
+    }
+    try {
+      return local.toInstant(offsets.get(0)).toEpochMilli();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(String.format("%s Nothing was %s.",
+                                                       SCHEDULE_MESSAGES.get(EmailScheduledSendService.DATE_TOO_FAR),
+                                                       what),
+                                         e);
+    }
   }
 
   /**

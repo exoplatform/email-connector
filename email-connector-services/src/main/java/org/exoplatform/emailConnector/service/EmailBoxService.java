@@ -12322,8 +12322,10 @@ public class EmailBoxService {
    * in the Email app are what will go out, never an older copy the caller read earlier.
    * <p>
    * The row is read under the draft's lock and handed to {@link #scheduleDraft} as the
-   * composer's text, still under that lock (it is reentrant), so no save can land between
-   * the read and the schedule, as {@link #sendDraftAsStored} does for a send.
+   * composer's text, still under that lock (it is reentrant), so no save made on this
+   * node can land between the read and the schedule, as {@link #sendDraftAsStored} does
+   * for a send. The lock is this node's: a save handled by another node of a cluster in
+   * between is not held off by it.
    * <p>
    * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
    * is, before anything is written: a caller that had the user approve what the draft
@@ -12361,6 +12363,34 @@ public class EmailBoxService {
         check.accept(stored);
       }
       return scheduleDraft(stored, username, scheduler);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Runs work on a draft while its lock is held (EXO-91996): the lock every save,
+   * send, schedule and scheduled-mail edit of that draft takes on this node, so a check
+   * the work makes on the draft and the write it then does see the same draft. The lock
+   * is this node's, as {@link #scheduleDraftAsStored} says.
+   *
+   * @param <T> what the work answers
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param action the work
+   * @return what the work answers
+   * @throws IllegalAccessException what the work throws
+   * @throws ObjectNotFoundException what the work throws
+   */
+  public <T> T inDraftLock(String draftLocalId, String username, DraftLockedAction<T> action) throws IllegalAccessException,
+                                                                                               ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      return action.run();
     } finally {
       lock.unlock();
     }

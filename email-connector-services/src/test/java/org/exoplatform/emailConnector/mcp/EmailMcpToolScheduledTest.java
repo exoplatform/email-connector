@@ -203,28 +203,50 @@ class EmailMcpToolScheduledTest {
   }
 
   /**
-   * The zone the call names wins over the user's, and a time carrying its own offset is
-   * that instant.
+   * The zone the call names wins over the user's; a time carrying an offset is refused,
+   * since the approval card names the zone the time is read in, not an offset.
    */
   @Test
-  void aNamedZoneOrAnOffsetDecidesTheInstant() throws Exception {
+  void aNamedZoneDecidesTheInstantAndAnOffsetIsRefused() throws Exception {
     Email stored = storedDraft("Proposal", "bob@acme.com");
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
     scheduleAsStoredRuns(stored);
 
     emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30", "America/New_York", List.of("bob@acme.com"), "Proposal", null, null);
     verify(emailScheduledSendService).scheduleAsStored(eq(DRAFT_ID),
-                                                       eq(at("2026-12-03T08:30", "America/New_York")),
+                                                       eq(at("2026-12-03T13:30", "UTC")),
                                                        eq("America/New_York"),
                                                        eq(USERNAME),
                                                        any());
 
-    emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30+05:00", "Asia/Tokyo", List.of("bob@acme.com"), "Proposal", null, null);
-    verify(emailScheduledSendService).scheduleAsStored(eq(DRAFT_ID),
-                                                       eq(at("2026-12-03T03:30", "UTC")),
-                                                       eq("Asia/Tokyo"),
-                                                       eq(USERNAME),
-                                                       any());
+    IllegalArgumentException offset =
+                                    assertThrows(IllegalArgumentException.class,
+                                                 () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30+05:00", "Asia/Tokyo", List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(offset.getMessage().contains("with no offset"), offset.getMessage());
+  }
+
+  /**
+   * A local time the zone skips, or shows twice, when its clocks change is refused
+   * rather than moved to another instant than the one approved; a year out of any reach
+   * is refused as too far, never as an arithmetic failure.
+   */
+  @Test
+  void aTimeTheClocksSkipOrRepeatOrOutOfReachIsRefused() throws Exception {
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Proposal", "bob@acme.com"));
+
+    IllegalArgumentException skipped =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2027-03-28T02:30", "Europe/Paris", List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(skipped.getMessage().contains("that hour is skipped"), skipped.getMessage());
+    IllegalArgumentException twice =
+                                   assertThrows(IllegalArgumentException.class,
+                                                () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2027-10-31T02:30", "Europe/Paris", List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(twice.getMessage().contains("that hour comes twice"), twice.getMessage());
+    IllegalArgumentException farAway =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "+300000000-01-01T00:00", "UTC", List.of("bob@acme.com"), "Proposal", null, null));
+    assertEquals("send_at is too far ahead: pick an earlier time. Nothing was scheduled.", farAway.getMessage());
+    verify(emailScheduledSendService, never()).scheduleAsStored(anyString(), anyLong(), anyString(), anyString(), any());
   }
 
   /**
@@ -375,15 +397,50 @@ class EmailMcpToolScheduledTest {
                  () -> emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Another", List.of("bob@acme.com")));
     assertThrows(IllegalArgumentException.class,
                  () -> emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("eve@evil.com")));
-    verify(emailScheduledSendService, never()).reschedule(anyString(), anyLong(), anyString(), anyString());
+    verify(emailScheduledSendService, never()).reschedule(anyString(), anyLong(), anyString(), anyString(), any());
 
     long newTime = at("2026-12-04T09:00", "Europe/Paris");
-    when(emailScheduledSendService.reschedule(DRAFT_ID, newTime, "Europe/Paris", USERNAME)).thenReturn(scheduled("Proposal",
-                                                                                                                 newTime,
-                                                                                                                 "Europe/Paris",
-                                                                                                                 "bob@acme.com"));
+    rescheduleRuns(current, newTime);
     ScheduledEmailModel model = emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("BOB@acme.com"));
     assertEquals("2026-12-04T09:00:00", model.getSendAt());
+    verify(emailScheduledSendService).reschedule(eq(DRAFT_ID), eq(newTime), eq("Europe/Paris"), eq(USERNAME), any());
+
+    ScheduledEmail editedMeanwhile = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com", "new@acme.com");
+    rescheduleRuns(editedMeanwhile, newTime);
+    IllegalArgumentException refusal =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("bob@acme.com")));
+    assertTrue(refusal.getMessage().startsWith("Nothing was rescheduled") && refusal.getMessage().contains("new@acme.com"),
+               refusal.getMessage());
+  }
+
+  /**
+   * Makes the service reschedule: it runs the tool's check on the mail as it stands
+   * under the draft's lock, then answers it at the new time.
+   *
+   * @param standing the scheduled mail as it stands under the lock
+   * @param newTime the new time
+   */
+  private void rescheduleRuns(ScheduledEmail standing, long newTime) throws Exception {
+    when(emailScheduledSendService.reschedule(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<ScheduledEmail> check = invocation.getArgument(4);
+      check.accept(standing);
+      return scheduled(standing.getSubject(), newTime, invocation.getArgument(2), "bob@acme.com");
+    });
+  }
+
+  /**
+   * Makes the service cancel: it runs the tool's check on the mail as it stands under the
+   * draft's lock, then answers it.
+   *
+   * @param standing the scheduled mail as it stands under the lock
+   */
+  private void cancelRuns(ScheduledEmail standing) throws Exception {
+    when(emailScheduledSendService.cancel(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<ScheduledEmail> check = invocation.getArgument(2);
+      check.accept(standing);
+      return standing;
+    });
   }
 
   /**
@@ -397,13 +454,13 @@ class EmailMcpToolScheduledTest {
     ScheduledEmail current = scheduled("Proposal", at("2026-12-03T08:30", "Asia/Tokyo"), "Asia/Tokyo", "bob@acme.com");
     when(emailScheduledSendService.getScheduledEmail(DRAFT_ID, USERNAME)).thenReturn(current);
     long newTime = at("2026-12-04T09:00", "Asia/Tokyo");
-    when(emailScheduledSendService.reschedule(DRAFT_ID, newTime, "Asia/Tokyo", USERNAME)).thenReturn(current);
+    rescheduleRuns(current, newTime);
 
     emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("bob@acme.com"));
-    verify(emailScheduledSendService).reschedule(DRAFT_ID, newTime, "Asia/Tokyo", USERNAME);
+    verify(emailScheduledSendService).reschedule(eq(DRAFT_ID), eq(newTime), eq("Asia/Tokyo"), eq(USERNAME), any());
 
-    when(emailScheduledSendService.reschedule(anyString(), anyLong(), anyString(), anyString()))
-                                                                                             .thenThrow(new ScheduledSendConflictException(EmailScheduledSendService.UNCERTAIN_CONFLICT));
+    when(emailScheduledSendService.reschedule(anyString(), anyLong(), anyString(), anyString(), any()))
+                                                                                                    .thenThrow(new ScheduledSendConflictException(EmailScheduledSendService.UNCERTAIN_CONFLICT));
     IllegalArgumentException uncertain =
                                        assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.rescheduleEmail(DRAFT_ID, "2026-12-04T09:00", null, "Proposal", List.of("bob@acme.com")));
@@ -420,15 +477,21 @@ class EmailMcpToolScheduledTest {
     when(emailScheduledSendService.getScheduledEmail(DRAFT_ID, USERNAME)).thenReturn(current);
 
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("eve@evil.com")));
-    verify(emailScheduledSendService, never()).cancel(anyString(), anyString());
+    verify(emailScheduledSendService, never()).cancel(anyString(), anyString(), any());
 
+    cancelRuns(current);
     String answer = emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com"));
-    verify(emailScheduledSendService).cancel(DRAFT_ID, USERNAME);
+    verify(emailScheduledSendService).cancel(eq(DRAFT_ID), eq(USERNAME), any());
+    verify(emailScheduledSendService, never()).cancel(anyString(), anyString());
     assertTrue(answer.contains("back in your drafts"), answer);
 
-    Mockito.doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING))
-           .when(emailScheduledSendService)
-           .cancel(DRAFT_ID, USERNAME);
+    cancelRuns(scheduled("Changed in the Email app", current.getScheduledDate(), "Europe/Paris", "bob@acme.com"));
+    IllegalArgumentException edited = assertThrows(IllegalArgumentException.class,
+                                                   () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com")));
+    assertTrue(edited.getMessage().startsWith("Nothing was cancelled"), edited.getMessage());
+
+    when(emailScheduledSendService.cancel(eq(DRAFT_ID), eq(USERNAME), any()))
+                                                                          .thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING));
     IllegalArgumentException sending = assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com")));
     assertTrue(sending.getMessage().contains("is being sent or was sent"), sending.getMessage());

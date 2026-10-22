@@ -17233,6 +17233,29 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91996 -- work run in a draft's lock holds the very lock the draft's saves,
+   * sends and scheduled-mail edits take, and gives it back whatever the work does.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void workInADraftsLockHoldsTheDraftsLockAndGivesItBack() throws Exception {
+    Map<String, ReentrantLock> draftLocks =
+                                          (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                  "draftLocks");
+
+    assertEquals("done", emailBoxService.inDraftLock("draft-1", TEST_USER, () -> {
+      assertTrue(draftLocks.get(TEST_USER + "/draft-1").isHeldByCurrentThread());
+      return "done";
+    }));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.inDraftLock("draft-1", TEST_USER, () -> {
+      throw new ObjectNotFoundException("gone");
+    }));
+    assertFalse(draftLocks.get(TEST_USER + "/draft-1").isLocked());
+  }
+
+  /**
    * An edit of a scheduled draft takes the schedule row before it writes anything, then
    * takes the removed files off, stores the new ones, and writes the text with a forced
    * revision -- the mail staying scheduled (EXO-90434).
