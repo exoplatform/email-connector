@@ -500,7 +500,7 @@
     {
       "name": "cancel_scheduled_email",
       "title": "Cancel a scheduled email",
-      "description": "Cancel a scheduled email of the current user: it is not sent, and goes back to the Drafts folder as it is, where list_email_drafts finds it under the same draft_id. One being sent or already sent is refused. Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not cancelled. Always name the email to the user and get their confirmation first.",
+      "description": "Cancel a scheduled email of the current user: it is not sent, and goes back to the Drafts folder as it is, where list_email_drafts finds it under the same draft_id. One being sent or already sent is refused. An UNCERTAIN email is not sent again once cancelled, but it may already have reached its recipients: tell the user to check their Sent folder. Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not cancelled. Always name the email to the user and get their confirmation first.",
       "input_schema": {
         "type": "object",
         "properties": {
