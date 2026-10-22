@@ -17,7 +17,6 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1327,9 +1326,17 @@ public class EmailScheduledSendServiceTest {
     // Read UNCERTAIN, retried and ended in a confirmed state since: not said uncertain.
     when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(true);
     row.setStatus(ScheduledSendStatus.UNCERTAIN);
-    assertNotEquals(ScheduledSendStatus.UNCERTAIN, service.cancel(LOCAL_ID, USER, mail -> {
-    }).getStatus(), "read UNCERTAIN before, removed in a confirmed state");
+    assertNull(service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus(), "read UNCERTAIN before, removed in a confirmed state: not known, never UNCERTAIN");
     verify(storage, times(1)).cancelUncertain(USER, LOCAL_ID);
+
+    // Read SCHEDULED, being sent at the first removal, back to SCHEDULED (a retry) before
+    // the second: the confirmed removal, tried again, takes it.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(false, true);
+    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(false);
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    assertEquals(ScheduledSendStatus.SCHEDULED, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus());
     verify(storage, never()).cancel(USER, LOCAL_ID);
   }
 
