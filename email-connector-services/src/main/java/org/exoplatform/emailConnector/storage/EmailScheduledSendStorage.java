@@ -385,8 +385,9 @@ public class EmailScheduledSendStorage {
    * same conditional removal as {@link #cancel}, kept to UNCERTAIN, so a caller learns
    * from the write itself that the mail it took back may already have reached its
    * recipients. Run after {@link #cancelConfirmed}, which takes the other cancellable
-   * states: a run that ends UNCERTAIN between the two is taken here, and no state leads
-   * from UNCERTAIN back to one {@link #cancelConfirmed} takes.
+   * states: a run that ends UNCERTAIN between the two is taken here; a mail that left
+   * UNCERTAIN meanwhile, through its owner's retry, is taken by the caller's next
+   * {@link #cancelConfirmed} (see {@code EmailScheduledSendService.cancel}).
    *
    * @param userId the mailbox owner
    * @param draftLocalId the draft's handle
