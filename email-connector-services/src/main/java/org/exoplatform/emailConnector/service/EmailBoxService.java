@@ -4918,6 +4918,10 @@ public class EmailBoxService {
    * the folder's last messages: once more mail than the margin has reached the folder
    * between the move and the click, a search that finds an older copy and misses the
    * moved one leaves the older copy as the only candidate, and that copy goes back.
+   * The same holds without any new mail for a move of messages from several folders
+   * at once: each folder's undo is a request of its own, which reads its own ids plus
+   * the margin, so one folder's copies are out of its reach once the other folders
+   * filed more than the margin after them; on BlueMind that folder's undo then fails.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
