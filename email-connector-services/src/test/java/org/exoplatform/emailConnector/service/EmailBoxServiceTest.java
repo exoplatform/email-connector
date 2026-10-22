@@ -13508,7 +13508,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The fallback keeps the search path's rule: two of the folder's last messages
+   * The folder-end read keeps the search path's rule: two of the folder's last messages
    * carrying the id is a guess, refused and counted, nothing copied or flagged.
    */
   @Test
@@ -13530,7 +13530,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The fallback reads the folder's end once per undo, however many ids the search
+   * The undo reads the folder's end once, however many ids the search
    * misses, and only as far back as the ids plus a margin for mail delivered since the
    * move: 2 ids in a folder of 200 read messages 149 to 200. A message outside that
    * window, or carrying another id, is not taken.
