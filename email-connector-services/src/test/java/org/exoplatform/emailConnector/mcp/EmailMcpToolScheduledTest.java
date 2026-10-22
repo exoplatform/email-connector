@@ -504,12 +504,17 @@ class EmailMcpToolScheduledTest {
     IllegalArgumentException notBare = assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("Bob <bob@acme.com>")));
     assertTrue(notBare.getMessage().startsWith("Nothing was cancelled"), notBare.getMessage());
-    for (ScheduledSendStatus unlisted : List.of(ScheduledSendStatus.HELD, ScheduledSendStatus.SENT)) {
-      ScheduledEmail notInTheView = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com");
-      notInTheView.setStatus(unlisted);
-      when(emailScheduledSendService.getScheduledEmail("unlisted", USERNAME)).thenReturn(notInTheView);
-      assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.cancelScheduledEmail("unlisted", "Proposal", List.of("bob@acme.com")));
-    }
+    ScheduledEmail sent = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com");
+    sent.setStatus(ScheduledSendStatus.SENT);
+    when(emailScheduledSendService.getScheduledEmail("sent", USERNAME)).thenReturn(sent);
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.cancelScheduledEmail("sent", "Proposal", List.of("bob@acme.com")));
+    ScheduledEmail inUndoWait = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com");
+    inUndoWait.setStatus(ScheduledSendStatus.HELD);
+    when(emailScheduledSendService.getScheduledEmail("held", USERNAME)).thenReturn(inUndoWait);
+    IllegalArgumentException undoWait = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.cancelScheduledEmail("held", "Proposal", List.of("bob@acme.com")));
+    assertTrue(undoWait.getMessage().contains("Undo delay"), undoWait.getMessage());
+    verify(emailScheduledSendService, never()).cancel(eq("held"), anyString(), any());
 
 
     cancelRuns(current);

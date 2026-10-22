@@ -2395,7 +2395,11 @@ public class EmailMcpTool implements McpToolPlugin {
     }
     // What the Scheduled view does not list is not the scheduled-send tools' to act on: a
     // mail sent, or one held for its Undo wait, which the Email app offers no action on.
-    if (scheduled.getStatus() == ScheduledSendStatus.HELD || scheduled.getStatus() == ScheduledSendStatus.SENT) {
+    if (scheduled.getStatus() == ScheduledSendStatus.HELD) {
+      throw new IllegalArgumentException(String.format("The mail %s is about to be sent, waiting out the user's Undo delay: only the "
+          + "user takes it back, with Undo in the Email app. Nothing was done.", draftId));
+    }
+    if (scheduled.getStatus() == ScheduledSendStatus.SENT) {
       throw new ObjectNotFoundException(scheduledNotFound(draftId));
     }
     return scheduled;
