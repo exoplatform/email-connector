@@ -146,6 +146,23 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * The UID lookup behind the undo's cached-row source answers the UIDs of the one
+   * folder's rows, for the one user, carrying that Message-ID -- executed against the
+   * engine, because a UID from another folder would name another message there.
+   */
+  @Test
+  void theUidLookupByMessageIdIsScopedToItsFolderAndItsOwner() {
+    persistEmailCarrying(20L, "CUSTOM:1", "<a@host>");
+    persistEmailCarrying(21L, MailFolder.INBOX, "<a@host>");
+    persistEmailCarrying(22L, "CUSTOM:1", "<b@host>");
+    entityManager.clear();
+
+    assertEquals(List.of(20L), emailBoxDAO.findUidsByMailHeaderIdAndUserIdAndFolder("<a@host>", USERNAME, "CUSTOM:1"));
+    assertEquals(List.of(), emailBoxDAO.findUidsByMailHeaderIdAndUserIdAndFolder("<a@host>", "someone-else", "CUSTOM:1"));
+    assertEquals(List.of(), emailBoxDAO.findUidsByMailHeaderIdAndUserIdAndFolder("<c@host>", USERNAME, "CUSTOM:1"));
+  }
+
+  /**
    * The read the Favorites drawer is reconciled from: the owner's starred rows in every
    * folder but the excluded ones, as {@code [id, folder, mailHeaderId, mailRemoteId]} -- executed
    * against the engine for its {@code NOT IN} over a bound list and its projection.

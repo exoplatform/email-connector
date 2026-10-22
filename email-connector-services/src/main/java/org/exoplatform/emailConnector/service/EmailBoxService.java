@@ -48,6 +48,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.Date;
 import java.util.Deque;
@@ -301,6 +302,13 @@ public class EmailBoxService {
   private static final String     HEADER_THREAD_INDEX                                         = "Thread-Index";
 
   private static final String     HEADER_MESSAGE_ID                                           = "Message-ID";
+
+  /**
+   * How many messages beyond the ones it names an undo reads at the end of the folder
+   * the move filed them into ({@link #recentMessagesCarrying}): room for the mail
+   * delivered into that folder between the move and the click.
+   */
+  private static final int        UNDO_RECENT_SCAN_MARGIN                                     = 50;
 
   private static final String     HEADER_AUTO_SUBMITTED                                       = "Auto-Submitted";
 
@@ -4782,9 +4790,18 @@ public class EmailBoxService {
       boolean expungeOnClose = false;
       try {
         current.open(Folder.READ_WRITE);
+        // The folder's last messages, read once for the whole undo
+        // (recentMessagesCarrying).
+        AtomicReference<Map<String, List<Message>>> recentById = new AtomicReference<>();
+        int recentWindow = mailHeaderIds.size() + UNDO_RECENT_SCAN_MARGIN;
         for (String mailHeaderId : mailHeaderIds) {
           try {
-            Message message = findTheOneMessageCarrying(current, mailHeaderId, currentKey, username);
+            Message message = findTheOneMessageCarrying(current,
+                                                        mailHeaderId,
+                                                        currentKey,
+                                                        username,
+                                                        recentWindow,
+                                                        recentById);
             if (message == null) {
               failures++;
               continue;
@@ -4888,18 +4905,46 @@ public class EmailBoxService {
    * checks: IMAP's HEADER search is a substring match on most servers, so
    * {@code <a@host>} also answers {@code <a@host.example>}, and a match on part of an
    * identifier is not an identity.
+   * <p>
+   * The folder's last messages are read as well ({@link #recentMessagesCarrying}), and
+   * their exact matches added to the search's, each message once: on BlueMind the
+   * search finds no copy the move filed (seen on an acceptance server; why, an index
+   * not yet updated or a header it does not search, was not established), while a
+   * plain read of the folder lists it. A copy lands at the end of the folder, so that
+   * is where the moved message is. Adding the two, rather than reading the end only
+   * when the search finds nothing, is what keeps the "exactly one" rule whole: a
+   * search that finds an older copy of the same mail and misses the one the move filed
+   * would otherwise move the older one back. The folder's cached rows carrying the id
+   * add the message at their UID ({@link #cachedCopiesCarrying}): an Undo made once the
+   * folder has been re-read since the move -- the filter log's, hours or days after a
+   * filter filed the mail -- finds it there wherever it sits in the folder. Before that
+   * re-read, the rule holds while the moved copy is among
+   * the folder's last messages: once more mail than the margin has reached the folder
+   * between the move and the click, a search that finds an older copy and misses the
+   * moved one leaves the older copy as the only candidate, and that copy goes back.
+   * The same holds without any new mail for a move of messages from several folders
+   * at once: each folder's undo is a request of its own, which reads its own ids plus
+   * the margin, so one folder's copies are out of its reach once the other folders
+   * filed more than the margin after them, and on BlueMind that folder's undo can then
+   * fail: the folders' undos run side by side, and it succeeds when the others have
+   * already removed their copies by the time it reads the folder end.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
    * @param folderKey the folder's key, for the log
    * @param username the mailbox owner
+   * @param recentWindow how many of the folder's last messages are read
+   * @param recentById the read of the folder's last messages, kept for the whole undo:
+   *          filled on its first lookup
    * @return the message, or null when the folder holds none or several
-   * @throws MessagingException if the folder cannot be searched
+   * @throws MessagingException if the folder cannot be searched or read
    */
   private Message findTheOneMessageCarrying(IMAPFolder folder,
                                             String mailHeaderId,
                                             String folderKey,
-                                            String username) throws MessagingException {
+                                            String username,
+                                            int recentWindow,
+                                            AtomicReference<Map<String, List<Message>>> recentById) throws MessagingException {
     if (StringUtils.isBlank(mailHeaderId)) {
       LOG.warn("A message with no Message-ID cannot be found again in folder {} of user {}; it was not moved back",
                folderKey,
@@ -4907,7 +4952,32 @@ public class EmailBoxService {
       return null;
     }
     String expected = StringUtils.trim(mailHeaderId);
-    List<Message> exact = searchByMessageId(folder, expected);
+    List<Message> exact = new ArrayList<>(searchByMessageId(folder, expected));
+    int searched = exact.size();
+    List<Message> recentCopies = recentMessagesCarrying(folder, expected, recentWindow, recentById);
+    for (Message recent : recentCopies) {
+      // One message is one object in an open IMAPFolder, whichever call returned it.
+      if (exact.stream().noneMatch(found -> found == recent)) {
+        exact.add(recent);
+      }
+    }
+    List<Message> cachedCopies = cachedCopiesCarrying(folder, expected, folderKey, username);
+    for (Message cached : cachedCopies) {
+      if (exact.stream().noneMatch(found -> found == cached)) {
+        exact.add(cached);
+      }
+    }
+    if (exact.size() > searched) {
+      LOG.debug("The server's search found {} message(s) carrying {} in folder {} of user {}, the folder's last messages {},"
+          + " its cached rows' UIDs {}: {} in all",
+                searched,
+                expected,
+                folderKey,
+                username,
+                recentCopies.size(),
+                cachedCopies.size(),
+                exact.size());
+    }
     if (exact.isEmpty()) {
       LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
       return null;
@@ -4921,6 +4991,100 @@ public class EmailBoxService {
       return null;
     }
     return exact.get(0);
+  }
+
+  /**
+   * The messages a folder's cached rows place at their UID and that carry the given
+   * Message-ID, exactly: what {@link #findTheOneMessageCarrying} adds once the folder has
+   * been re-read since the move and its mirror holds a row for the message. The UID is
+   * the row's; the message at that UID counts only when its own header carries the id,
+   * so a row left behind by an earlier copy names nothing else.
+   *
+   * @param folder the OPEN folder to read
+   * @param messageId the Message-ID to look for
+   * @param folderKey the folder's key, as its rows carry it
+   * @param username the mailbox owner
+   * @return the messages carrying exactly that id at a cached row's UID; empty when none,
+   *         and when a message cannot be read, so that the other sources decide
+   */
+  private List<Message> cachedCopiesCarrying(IMAPFolder folder,
+                                             String messageId,
+                                             String folderKey,
+                                             String username) {
+    List<Message> copies = new ArrayList<>();
+    try {
+      for (Long uid : emailBoxStorage.getUidsByMailHeaderId(username, messageId, folderKey)) {
+        Message message = uid == null || uid <= 0 ? null : folder.getMessageByUID(uid);
+        if (message == null) {
+          continue;
+        }
+        String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
+        String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+        if (sameMessageId(actual, messageId) && copies.stream().noneMatch(found -> found == message)) {
+          copies.add(message);
+        }
+      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not read the message at a cached row's UID in folder {} of user {}; the undo relies on its other sources",
+               folderKey,
+               username,
+               e);
+      return List.of();
+    }
+    return copies;
+  }
+
+  /**
+   * The messages among a folder's last ones that carry the given Message-ID, exactly:
+   * what {@link #findTheOneMessageCarrying} adds to the server's search, which on
+   * BlueMind finds no copy a move filed. Reads the Message-ID header of the
+   * last {@code window} messages, in one FETCH and without marking anything read, the
+   * first time it is asked, and answers every later id of the same undo from that read.
+   * The comparison is {@link #sameMessageId}'s, so it decides exactly as the search
+   * path's filter does.
+   *
+   * @param folder the OPEN folder to read
+   * @param messageId the Message-ID to look for
+   * @param window how many of the folder's last messages to read
+   * @param recentById the read, kept across the ids of one undo; filled on first use
+   * @return the messages carrying exactly that id, in the folder's order; empty when none,
+   *         and for every id of the undo when the folder's end could not be read
+   */
+  static List<Message> recentMessagesCarrying(Folder folder,
+                                              String messageId,
+                                              int window,
+                                              AtomicReference<Map<String, List<Message>>> recentById) {
+    String expected = normalizeMessageId(messageId);
+    if (expected == null || window <= 0) {
+      return List.of();
+    }
+    Map<String, List<Message>> byId = recentById.get();
+    if (byId == null) {
+      byId = new HashMap<>();
+      try {
+        int count = folder.getMessageCount();
+        if (count > 0) {
+          Message[] recent = folder.getMessages(Math.max(1, count - window + 1), count);
+          FetchProfile profile = new FetchProfile();
+          profile.add(HEADER_MESSAGE_ID);
+          folder.fetch(recent, profile);
+          for (Message message : recent) {
+            String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
+            String actual = messageIds != null && messageIds.length > 0 ? normalizeMessageId(messageIds[0]) : null;
+            if (actual != null) {
+              byId.computeIfAbsent(actual, key -> new ArrayList<>()).add(message);
+            }
+          }
+        }
+      } catch (MessagingException e) {
+        // The search's answer still serves: a read the server refused adds nothing, once
+        // for the whole undo, rather than failing every id.
+        LOG.warn("Could not read the last messages of folder {}; the undo relies on the server's search", folder.getFullName(), e);
+        byId = new HashMap<>();
+      }
+      recentById.set(byId);
+    }
+    return byId.getOrDefault(expected, List.of());
   }
 
   /**
