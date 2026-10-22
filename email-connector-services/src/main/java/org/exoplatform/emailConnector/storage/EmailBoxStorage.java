@@ -972,6 +972,22 @@ public class EmailBoxStorage {
     return emailBoxDao.findIdsByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder);
   }
 
+  /**
+   * The UIDs of a folder's cached rows carrying a given Message-ID -- what the undo of a
+   * move reads to find a message at its UID. UIDs only: no row is loaded.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return the UIDs, empty for a blank Message-ID
+   */
+  public List<Long> getUidsByMailHeaderId(String userId, String mailHeaderId, String folder) {
+    if (StringUtils.isBlank(mailHeaderId)) {
+      return List.of();
+    }
+    return emailBoxDao.findUidsByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder);
+  }
+
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
   }
