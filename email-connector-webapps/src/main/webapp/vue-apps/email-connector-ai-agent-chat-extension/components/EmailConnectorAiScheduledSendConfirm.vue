@@ -48,22 +48,10 @@ export default {
       };
     },
     message() {
-      return this.withLinks(this.$t(`AiAgentChat.tool.confirm.${this.toolName}`, this.parameters));
+      return this.$t(`AiAgentChat.tool.confirm.${this.toolName}`, this.parameters);
     },
   },
   methods: {
-    /**
-     * The card's text with the user and content references marked as the AI app's own
-     * approval card marks them.
-     *
-     * @param {string} text the card's text
-     * @returns {string} the text, its references marked
-     */
-    withLinks(text) {
-      return text
-        .replace(/(\/user:([a-zA-Z0-9]+))/ig, '<user-by-name>$2</user-by-name>')
-        .replace(/(\/[a-z]+:[a-zA-Z0-9]+)/ig, '<content-link>$1</content-link>');
-    },
     /**
      * A value as text inside the card's HTML: the values come from the assistant and,
      * through a reply's subject, from a received mail.
