@@ -350,6 +350,28 @@ class EmailMcpToolScheduledTest {
                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30", null, List.of("bob@acme.com"), "Proposal", null, null));
 
     when(emailScheduledSendService.scheduleAsStored(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any()))
+                                                                                                             .thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING));
+    IllegalArgumentException sending =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30", null, List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(sending.getMessage().contains("is being sent right now"), sending.getMessage());
+
+    when(emailScheduledSendService.scheduleAsStored(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any()))
+                                                                                                             .thenThrow(new IllegalStateException("emailConnector.scheduled.serverCopyRemains"));
+    IllegalStateException serverCopy =
+                                     assertThrows(IllegalStateException.class,
+                                                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30", null, List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(serverCopy.getMessage().contains("could not be removed"), serverCopy.getMessage());
+
+    when(emailScheduledSendService.scheduleAsStored(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any()))
+                                                                                                             .thenThrow(new IllegalArgumentException("emailConnector.some.newCode"));
+    IllegalArgumentException unknown =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.scheduleEmailDraft(DRAFT_ID, "2026-12-03T08:30", null, List.of("bob@acme.com"), "Proposal", null, null));
+    assertTrue(unknown.getMessage().contains("(emailConnector.some.newCode)") && unknown.getMessage().endsWith("Nothing was scheduled."),
+               unknown.getMessage());
+
+    when(emailScheduledSendService.scheduleAsStored(eq(DRAFT_ID), anyLong(), anyString(), eq(USERNAME), any()))
                                                                                                              .thenThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone"));
     ObjectNotFoundException gone =
                                  assertThrows(ObjectNotFoundException.class,
@@ -479,6 +501,16 @@ class EmailMcpToolScheduledTest {
 
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("eve@evil.com")));
     verify(emailScheduledSendService, never()).cancel(anyString(), anyString(), any());
+    IllegalArgumentException notBare = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("Bob <bob@acme.com>")));
+    assertTrue(notBare.getMessage().startsWith("Nothing was cancelled"), notBare.getMessage());
+    for (ScheduledSendStatus unlisted : List.of(ScheduledSendStatus.HELD, ScheduledSendStatus.SENT)) {
+      ScheduledEmail notInTheView = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com");
+      notInTheView.setStatus(unlisted);
+      when(emailScheduledSendService.getScheduledEmail("unlisted", USERNAME)).thenReturn(notInTheView);
+      assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.cancelScheduledEmail("unlisted", "Proposal", List.of("bob@acme.com")));
+    }
+
 
     cancelRuns(current);
     String answer = emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com"));

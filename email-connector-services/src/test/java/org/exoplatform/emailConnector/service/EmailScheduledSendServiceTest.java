@@ -1188,12 +1188,6 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
-   * Asserts a call is refused with a message code.
-   *
-   * @param code the code
-   * @param call the call
-   */
-  /**
    * EXO-91996 -- a draft scheduled as stored is validated against the clock before the
    * mailbox service is called, then scheduled through its stored-draft path: the
    * caller's check runs on the stored row first, a stored row with no recipient is
@@ -1328,6 +1322,12 @@ public class EmailScheduledSendServiceTest {
     assertThrows(ObjectNotFoundException.class, () -> service.cancel("other", USER, check));
   }
 
+  /**
+   * Asserts a call is refused with a message code.
+   *
+   * @param code the code
+   * @param call the call
+   */
   private void assertRefused(String code, org.junit.jupiter.api.function.Executable call) {
     assertEquals(code, assertThrows(IllegalArgumentException.class, call).getMessage());
   }

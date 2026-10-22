@@ -81,6 +81,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.SanitizedEmailBody;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.OwnerCopy;
@@ -1513,6 +1514,10 @@ public class EmailMcpTool implements McpToolPlugin {
         requireDraftSays(row, to, cc, bcc, subject, SCHEDULED);
       });
     } catch (ScheduledSendConflictException e) {
+      if (ScheduledSendConflictException.SENDING.equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s is being sent right now, so it cannot be scheduled. Nothing was "
+            + "done.", draftId), e);
+      }
       throw scheduledDraftRefusal(draftId, SCHEDULED);
     } catch (ObjectNotFoundException e) {
       throw new ObjectNotFoundException(draftNotFound(draftId));
@@ -2097,14 +2102,29 @@ public class EmailMcpTool implements McpToolPlugin {
    *           address; nothing has been sent
    */
   private static void requireBareAddresses(String field, List<String> given) {
+    requireBareAddresses(field, given, "sent");
+  }
+
+  /**
+   * {@link #requireBareAddresses(String, List)}, naming in the refusal what was not done
+   * (EXO-91996): a refused reschedule or cancel sent nothing either way, and says what
+   * it did not do.
+   *
+   * @param field the argument's name, for the refusal
+   * @param given the addresses the agent passed, possibly null
+   * @param what what was not done: sent, scheduled, rescheduled or cancelled
+   * @throws IllegalArgumentException naming the first entry that is not a bare
+   *           address; nothing has been done
+   */
+  private static void requireBareAddresses(String field, List<String> given, String what) {
     if (given == null) {
       return;
     }
     for (String entry : given) {
       if (!isBareAddress(entry)) {
-        throw new IllegalArgumentException(String.format("Nothing was sent: %s must list bare addresses, such as alice@acme.com -- "
+        throw new IllegalArgumentException(String.format("Nothing was %s: %s must list bare addresses, such as alice@acme.com -- "
             + "no name, no brackets, no blank entry; \"%s\" is not one. Call again with the bare addresses read off the email, "
-            + "and ask the user to approve again.", field, StringUtils.defaultString(entry)));
+            + "and ask the user to approve again.", what, field, StringUtils.defaultString(entry)));
       }
     }
   }
@@ -2367,11 +2387,18 @@ public class EmailMcpTool implements McpToolPlugin {
     if (StringUtils.isBlank(draftId)) {
       throw new IllegalArgumentException("draft_id is required: pass the draft_id list_scheduled_emails gave.");
     }
+    ScheduledEmail scheduled;
     try {
-      return emailScheduledSendService.getScheduledEmail(draftId.trim(), username);
+      scheduled = emailScheduledSendService.getScheduledEmail(draftId.trim(), username);
     } catch (ObjectNotFoundException e) {
       throw new ObjectNotFoundException(scheduledNotFound(draftId));
     }
+    // What the Scheduled view does not list is not the scheduled-send tools' to act on: a
+    // mail sent, or one held for its Undo wait, which the Email app offers no action on.
+    if (scheduled.getStatus() == ScheduledSendStatus.HELD || scheduled.getStatus() == ScheduledSendStatus.SENT) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    return scheduled;
   }
 
   /**
@@ -2396,7 +2423,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @throws IllegalArgumentException when they differ; nothing was done
    */
   private static void requireSameScheduledEmail(ScheduledEmail scheduled, String subject, List<String> to, String what) {
-    requireBareAddresses("to", to);
+    requireBareAddresses("to", to, what);
     if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(scheduled.getSubject()))
         || !sameAddresses(to, scheduled.getTo())) {
       throw new IllegalArgumentException(String.format("Nothing was %s: subject and to must be the scheduled mail's own, \"%s\" to [%s]. "
@@ -2544,9 +2571,9 @@ public class EmailMcpTool implements McpToolPlugin {
                                        List<String> bcc,
                                        String subject,
                                        String what) {
-    requireBareAddresses("to", to);
-    requireBareAddresses("cc", cc);
-    requireBareAddresses("bcc", bcc);
+    requireBareAddresses("to", to, what);
+    requireBareAddresses("cc", cc, what);
+    requireBareAddresses("bcc", bcc, what);
     if (!sameAddresses(to, stored.getTo()) || !sameAddresses(cc, stored.getCc()) || !sameAddresses(bcc, stored.getBcc())
         || !StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(stored.getSubject()))) {
       throw new IllegalArgumentException(String.format("Nothing was %s: the draft now says to [%s], cc [%s], bcc [%s], subject \"%s\". "
