@@ -501,10 +501,10 @@ public class EmailScheduledSendService {
    * @param draftLocalId the draft's handle
    * @param username the owner
    * @param check throws to refuse the scheduled mail; nothing is cancelled then
-   * @return the scheduled mail as it stood when it was cancelled: UNCERTAIN exactly when
-   *         the removal took a mail whose sending could not be confirmed; no status when
-   *         it was read UNCERTAIN and removed in a confirmed state since, which is then
-   *         not known
+   * @return the scheduled mail, its text as the check read it: its status is UNCERTAIN
+   *         exactly when the removal took a mail whose sending could not be confirmed;
+   *         otherwise it is the status read before the change, which a run ending in
+   *         between may have moved, or none when that status was UNCERTAIN
    * @throws IllegalAccessException if the owner may not use their mailbox
    * @throws ObjectNotFoundException if the owner has no such scheduled mail
    * @throws IllegalArgumentException what {@code check} refuses with
