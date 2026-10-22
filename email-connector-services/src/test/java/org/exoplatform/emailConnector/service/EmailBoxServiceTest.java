@@ -13651,6 +13651,28 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A server that refuses the read of the folder's end does not fail an Undo its search
+   * serves: the read is tried once for the whole undo, and the search's match goes back.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoTheFolderEndCannotBeReadForIsServedByTheSearchAndReadsOnce() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message }, new Message[0]);
+    when(factures.getMessageCount()).thenReturn(2);
+    when(factures.getMessages(1, 2)).thenThrow(new MessagingException("FETCH refused"));
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>", "<b@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), any(Folder.class));
+    verify(factures, times(1)).getMessages(anyInt(), anyInt());
+  }
+
+  /**
    * Sent is a folder a move may come FROM but never one it may go INTO, so the undo
    * admits it as the origin all the same: a message moved out of Sent goes back to
    * Sent.

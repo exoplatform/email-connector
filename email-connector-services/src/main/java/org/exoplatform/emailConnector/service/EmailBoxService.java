@@ -5038,13 +5038,13 @@ public class EmailBoxService {
    * @param messageId the Message-ID to look for
    * @param window how many of the folder's last messages to read
    * @param recentById the read, kept across the ids of one undo; filled on first use
-   * @return the messages carrying exactly that id, in the folder's order; empty when none
-   * @throws MessagingException if the folder cannot be read
+   * @return the messages carrying exactly that id, in the folder's order; empty when none,
+   *         and for every id of the undo when the folder's end could not be read
    */
   static List<Message> recentMessagesCarrying(Folder folder,
                                               String messageId,
                                               int window,
-                                              AtomicReference<Map<String, List<Message>>> recentById) throws MessagingException {
+                                              AtomicReference<Map<String, List<Message>>> recentById) {
     String expected = normalizeMessageId(messageId);
     if (expected == null || window <= 0) {
       return List.of();
@@ -5052,19 +5052,26 @@ public class EmailBoxService {
     Map<String, List<Message>> byId = recentById.get();
     if (byId == null) {
       byId = new HashMap<>();
-      int count = folder.getMessageCount();
-      if (count > 0) {
-        Message[] recent = folder.getMessages(Math.max(1, count - window + 1), count);
-        FetchProfile profile = new FetchProfile();
-        profile.add(HEADER_MESSAGE_ID);
-        folder.fetch(recent, profile);
-        for (Message message : recent) {
-          String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
-          String actual = messageIds != null && messageIds.length > 0 ? normalizeMessageId(messageIds[0]) : null;
-          if (actual != null) {
-            byId.computeIfAbsent(actual, key -> new ArrayList<>()).add(message);
+      try {
+        int count = folder.getMessageCount();
+        if (count > 0) {
+          Message[] recent = folder.getMessages(Math.max(1, count - window + 1), count);
+          FetchProfile profile = new FetchProfile();
+          profile.add(HEADER_MESSAGE_ID);
+          folder.fetch(recent, profile);
+          for (Message message : recent) {
+            String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
+            String actual = messageIds != null && messageIds.length > 0 ? normalizeMessageId(messageIds[0]) : null;
+            if (actual != null) {
+              byId.computeIfAbsent(actual, key -> new ArrayList<>()).add(message);
+            }
           }
         }
+      } catch (MessagingException e) {
+        // The search's answer still serves: a read the server refused adds nothing, once
+        // for the whole undo, rather than failing every id.
+        LOG.warn("Could not read the last messages of folder {}; the undo relies on the server's search", folder.getFullName(), e);
+        byId = new HashMap<>();
       }
       recentById.set(byId);
     }
