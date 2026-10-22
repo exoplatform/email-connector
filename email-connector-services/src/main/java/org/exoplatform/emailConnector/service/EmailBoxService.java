@@ -4914,8 +4914,10 @@ public class EmailBoxService {
    * is where the moved message is. Adding the two, rather than reading the end only
    * when the search finds nothing, is what keeps the "exactly one" rule whole: a
    * search that finds an older copy of the same mail and misses the one the move filed
-   * would otherwise move the older one back. An older copy the read does not reach,
-   * in a folder whose search misses both, is still taken for the only one.
+   * would otherwise move the older one back. It holds while the moved copy is among
+   * the folder's last messages: once more mail than the margin has reached the folder
+   * between the move and the click, a search that finds an older copy and misses the
+   * moved one leaves the older copy as the only candidate, and that copy goes back.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
