@@ -37,6 +37,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
@@ -467,7 +468,9 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                                   result.isRead(),
                                                                                   result.isStarred(),
                                                                                   result.isCached(),
-                                                                                  result.getEmailId()))
+                                                                                  result.getEmailId(),
+                                                                                  toolValueOf(result.getMessageKind()),
+                                                                                  result.getBouncedRecipients()))
                                            .toList();
       return new EmailSearchResultsModel(page.getTotalMatches(), hits);
     } catch (IllegalArgumentException e) {
@@ -1060,6 +1063,8 @@ public class EmailMcpTool implements McpToolPlugin {
     model.setTo(email.getTo());
     model.setCc(email.getCc());
     model.setBcc(email.getBcc());
+    model.setMessageKind(toolValueOf(email.getMessageKind()));
+    model.setBouncedRecipients(email.getBouncedRecipients());
     return model;
   }
 
@@ -1107,7 +1112,19 @@ public class EmailMcpTool implements McpToolPlugin {
                                        email.getReceivedDate(),
                                        email.getSubject(),
                                        plainTextBody(email),
-                                       attachmentNames(email));
+                                       attachmentNames(email),
+                                       toolValueOf(email.getMessageKind()),
+                                       email.getBouncedRecipients());
+  }
+
+  /**
+   * The value a message kind is shown with to the agent (EXO-91995).
+   *
+   * @param kind the kind, possibly null
+   * @return {@code bounce}, {@code auto_reply} or {@code normal}; null when unknown
+   */
+  private static String toolValueOf(MessageKind kind) {
+    return kind == null ? null : kind.toolValue();
   }
 
   /**

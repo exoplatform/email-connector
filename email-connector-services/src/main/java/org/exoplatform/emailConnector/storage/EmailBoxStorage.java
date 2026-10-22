@@ -72,6 +72,7 @@ import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailMessageKindUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 
 import io.meeds.social.category.model.CategoryObject;
@@ -88,6 +89,9 @@ public class EmailBoxStorage {
   // Largest IN list issued in one statement. Oracle refuses past 1000 literals (ORA-01795);
   // the margin leaves room for the other bound parameters of the same query.
   private static final int    IN_CLAUSE_MAX_SIZE = 900;
+
+  // The width of EMAIL_BOX.BOUNCED_RECIPIENTS (changeset 1.0.0-exo-91995-01).
+  private static final int    BOUNCED_RECIPIENTS_MAX_LENGTH = 1000;
 
   // How much of a body is parsed to build a list excerpt, and how much of the resulting
   // text is kept. See excerptOf.
@@ -1744,6 +1748,9 @@ public class EmailBoxStorage {
     email.setReceivedDate(emailBoxEntity.getReceivedDate());
     email.setRead(emailBoxEntity.isRead());
     email.setStarred(emailBoxEntity.isStarred());
+    // Who wrote it (EXO-91995), carried onto the hit: two columns of the same row.
+    email.setMessageKind(emailBoxEntity.getMessageKind());
+    email.setBouncedRecipients(EmailMessageKindUtils.splitRecipients(emailBoxEntity.getBouncedRecipients()));
     // The raw body: the caller matches on its text and cuts its own excerpt around the
     // hit, so reducing it to text here would only do the work twice.
     email.setContent(new EmailContent(emailBoxEntity.getBody()));
@@ -2630,7 +2637,13 @@ public class EmailBoxStorage {
                                                          null,
                                                          // The authentication verdicts, set by name below.
                                                          null,
+                                                         null,
+                                                         // The message kind and its failed addresses, set by name below.
+                                                         null,
                                                          null);
+      emailBoxEntity.setMessageKind(email.getMessageKind());
+      emailBoxEntity.setBouncedRecipients(EmailMessageKindUtils.joinRecipients(email.getBouncedRecipients(),
+                                                                               BOUNCED_RECIPIENTS_MAX_LENGTH));
       emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
       emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
       emailBoxEntity.setReadReceiptState(email.getReadReceiptState());
@@ -2801,7 +2814,11 @@ public class EmailBoxStorage {
                               // The read-receipt fields, set below by name.
                               false, null, null, false, null, null, null,
                               // The draft's mailbox (EXO-90595) and name (EXO-90584), set by name below.
-                              null, null, null);
+                              null, null, null,
+                              // The message kind (EXO-91995), set by name below.
+                              null, null);
+      email.setMessageKind(emailBoxEntity.getMessageKind());
+      email.setBouncedRecipients(EmailMessageKindUtils.splitRecipients(emailBoxEntity.getBouncedRecipients()));
       if (email.getSender() != null) {
         // The row's own verdict, for the list (EXO-90893): a brand logo the page learnt
         // for this address is shown on a row that passed DMARC and failed nothing only.

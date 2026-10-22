@@ -152,6 +152,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
@@ -189,6 +190,7 @@ import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
+import org.exoplatform.emailConnector.model.MessageClassification;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -231,6 +233,7 @@ import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.CappedOutputStream;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailMessageKindUtils;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -504,7 +507,11 @@ public class EmailBoxService {
                                                                                                       HEADER_RETURN_PATH,
                                                                                                       HEADER_EXO_DRAFT_MAILBOX,
                                                                                                       HEADER_EXO_DRAFT_SEND_MODE,
-                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
+                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS,
+                                                                                                      // The rest of what EmailMessageKindUtils.classify reads (EXO-91995).
+                                                                                                      EmailMessageKindUtils.HEADER_X_FAILED_RECIPIENTS,
+                                                                                                      EmailMessageKindUtils.HEADER_X_AUTOREPLY,
+                                                                                                      EmailMessageKindUtils.HEADER_X_AUTORESPOND);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -7444,16 +7451,18 @@ public class EmailBoxService {
     }
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
-                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
-                                                                                 folderKey,
-                                                                                 email.getSubject(),
-                                                                                 email.getSender(),
-                                                                                 email.getReceivedDate(),
-                                                                                 email.isRead(),
-                                                                                 email.isStarred(),
-                                                                                 true,
-                                                                                 null,
-                                                                                 email.getId()))
+                                             .map(email -> withMessageKind(new EmailSearchResult(email.getMailRemoteId(),
+                                                                                                 folderKey,
+                                                                                                 email.getSubject(),
+                                                                                                 email.getSender(),
+                                                                                                 email.getReceivedDate(),
+                                                                                                 email.isRead(),
+                                                                                                 email.isStarred(),
+                                                                                                 true,
+                                                                                                 null,
+                                                                                                 email.getId()),
+                                                                           email.getMessageKind(),
+                                                                           email.getBouncedRecipients()))
                                              .toList();
     return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
   }
@@ -15252,7 +15261,10 @@ public class EmailBoxService {
                                                 false, null, null, false, null, null, null,
                                                 // A synced message is no draft of a shared mailbox (EXO-90595),
                                                 // and names no identity to send it in (EXO-90584).
-                                                null, null, null);
+                                                null, null, null,
+                                                // The message kind (EXO-91995), set by name just below.
+                                                null, null);
+          captureMessageKind(message, cached);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -15800,7 +15812,7 @@ public class EmailBoxService {
    * @return the hit
    */
   private EmailSearchResult cachedSearchResult(Email email, String term, SharedMailboxSearchScope sharedScope) {
-    return new EmailSearchResult(email.getMailRemoteId(),
+    EmailSearchResult result = new EmailSearchResult(email.getMailRemoteId(),
                                  email.getFolder(),
                                  email.getSubject(),
                                  email.getSender(),
@@ -15812,6 +15824,21 @@ public class EmailBoxService {
                                  null,
                                  sharedScope == null ? null : sharedScope.delegationId(),
                                  sharedScope == null ? null : sharedScope.ownerFullName());
+    return withMessageKind(result, email.getMessageKind(), email.getBouncedRecipients());
+  }
+
+  /**
+   * Sets on a search hit who wrote it (EXO-91995).
+   *
+   * @param result the hit
+   * @param kind its kind, null when unknown
+   * @param bouncedRecipients on a bounce, the addresses it failed
+   * @return the same hit
+   */
+  private static EmailSearchResult withMessageKind(EmailSearchResult result, MessageKind kind, List<String> bouncedRecipients) {
+    result.setMessageKind(kind);
+    result.setBouncedRecipients(bouncedRecipients);
+    return result;
   }
 
   /**
@@ -16123,7 +16150,8 @@ public class EmailBoxService {
       for (int i = page.length - 1; i >= 0; i--) {
         try {
           long messageUid = pageUids.get(i);
-          results.add(new EmailSearchResult(messageUid,
+          MessageClassification classification = EmailMessageKindUtils.classify(page[i]);
+          results.add(withMessageKind(new EmailSearchResult(messageUid,
                                             folder,
                                             page[i].getSubject(),
                                             page[i].getFrom() != null && page[i].getFrom().length != 0
@@ -16136,7 +16164,9 @@ public class EmailBoxService {
                                             // Envelope-only: quoting the body would cost
                                             // one round-trip per hit.
                                             null,
-                                            cachedIds.get(messageUid)));
+                                            cachedIds.get(messageUid)),
+                                      classification == null ? null : classification.kind(),
+                                      classification == null ? null : classification.bouncedRecipients()));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
@@ -16590,6 +16620,13 @@ public class EmailBoxService {
     fetchProfile.add(FetchProfile.Item.FLAGS);
     fetchProfile.add(FetchProfile.Item.ENVELOPE);
     fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+    // What each hit's kind is decided on (EXO-91995), in the same batched command: the
+    // headers and the MIME structure. Only a delivery status report then costs one more
+    // fetch, of its status part.
+    for (String header : EmailMessageKindUtils.HEADERS) {
+      fetchProfile.add(header);
+    }
+    fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
     return fetchProfile;
   }
 
@@ -16987,6 +17024,25 @@ public class EmailBoxService {
   private static boolean hasKeyword(Message message, String keyword) throws MessagingException {
     Flags flags = message.getFlags();
     return flags != null && flags.contains(keyword);
+  }
+
+  /**
+   * Records on a message about to be cached who wrote it (EXO-91995): a bounce and the
+   * addresses it failed, an automatic reply, or a person. Decided now, from the live
+   * message, because the cache keeps neither its headers nor its report part. A message
+   * that cannot be classified is left without a kind, which the readers show as unknown.
+   *
+   * @param message the live message, its headers prefetched
+   * @param email the row about to be stored
+   */
+  private static void captureMessageKind(Message message, Email email) {
+    MessageClassification classification = EmailMessageKindUtils.classify(message);
+    if (classification == null) {
+      LOG.debug("Could not classify message {} of user {}", email.getMailRemoteId(), email.getUserId());
+      return;
+    }
+    email.setMessageKind(classification.kind());
+    email.setBouncedRecipients(classification.bouncedRecipients());
   }
 
   /**
