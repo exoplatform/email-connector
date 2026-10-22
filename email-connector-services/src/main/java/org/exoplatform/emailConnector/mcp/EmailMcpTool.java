@@ -52,6 +52,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.nodes.TextNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -1575,8 +1576,9 @@ public class EmailMcpTool implements McpToolPlugin {
     ZoneId zone = zoneOf(timeZone, username, current.getTimeZone(), RESCHEDULED);
     long instant = instantOf(sendAt, zone, RESCHEDULED);
     try {
-      // Checked again on the mail as it stands, under its draft's lock: the user may edit
-      // it in the Email app between the check above and the change.
+      // Checked again on the mail as it stands once the change is written: the user may
+      // edit it in the Email app between the check above and the change, and a refusal
+      // there undoes the change.
       return toScheduledModel(emailScheduledSendService.reschedule(current.getDraftLocalId(),
                                                                    instant,
                                                                    zone.getId(),
@@ -1584,6 +1586,8 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    mail -> requireSameScheduledEmail(mail, subject, to, RESCHEDULED)));
     } catch (ScheduledSendConflictException e) {
       throw scheduledStateRefusal(e, draftId, RESCHEDULED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, RESCHEDULED);
     } catch (ObjectNotFoundException e) {
       throw new ObjectNotFoundException(scheduledNotFound(draftId));
     } catch (IllegalArgumentException e) {
@@ -1611,12 +1615,15 @@ public class EmailMcpTool implements McpToolPlugin {
     ScheduledEmail current = scheduledEmail(draftId, username);
     requireSameScheduledEmail(current, subject, to, CANCELLED);
     try {
-      // Checked again on the mail as it stands, under its draft's lock, as reschedule does.
+      // Checked again on the mail as it stands once the change is written, as reschedule
+      // does.
       emailScheduledSendService.cancel(current.getDraftLocalId(),
                                        username,
                                        mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
     } catch (ScheduledSendConflictException e) {
       throw scheduledStateRefusal(e, draftId, CANCELLED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, CANCELLED);
     } catch (ObjectNotFoundException e) {
       throw new ObjectNotFoundException(scheduledNotFound(draftId));
     }
@@ -2328,6 +2335,21 @@ public class EmailMcpTool implements McpToolPlugin {
     }
     return new IllegalArgumentException(String.format("The scheduled mail %s is being sent or was sent, so it cannot be %s. "
         + "Nothing was done.", draftId, what), e);
+  }
+
+  /**
+   * The refusal of a change that waited too long on the scheduled mail: an edit of it in
+   * the Email app held it past the database's lock-wait limit.
+   *
+   * @param e the database's refusal
+   * @param draftId the mail's draft_id
+   * @param what what was refused: rescheduled or cancelled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException beingEditedRefusal(PessimisticLockingFailureException e, String draftId, String what) {
+    LOG.debug("The scheduled mail {} was held by another change", draftId, e);
+    return new IllegalArgumentException(String.format("The scheduled mail %s is being changed in the Email app, so it was not %s. "
+        + "Try again in a moment. Nothing was done.", draftId, what));
   }
 
   /**
