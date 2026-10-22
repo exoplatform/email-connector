@@ -4961,18 +4961,21 @@ public class EmailBoxService {
         exact.add(recent);
       }
     }
-    for (Message cached : cachedCopiesCarrying(folder, expected, folderKey, username)) {
+    List<Message> cachedCopies = cachedCopiesCarrying(folder, expected, folderKey, username);
+    for (Message cached : cachedCopies) {
       if (exact.stream().noneMatch(found -> found == cached)) {
         exact.add(cached);
       }
     }
     if (exact.size() > searched) {
-      LOG.debug("The server's search found {} message(s) carrying {} in folder {} of user {}, the folder's last messages {}: {} in all",
+      LOG.debug("The server's search found {} message(s) carrying {} in folder {} of user {}, the folder's last messages {},"
+          + " its cached rows' UIDs {}: {} in all",
                 searched,
                 expected,
                 folderKey,
                 username,
                 recentCopies.size(),
+                cachedCopies.size(),
                 exact.size());
     }
     if (exact.isEmpty()) {
@@ -5001,26 +5004,32 @@ public class EmailBoxService {
    * @param messageId the Message-ID to look for
    * @param folderKey the folder's key, as its rows carry it
    * @param username the mailbox owner
-   * @return the messages carrying exactly that id at a cached row's UID; empty when none
-   * @throws MessagingException if a message cannot be read
+   * @return the messages carrying exactly that id at a cached row's UID; empty when none,
+   *         and when a message cannot be read, so that the other sources decide
    */
   private List<Message> cachedCopiesCarrying(IMAPFolder folder,
                                              String messageId,
                                              String folderKey,
-                                             String username) throws MessagingException {
+                                             String username) {
     List<Message> copies = new ArrayList<>();
-    for (Long rowId : emailBoxStorage.getEmailIdsByMailHeaderId(username, messageId, folderKey)) {
-      Email row = rowId == null ? null : emailBoxStorage.getEmailById(rowId, username, null);
-      Long uid = row == null ? null : row.getMailRemoteId();
-      Message message = uid == null || uid <= 0 ? null : folder.getMessageByUID(uid);
-      if (message == null) {
-        continue;
+    try {
+      for (Long uid : emailBoxStorage.getUidsByMailHeaderId(username, messageId, folderKey)) {
+        Message message = uid == null || uid <= 0 ? null : folder.getMessageByUID(uid);
+        if (message == null) {
+          continue;
+        }
+        String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
+        String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+        if (sameMessageId(actual, messageId) && copies.stream().noneMatch(found -> found == message)) {
+          copies.add(message);
+        }
       }
-      String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
-      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-      if (sameMessageId(actual, messageId) && copies.stream().noneMatch(found -> found == message)) {
-        copies.add(message);
-      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not read the message at a cached row's UID in folder {} of user {}; the undo relies on its other sources",
+               folderKey,
+               username,
+               e);
+      return List.of();
     }
     return copies;
   }

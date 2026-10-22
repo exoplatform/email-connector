@@ -13613,10 +13613,7 @@ public class EmailBoxServiceTest {
     Message recent = aMessageCarrying("<recent@host>");
     when(factures.getMessages(250, 300)).thenReturn(new Message[] { recent });
     Message filed = aMessageCarrying("<a@host>");
-    Email row = new Email();
-    row.setMailRemoteId(900L);
-    when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
-    when(emailBoxStorage.getEmailById(44L, TEST_USER, null)).thenReturn(row);
+    when(emailBoxStorage.getUidsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(900L));
     when(factures.getMessageByUID(900L)).thenReturn(filed);
     when(factures.getUID(filed)).thenReturn(900L);
 
@@ -13637,10 +13634,7 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
     Message other = aMessageCarrying("<other@host>");
-    Email row = new Email();
-    row.setMailRemoteId(900L);
-    when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
-    when(emailBoxStorage.getEmailById(44L, TEST_USER, null)).thenReturn(row);
+    when(emailBoxStorage.getUidsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(900L));
     when(factures.getMessageByUID(900L)).thenReturn(other);
 
     int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
@@ -13670,6 +13664,27 @@ public class EmailBoxServiceTest {
     assertEquals(1, failed);
     verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), any(Folder.class));
     verify(factures, times(1)).getMessages(anyInt(), anyInt());
+  }
+
+  /**
+   * A message the server refuses to read at a cached row's UID does not fail an Undo the
+   * search serves: that source adds nothing, and the search's match goes back.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhoseCachedRowCannotBeReadIsServedByTheSearch() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
+    when(emailBoxStorage.getUidsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(900L));
+    when(factures.getMessageByUID(900L)).thenThrow(new MessagingException("FETCH refused"));
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), any(Folder.class));
   }
 
   /**
