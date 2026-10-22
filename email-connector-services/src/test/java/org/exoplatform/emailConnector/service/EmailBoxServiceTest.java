@@ -17163,6 +17163,76 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91996 -- scheduling a draft as stored hands the check the row read while the
+   * draft's lock is held, and schedules that very row: the text saved is the stored one,
+   * the user's edits in the Email app included, never a copy the caller read earlier.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredChecksTheStoredRowUnderItsLockThenSchedulesIt() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setSubject("Edited in the Email app");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    when(scheduler.apply(any(Email.class))).thenReturn(created);
+    Map<String, ReentrantLock> draftLocks =
+                                          (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                  "draftLocks");
+    List<Email> checked = new ArrayList<>();
+    boolean[] lockHeld = new boolean[1];
+
+    assertSame(created, emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      checked.add(row);
+      lockHeld[0] = draftLocks.get(TEST_USER + "/draft-1").isHeldByCurrentThread();
+    }, scheduler));
+
+    assertEquals(List.of(stored), checked);
+    assertTrue(lockHeld[0], "the check runs on the row read under the draft's lock");
+    ArgumentCaptor<Email> saved = ArgumentCaptor.forClass(Email.class);
+    InOrder order = inOrder(emailBoxStorage, scheduler);
+    order.verify(emailBoxStorage).saveDraft(saved.capture());
+    order.verify(scheduler).apply(any(Email.class));
+    assertEquals("Edited in the Email app", saved.getValue().getSubject());
+  }
+
+  /**
+   * EXO-91996 -- a check that refuses the stored row schedules nothing and saves
+   * nothing; the row it is handed says whether the draft is scheduled already; a draft
+   * that is gone is not found.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredSchedulesNothingWhenTheCheckRefusesTheRow() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    boolean[] markedScheduled = new boolean[1];
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      markedScheduled[0] = row.isScheduled();
+      throw new IllegalArgumentException("refused");
+    }, scheduler));
+
+    assertTrue(markedScheduled[0], "the row handed to the check says it is scheduled");
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(scheduler, never()).apply(any(Email.class));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.scheduleDraftAsStored("gone", TEST_USER, row -> {
+    }, scheduler));
+  }
+
+  /**
    * An edit of a scheduled draft takes the schedule row before it writes anything, then
    * takes the removed files off, stores the new ones, and writes the text with a forced
    * revision -- the mail staying scheduled (EXO-90434).
