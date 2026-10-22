@@ -236,6 +236,12 @@ public class EmailScheduledSendEditOrderingTest {
         if (other == ScheduledSendStatus.SENDING || other == ScheduledSendStatus.SENT) {
           assertFalse(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelConfirmed(USER, LOCAL_ID))),
                       "a " + other + " mail is not removed as confirmed");
+        } else {
+          // SCHEDULED, FAILED or HELD: removed as confirmed, then put back for the next state.
+          assertTrue(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelConfirmed(USER, LOCAL_ID))),
+                     "a " + other + " mail is removed as confirmed");
+          EmailBoxEntity draft = emailBoxDAO.findById(ids[0]).orElseThrow();
+          ids[1] = transaction.execute(status -> dao.saveAndFlush(schedule(draft)).getId());
         }
       }
       transaction.executeWithoutResult(status -> {

@@ -502,7 +502,9 @@ public class EmailScheduledSendService {
    * @param username the owner
    * @param check throws to refuse the scheduled mail; nothing is cancelled then
    * @return the scheduled mail as it stood when it was cancelled: UNCERTAIN exactly when
-   *         the removal took a mail whose sending could not be confirmed
+   *         the removal took a mail whose sending could not be confirmed; no status when
+   *         it was read UNCERTAIN and removed in a confirmed state since, which is then
+   *         not known
    * @throws IllegalAccessException if the owner may not use their mailbox
    * @throws ObjectNotFoundException if the owner has no such scheduled mail
    * @throws IllegalArgumentException what {@code check} refuses with
@@ -520,12 +522,14 @@ public class EmailScheduledSendService {
     }
     // Whether the mail's sending could not be confirmed comes from the removal itself:
     // the removal of a confirmed state first, then the UNCERTAIN-only one, so a run that
-    // ends UNCERTAIN in between is still told apart (see cancelUncertain).
+    // ends UNCERTAIN in between is still told apart (see cancelUncertain); then the
+    // confirmed one again, for a run that ended SCHEDULED or FAILED in between, which the
+    // dispatcher claims again only after a retry delay.
     boolean[] uncertain = new boolean[1];
     Email draft = emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
       if (!emailScheduledSendStorage.cancelConfirmed(username, draftLocalId)) {
         uncertain[0] = emailScheduledSendStorage.cancelUncertain(username, draftLocalId);
-        if (!uncertain[0]) {
+        if (!uncertain[0] && !emailScheduledSendStorage.cancelConfirmed(username, draftLocalId)) {
           rejectAsConflictOrNotFound(username, draftLocalId);
         }
       }
