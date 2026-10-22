@@ -4921,7 +4921,9 @@ public class EmailBoxService {
    * The same holds without any new mail for a move of messages from several folders
    * at once: each folder's undo is a request of its own, which reads its own ids plus
    * the margin, so one folder's copies are out of its reach once the other folders
-   * filed more than the margin after them; on BlueMind that folder's undo then fails.
+   * filed more than the margin after them, and on BlueMind that folder's undo can then
+   * fail: the folders' undos run side by side, and it succeeds when the others have
+   * already removed their copies by the time it reads the folder end.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
