@@ -2339,7 +2339,9 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * The refusal of a change that waited too long on the scheduled mail: an edit of it in
-   * the Email app held it past the database's lock-wait limit.
+   * the Email app held it past the database's lock-wait limit, where the engine has one
+   * (MySQL's innodb_lock_wait_timeout, 50 s by default; PostgreSQL's lock_timeout is
+   * none by default, and the change then waits for the edit to commit).
    *
    * @param e the database's refusal
    * @param draftId the mail's draft_id
