@@ -1529,9 +1529,9 @@ public class EmailMcpTool implements McpToolPlugin {
     try {
       // Checked again on the mail as it stands once the change is written, as reschedule
       // does.
-      emailScheduledSendService.cancel(current.getDraftLocalId(),
-                                       username,
-                                       mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
+      current = emailScheduledSendService.cancel(current.getDraftLocalId(),
+                                                 username,
+                                                 mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
     } catch (ScheduledSendConflictException e) {
       throw scheduledStateRefusal(e, draftId, CANCELLED);
     } catch (PessimisticLockingFailureException e) {

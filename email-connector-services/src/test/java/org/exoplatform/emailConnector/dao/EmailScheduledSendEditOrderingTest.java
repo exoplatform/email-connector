@@ -206,6 +206,49 @@ public class EmailScheduledSendEditOrderingTest {
   }
 
   /**
+   * The UNCERTAIN-only removal takes a mail whose sending could not be confirmed and no
+   * other, run by the engine against the status set the storage passes.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void theUncertainOnlyRemovalTakesAnUncertainMailAndNoOther() {
+    TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+    org.exoplatform.emailConnector.storage.EmailScheduledSendStorage storage =
+                                                                         new org.exoplatform.emailConnector.storage.EmailScheduledSendStorage();
+    org.springframework.test.util.ReflectionTestUtils.setField(storage, "emailScheduledSendDAO", dao);
+    Long[] ids = transaction.execute(status -> {
+      EmailBoxEntity draft = draft();
+      return new Long[] { draft.getId(), dao.saveAndFlush(schedule(draft)).getId() };
+    });
+    try {
+      for (ScheduledSendStatus other : ScheduledSendStatus.values()) {
+        if (other == ScheduledSendStatus.UNCERTAIN) {
+          continue;
+        }
+        transaction.executeWithoutResult(status -> {
+          EmailScheduledSendEntity row = dao.findById(ids[1]).orElseThrow();
+          row.setStatus(other);
+          dao.saveAndFlush(row);
+        });
+        assertFalse(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelUncertain(USER, LOCAL_ID))), "a " + other + " mail is kept");
+        assertTrue(dao.findById(ids[1]).isPresent());
+      }
+      transaction.executeWithoutResult(status -> {
+        EmailScheduledSendEntity row = dao.findById(ids[1]).orElseThrow();
+        row.setStatus(ScheduledSendStatus.UNCERTAIN);
+        dao.saveAndFlush(row);
+      });
+      assertTrue(Boolean.TRUE.equals(transaction.execute(status -> storage.cancelUncertain(USER, LOCAL_ID))));
+      assertFalse(dao.findById(ids[1]).isPresent(), "the uncertain mail is taken back");
+    } finally {
+      transaction.executeWithoutResult(status -> {
+        dao.findById(ids[1]).ifPresent(dao::delete);
+        emailBoxDAO.deleteById(ids[0]);
+      });
+    }
+  }
+
+  /**
    * Waits on a latch, as a test thread may.
    *
    * @param latch the latch
