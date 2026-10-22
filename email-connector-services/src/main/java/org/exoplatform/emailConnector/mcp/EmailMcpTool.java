@@ -1539,6 +1539,13 @@ public class EmailMcpTool implements McpToolPlugin {
     } catch (ObjectNotFoundException e) {
       throw new ObjectNotFoundException(scheduledNotFound(draftId));
     }
+    if (current.getStatus() == ScheduledSendStatus.UNCERTAIN) {
+      // The Email app's "move it to Drafts" of a mail whose sending could not be confirmed:
+      // it is not sent again, but an earlier attempt may have reached its recipients.
+      return String.format("The schedule of \"%s\" is cancelled and it is back in your drafts: it will not be sent again. Its earlier "
+          + "sending could not be confirmed, so it may already have reached its recipients: check your Sent folder in the Email "
+          + "app. draft_id: %s.", StringUtils.defaultString(current.getSubject()), current.getDraftLocalId());
+    }
     return String.format("The schedule of \"%s\" is cancelled: it will not be sent, and is back in your drafts. draft_id: %s.",
                          StringUtils.defaultString(current.getSubject()),
                          current.getDraftLocalId());
