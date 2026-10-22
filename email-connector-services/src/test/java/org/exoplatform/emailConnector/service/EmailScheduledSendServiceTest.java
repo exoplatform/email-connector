@@ -1267,15 +1267,15 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
-   * EXO-91996 -- a checked reschedule or cancel reads the mail, checks it and writes,
-   * all inside the draft's lock the mailbox service holds; a check that refuses the mail
-   * writes nothing; a date is judged before the lock is taken.
+   * EXO-91996 -- a checked reschedule or cancel changes the schedule first, then checks
+   * the mail as its draft then stands, in the mailbox service's one transaction; a check
+   * that refuses the mail is thrown from inside it, which undoes the change; a date is
+   * judged before the transaction.
    *
    * @throws Exception never
    */
   @Test
-  @SuppressWarnings("unchecked")
-  void aCheckedRescheduleOrCancelChecksTheMailAndWritesUnderTheDraftsLock() throws Exception {
+  void aCheckedRescheduleOrCancelChangesTheScheduleThenChecksTheMailInOneTransaction() throws Exception {
     long at = service.now().getTime() + 3_600_000L;
     EmailScheduledSend row = new EmailScheduledSend();
     row.setUserId(USER);
@@ -1284,47 +1284,48 @@ public class EmailScheduledSendServiceTest {
     row.setTimeZone("UTC");
     row.setStatus(ScheduledSendStatus.SCHEDULED);
     when(storage.get(USER, LOCAL_ID)).thenReturn(row);
-    boolean[] inLock = new boolean[1];
-    when(emailBoxService.inDraftLock(eq(LOCAL_ID), eq(USER), any())).thenAnswer(invocation -> {
-      inLock[0] = true;
-      try {
-        return ((DraftLockedAction<Object>) invocation.getArgument(2)).run();
-      } finally {
-        inLock[0] = false;
-      }
+    Email editedDraft = draft();
+    editedDraft.setSubject("Edited in the Email app");
+    List<String> steps = new ArrayList<>();
+    when(emailBoxService.changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      steps.add("transaction");
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(2)).take();
+      Consumer<Email> check = invocation.getArgument(3);
+      check.accept(editedDraft);
+      return editedDraft;
     });
     when(storage.reschedule(eq(USER), eq(LOCAL_ID), any(Date.class), eq("UTC"), any(Date.class))).thenAnswer(invocation -> {
-      assertTrue(inLock[0], "the reschedule is written under the draft's lock");
+      steps.add("reschedule");
       return true;
     });
     when(storage.cancel(USER, LOCAL_ID)).thenAnswer(invocation -> {
-      assertTrue(inLock[0], "the cancel is written under the draft's lock");
+      steps.add("cancel");
       return true;
     });
-    List<String> checkedSubjects = new ArrayList<>();
-    Consumer<ScheduledEmail> check = mail -> {
-      assertTrue(inLock[0], "the mail is checked under the draft's lock");
-      checkedSubjects.add(mail.getSubject());
-    };
+    Consumer<ScheduledEmail> check = mail -> steps.add("check " + mail.getSubject());
 
     service.reschedule(LOCAL_ID, at, "UTC", USER, check);
     service.cancel(LOCAL_ID, USER, check);
 
-    assertEquals(List.of("See you tomorrow", "See you tomorrow"), checkedSubjects);
+    assertEquals(List.of("transaction",
+                         "reschedule",
+                         "check Edited in the Email app",
+                         "transaction",
+                         "cancel",
+                         "check Edited in the Email app"),
+                 steps);
     verify(storage).reschedule(eq(USER), eq(LOCAL_ID), eq(new Date(at)), eq("UTC"), any(Date.class));
-    verify(storage).cancel(USER, LOCAL_ID);
 
     Consumer<ScheduledEmail> refuse = mail -> {
       throw new IllegalArgumentException("refused");
     };
     assertRefused("refused", () -> service.reschedule(LOCAL_ID, at, "UTC", USER, refuse));
     assertRefused("refused", () -> service.cancel(LOCAL_ID, USER, refuse));
-    verify(storage, times(1)).reschedule(anyString(), anyString(), any(Date.class), anyString(), any(Date.class));
-    verify(storage, times(1)).cancel(anyString(), anyString());
 
     assertRefused(EmailScheduledSendService.DATE_TOO_SOON,
                   () -> service.reschedule(LOCAL_ID, service.now().getTime() + 30_000, "UTC", USER, check));
-    verify(emailBoxService, times(4)).inDraftLock(eq(LOCAL_ID), eq(USER), any());
+    verify(emailBoxService, times(4)).changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any());
+    assertThrows(ObjectNotFoundException.class, () -> service.cancel("other", USER, check));
   }
 
   private void assertRefused(String code, org.junit.jupiter.api.function.Executable call) {

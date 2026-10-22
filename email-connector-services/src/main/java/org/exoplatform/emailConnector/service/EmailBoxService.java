@@ -12668,31 +12668,38 @@ public class EmailBoxService {
   }
 
   /**
-   * Runs work on a draft while its lock is held (EXO-91996): the lock every save,
-   * send, schedule and scheduled-mail edit of that draft takes on this node, so a check
-   * the work makes on the draft and the write it then does see the same draft. The lock
-   * is this node's, as {@link #scheduleDraftAsStored} says.
+   * Changes a scheduled draft's schedule, then checks the draft, in one transaction
+   * (EXO-91996): a reschedule or a cancel that holds only if the mail still says what
+   * its caller had the user approve.
+   * <p>
+   * {@code takeSchedule} runs first, as the transaction's first statement: its
+   * conditional write on the schedule row waits for the row's lock, which an edit of the
+   * scheduled mail in the Email app holds until it commits (see
+   * {@link #updateScheduledDraft}, whose draft lock is released before that commit). So
+   * the draft read next is the one such an edit committed, on every node. {@code check}
+   * runs on it; a refusal rolls the schedule's change back.
    *
-   * @param <T> what the work answers
    * @param draftLocalId the draft's local id
    * @param username the mailbox owner
-   * @param action the work
-   * @return what the work answers
-   * @throws IllegalAccessException what the work throws
-   * @throws ObjectNotFoundException what the work throws
+   * @param takeSchedule changes the schedule row, or throws
+   * @param check throws to refuse the draft; the schedule's change is undone then
+   * @return the draft as it stands
+   * @throws ObjectNotFoundException when the schedule or the draft is not there
+   * @throws IllegalArgumentException what {@code check} refuses with
+   * @throws ScheduledSendConflictException what {@code takeSchedule} refuses with
    */
-  public <T> T inDraftLock(String draftLocalId, String username, DraftLockedAction<T> action) throws IllegalAccessException,
-                                                                                               ObjectNotFoundException {
-    if (StringUtils.isBlank(draftLocalId)) {
-      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+  @Transactional(rollbackFor = Exception.class)
+  public Email changeScheduleIfDraftSays(String draftLocalId,
+                                         String username,
+                                         ScheduleTaker takeSchedule,
+                                         Consumer<Email> check) throws ObjectNotFoundException {
+    takeSchedule.take();
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft == null) {
+      throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
     }
-    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
-    lock.lock();
-    try {
-      return action.run();
-    } finally {
-      lock.unlock();
-    }
+    check.accept(draft);
+    return draft;
   }
 
   /**

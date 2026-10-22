@@ -381,11 +381,11 @@ public class EmailScheduledSendService {
   }
 
   /**
-   * {@link #reschedule(String, long, String, String)}, once {@code check} accepted the
-   * scheduled mail as it stands (EXO-91996): the mail is read, checked and given its new
-   * date while its draft's lock is held, the lock the Email app's edit of a scheduled
-   * mail takes, so a caller that had the user approve what the mail said refuses a mail
-   * edited since, and nothing is changed.
+   * {@link #reschedule(String, long, String, String)}, held only if {@code check} accepts
+   * the scheduled mail as it then stands (EXO-91996): the new date is written, the mail
+   * read and checked, in one transaction ordered after any edit of the mail in the Email
+   * app (see {@code EmailBoxService.changeScheduleIfDraftSays}), so a caller that had the
+   * user approve what the mail said refuses a mail edited since, and nothing is changed.
    *
    * @param draftLocalId the draft's handle
    * @param scheduledDate the new instant, epoch milliseconds
@@ -406,11 +406,14 @@ public class EmailScheduledSendService {
                                    Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
     requireMailbox(username);
     requireValidTimeZone(timeZone);
-    requireValidDate(scheduledDate, now());
-    return emailBoxService.inDraftLock(draftLocalId, username, () -> {
-      check.accept(getScheduledEmail(draftLocalId, username));
-      return reschedule(draftLocalId, scheduledDate, timeZone, username);
-    });
+    Date now = now();
+    Date date = requireValidDate(scheduledDate, now);
+    emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
+      if (!emailScheduledSendStorage.reschedule(username, draftLocalId, date, timeZone, now)) {
+        rejectAsConflictOrNotFound(username, draftLocalId);
+      }
+    }, draft -> check.accept(toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId), draft)));
+    return toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId));
   }
 
   /**
@@ -490,9 +493,10 @@ public class EmailScheduledSendService {
   }
 
   /**
-   * {@link #cancel(String, String)}, once {@code check} accepted the scheduled mail as it
-   * stands (EXO-91996): the mail is read, checked and cancelled while its draft's lock
-   * is held, as {@link #reschedule(String, long, String, String, Consumer)} does.
+   * {@link #cancel(String, String)}, held only if {@code check} accepts the scheduled
+   * mail as it then stands (EXO-91996): the schedule is removed, the mail read and
+   * checked, in one transaction ordered after any edit of the mail in the Email app, as
+   * {@link #reschedule(String, long, String, String, Consumer)} does.
    *
    * @param draftLocalId the draft's handle
    * @param username the owner
@@ -507,12 +511,18 @@ public class EmailScheduledSendService {
                                String username,
                                Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
     requireMailbox(username);
-    return emailBoxService.inDraftLock(draftLocalId, username, () -> {
-      ScheduledEmail current = getScheduledEmail(draftLocalId, username);
-      check.accept(current);
-      cancel(draftLocalId, username);
-      return current;
-    });
+    // Read before the transaction for its date and state, which the removal takes away:
+    // the check reads the mail's text in the transaction, after the removal.
+    EmailScheduledSend row = StringUtils.isBlank(draftLocalId) ? null : emailScheduledSendStorage.get(username, draftLocalId);
+    if (row == null) {
+      throw new ObjectNotFoundException(draftLocalId);
+    }
+    Email draft = emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
+      if (!emailScheduledSendStorage.cancel(username, draftLocalId)) {
+        rejectAsConflictOrNotFound(username, draftLocalId);
+      }
+    }, stored -> check.accept(toScheduledEmail(row, stored)));
+    return toScheduledEmail(row, draft);
   }
 
   /**

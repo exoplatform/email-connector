@@ -17525,26 +17525,50 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-91996 -- work run in a draft's lock holds the very lock the draft's saves,
-   * sends and scheduled-mail edits take, and gives it back whatever the work does.
+   * EXO-91996 -- a checked change of a schedule writes the schedule first and only then
+   * reads the draft and checks it: the write's row lock is what orders the read after an
+   * edit of the mail in the Email app. A refused check, or a draft that is gone, is
+   * thrown from the method, whose transaction rolls back on any exception: the
+   * annotation is pinned, since a test calling the method directly cannot see the
+   * transaction it is missing (the annotation-removed mutant).
    *
    * @throws Exception never
    */
   @Test
-  @SuppressWarnings("unchecked")
-  void workInADraftsLockHoldsTheDraftsLockAndGivesItBack() throws Exception {
-    Map<String, ReentrantLock> draftLocks =
-                                          (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
-                                                                                                                                  "draftLocks");
+  void aCheckedScheduleChangeWritesFirstThenChecksTheDraftInOneTransaction() throws Exception {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    List<String> steps = new ArrayList<>();
 
-    assertEquals("done", emailBoxService.inDraftLock("draft-1", TEST_USER, () -> {
-      assertTrue(draftLocks.get(TEST_USER + "/draft-1").isHeldByCurrentThread());
-      return "done";
+    assertSame(stored, emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      verify(emailBoxStorage, never()).getDraftByLocalId(anyString(), anyString());
+      steps.add("write");
+    }, draft -> steps.add("check " + draft.getSubject())));
+    assertEquals(List.of("write", "check " + stored.getSubject()), steps);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+    }, draft -> {
+      throw new IllegalArgumentException("refused");
     }));
-    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.inDraftLock("draft-1", TEST_USER, () -> {
-      throw new ObjectNotFoundException("gone");
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("gone", TEST_USER, () -> {
+    }, draft -> {
     }));
-    assertFalse(draftLocks.get(TEST_USER + "/draft-1").isLocked());
+    List<String> beforeWrite = new ArrayList<>();
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      beforeWrite.add("write");
+      throw new ObjectNotFoundException("no schedule");
+    }, draft -> beforeWrite.add("check")));
+    assertEquals(List.of("write"), beforeWrite, "nothing is read or checked once the write refused");
+
+    org.springframework.transaction.annotation.Transactional transactional =
+                                                                            EmailBoxService.class.getMethod("changeScheduleIfDraftSays",
+                                                                                                            String.class,
+                                                                                                            String.class,
+                                                                                                            EmailBoxService.ScheduleTaker.class,
+                                                                                                            java.util.function.Consumer.class)
+                                                                                                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+    assertNotNull(transactional, "the write, the read and the check share one transaction");
+    assertEquals(List.of(Exception.class), List.of(transactional.rollbackFor()), "any refusal rolls the write back");
   }
 
   /**
