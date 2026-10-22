@@ -381,6 +381,39 @@ public class EmailScheduledSendService {
   }
 
   /**
+   * {@link #reschedule(String, long, String, String)}, once {@code check} accepted the
+   * scheduled mail as it stands (EXO-91996): the mail is read, checked and given its new
+   * date while its draft's lock is held, the lock the Email app's edit of a scheduled
+   * mail takes, so a caller that had the user approve what the mail said refuses a mail
+   * edited since, and nothing is changed.
+   *
+   * @param draftLocalId the draft's handle
+   * @param scheduledDate the new instant, epoch milliseconds
+   * @param timeZone the zone it was chosen in
+   * @param username the owner
+   * @param check throws to refuse the scheduled mail; nothing is changed then
+   * @return the scheduled mail
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   * @throws IllegalArgumentException a message code: invalid zone, date too soon or too
+   *           far; or what {@code check} refuses with
+   * @throws ScheduledSendConflictException when the mail is being sent, sent, or uncertain
+   */
+  public ScheduledEmail reschedule(String draftLocalId,
+                                   long scheduledDate,
+                                   String timeZone,
+                                   String username,
+                                   Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    requireValidTimeZone(timeZone);
+    requireValidDate(scheduledDate, now());
+    return emailBoxService.inDraftLock(draftLocalId, username, () -> {
+      check.accept(getScheduledEmail(draftLocalId, username));
+      return reschedule(draftLocalId, scheduledDate, timeZone, username);
+    });
+  }
+
+  /**
    * Replaces a scheduled mail's content -- subject, body, recipients, files -- and, when
    * a date is given, its date, in one transaction, the mail staying scheduled
    * (EXO-90434: an edit that is not a cancel followed by a new schedule, so the mail is
@@ -454,6 +487,32 @@ public class EmailScheduledSendService {
     if (!emailScheduledSendStorage.cancel(username, draftLocalId)) {
       rejectAsConflictOrNotFound(username, draftLocalId);
     }
+  }
+
+  /**
+   * {@link #cancel(String, String)}, once {@code check} accepted the scheduled mail as it
+   * stands (EXO-91996): the mail is read, checked and cancelled while its draft's lock
+   * is held, as {@link #reschedule(String, long, String, String, Consumer)} does.
+   *
+   * @param draftLocalId the draft's handle
+   * @param username the owner
+   * @param check throws to refuse the scheduled mail; nothing is cancelled then
+   * @return the scheduled mail as it stood when it was cancelled
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   * @throws IllegalArgumentException what {@code check} refuses with
+   * @throws ScheduledSendConflictException when the mail is being sent or sent
+   */
+  public ScheduledEmail cancel(String draftLocalId,
+                               String username,
+                               Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    return emailBoxService.inDraftLock(draftLocalId, username, () -> {
+      ScheduledEmail current = getScheduledEmail(draftLocalId, username);
+      check.accept(current);
+      cancel(draftLocalId, username);
+      return current;
+    });
   }
 
   /**
