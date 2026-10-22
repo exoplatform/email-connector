@@ -305,9 +305,8 @@ public class EmailBoxService {
 
   /**
    * How many messages beyond the ones it names an undo reads at the end of the folder
-   * the move filed them into, when the server's search finds none of them
-   * ({@link #recentMessagesCarrying}): room for the mail delivered into that folder
-   * between the move and the click.
+   * the move filed them into ({@link #recentMessagesCarrying}): room for the mail
+   * delivered into that folder between the move and the click.
    */
   private static final int        UNDO_RECENT_SCAN_MARGIN                                     = 50;
 
@@ -4791,8 +4790,8 @@ public class EmailBoxService {
       boolean expungeOnClose = false;
       try {
         current.open(Folder.READ_WRITE);
-        // The folder's last messages, read once for the whole undo and only when the
-        // server's search misses one (recentMessagesCarrying).
+        // The folder's last messages, read once for the whole undo
+        // (recentMessagesCarrying).
         AtomicReference<Map<String, List<Message>>> recentById = new AtomicReference<>();
         int recentWindow = mailHeaderIds.size() + UNDO_RECENT_SCAN_MARGIN;
         for (String mailHeaderId : mailHeaderIds) {
@@ -4907,19 +4906,24 @@ public class EmailBoxService {
    * {@code <a@host>} also answers {@code <a@host.example>}, and a match on part of an
    * identifier is not an identity.
    * <p>
-   * When the search finds nothing, the folder's last messages are read instead
-   * ({@link #recentMessagesCarrying}): BlueMind's search does not find a message the
-   * move has just copied into the folder, by either key, while a plain read of the
-   * folder lists it. A copy always lands at the end of the folder, so that is where the
-   * message is; the same exact comparison and the same "exactly one" rule decide.
+   * The folder's last messages are read as well ({@link #recentMessagesCarrying}), and
+   * their exact matches added to the search's, each message once: on BlueMind the
+   * search finds no copy the move filed (seen on an acceptance server; why, an index
+   * not yet updated or a header it does not search, was not established), while a
+   * plain read of the folder lists it. A copy lands at the end of the folder, so that
+   * is where the moved message is. Adding the two, rather than reading the end only
+   * when the search finds nothing, is what keeps the "exactly one" rule whole: a
+   * search that finds an older copy of the same mail and misses the one the move filed
+   * would otherwise move the older one back. An older copy the read does not reach,
+   * in a folder whose search misses both, is still taken for the only one.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
    * @param folderKey the folder's key, for the log
    * @param username the mailbox owner
-   * @param recentWindow how many of the folder's last messages the fallback reads
-   * @param recentById the fallback's read, kept for the whole undo: empty until a
-   *          search first misses
+   * @param recentWindow how many of the folder's last messages are read
+   * @param recentById the read of the folder's last messages, kept for the whole undo:
+   *          filled on its first lookup
    * @return the message, or null when the folder holds none or several
    * @throws MessagingException if the folder cannot be searched or read
    */
@@ -4936,15 +4940,21 @@ public class EmailBoxService {
       return null;
     }
     String expected = StringUtils.trim(mailHeaderId);
-    List<Message> exact = searchByMessageId(folder, expected);
-    if (exact.isEmpty()) {
-      exact = recentMessagesCarrying(folder, expected, recentWindow, recentById);
-      if (!exact.isEmpty()) {
-        LOG.debug("The server's search found no message carrying {} in folder {} of user {}; found among its last messages",
-                  expected,
-                  folderKey,
-                  username);
+    List<Message> exact = new ArrayList<>(searchByMessageId(folder, expected));
+    int searched = exact.size();
+    for (Message recent : recentMessagesCarrying(folder, expected, recentWindow, recentById)) {
+      // One message is one object in an open IMAPFolder, whichever call returned it.
+      if (exact.stream().noneMatch(found -> found == recent)) {
+        exact.add(recent);
       }
+    }
+    if (exact.size() > searched) {
+      LOG.debug("The server's search found {} of the messages carrying {} in folder {} of user {}; the folder's last messages hold {}",
+                searched,
+                expected,
+                folderKey,
+                username,
+                exact.size());
     }
     if (exact.isEmpty()) {
       LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
@@ -4963,8 +4973,8 @@ public class EmailBoxService {
 
   /**
    * The messages among a folder's last ones that carry the given Message-ID, exactly:
-   * the fallback of {@link #findTheOneMessageCarrying} for a server whose search does
-   * not find a message just copied into the folder. Reads the Message-ID header of the
+   * what {@link #findTheOneMessageCarrying} adds to the server's search, which on
+   * BlueMind finds no copy a move filed. Reads the Message-ID header of the
    * last {@code window} messages, in one FETCH and without marking anything read, the
    * first time it is asked, and answers every later id of the same undo from that read.
    * The comparison is {@link #sameMessageId}'s, so it decides exactly as the search

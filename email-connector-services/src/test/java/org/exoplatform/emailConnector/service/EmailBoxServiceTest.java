@@ -13554,6 +13554,51 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The search finds an older copy of the mail in the folder and misses the one the
+   * move filed, which the folder's last messages hold: two copies, so the undo refuses
+   * to guess rather than move the older one back.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoCountsTheCopyTheSearchMissedAndRefusesToGuessBetweenTheTwo() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message older = aMessageCarrying("<a@host>");
+    Message moved = aMessageCarrying("<a@host>");
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { older });
+    when(factures.getMessageCount()).thenReturn(2);
+    when(factures.getMessages(1, 2)).thenReturn(new Message[] { older, moved });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures, never()).copyMessages(any(), any());
+    verify(older, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(moved, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+  }
+
+  /**
+   * Where the search does find the moved message (Gmail), the folder's last messages
+   * hold that same message: it is one candidate, not two, and it is moved back.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoCountsAMessageFoundByBothTheSearchAndTheFolderEndOnce() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message moved = aMessageCarrying("<a@host>");
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { moved });
+    when(factures.getMessageCount()).thenReturn(1);
+    when(factures.getMessages(1, 1)).thenReturn(new Message[] { moved });
+    when(factures.getUID(moved)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(moved);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == moved), any(Folder.class));
+    verify(moved).setFlag(Flags.Flag.DELETED, true);
+  }
+
+  /**
    * Sent is a folder a move may come FROM but never one it may go INTO, so the undo
    * admits it as the origin all the same: a message moved out of Sent goes back to
    * Sent.
