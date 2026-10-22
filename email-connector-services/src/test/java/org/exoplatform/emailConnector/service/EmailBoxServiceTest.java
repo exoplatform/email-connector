@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import com.sun.mail.smtp.SMTPAddressFailedException;
 import com.sun.mail.smtp.SMTPSendFailedException;
 import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
@@ -8008,6 +8009,45 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91995: a hit read from the mail server says who wrote it, decided from the live
+   * message; the headers it is decided on ride in the page's one batched fetch, never a
+   * FETCH per hit.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsSaysWhoWroteEveryHit() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Date now = new Date();
+    MimeMessage person = searchHit("offer 1", "bob@prospect.example", new Date(now.getTime() - 1000), true);
+    MimeMessage bounce = searchHit("offer 2", "mailer-daemon@mx.example", now, true);
+    when(bounce.getHeader("X-Failed-Recipients")).thenReturn(new String[] { "gone@prospect.example" });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { person, bounce });
+    when(((UIDFolder) inbox).getUID(person)).thenReturn(11L);
+    when(((UIDFolder) inbox).getUID(bounce)).thenReturn(12L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(Map.of());
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "offer", null, false, null, "INBOX", 20);
+
+    assertEquals(MessageKind.BOUNCE, page.getResults().get(0).getMessageKind());
+    assertEquals(List.of("gone@prospect.example"), page.getResults().get(0).getBouncedRecipients());
+    assertEquals(MessageKind.NORMAL, page.getResults().get(1).getMessageKind());
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), profile.capture());
+    assertTrue(profile.getValue().contains("X-Failed-Recipients"));
+    assertTrue(profile.getValue().contains("Auto-Submitted"));
+    assertTrue(profile.getValue().contains("Return-Path"));
+    assertTrue(profile.getValue().contains(FetchProfile.Item.CONTENT_INFO));
+  }
+
+  /**
    * When the SEARCH matches more than the requested limit, only the newest tail of
    * the match list is fetched — the batched FETCH must stay bounded by the limit,
    * not by the match count — while the total still reports every match.
@@ -10716,6 +10756,58 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91995: who wrote a message is decided at sync, from the live message, and kept
+   * with the row -- a bounce with the addresses it failed, an out-of-office as an
+   * automatic reply, anything else as normal.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheMessageKind() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("X-Failed-Recipients")).thenReturn(new String[] { "gone@prospect.example" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.BOUNCE, created.getValue().getMessageKind());
+    assertEquals(List.of("gone@prospect.example"), created.getValue().getBouncedRecipients());
+  }
+
+  /** EXO-91995: an out-of-office is cached as an automatic reply. */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsAnAutomaticReply() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Auto-Submitted")).thenReturn(new String[] { "auto-replied" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.AUTO_REPLY, created.getValue().getMessageKind());
+  }
+
+  /** EXO-91995: a message with no automation header is cached as written by a person. */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsANormalMessage() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 1);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.NORMAL, created.getValue().getMessageKind());
+    assertEquals(List.of(), created.getValue().getBouncedRecipients());
+  }
+
+  /**
    * EXO-90841: the receiving server's authentication verdict is read at sync, from the
    * top Authentication-Results header only, and kept with the row; a message whose
    * verdict passed carries none.
@@ -11269,7 +11361,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null, null, null, null);
+                     false, null, null, false, null, null, null, null, null, null, null, null);
   }
 
   private EmailConnector emailConnector() {
