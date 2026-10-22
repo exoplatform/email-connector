@@ -114,6 +114,9 @@ class EmailMessageKindUtilsTest {
 
         Final-Recipient: rfc822; undisclosed-recipients:;
         Action: failed
+
+        Final-Recipient: rfc822; team: a@prospect.example, b@prospect.example;
+        Action: failed
         """, ""));
     assertEquals(MessageKind.BOUNCE, classification.kind());
     assertEquals(List.of("first@prospect.example"), classification.bouncedRecipients());
@@ -152,7 +155,7 @@ class EmailMessageKindUtilsTest {
         From: Mail Delivery System <Mailer-Daemon@mx.example>
         To: alice@corp.example
         Subject: Message non distribuable
-        X-Failed-Recipients: gone@prospect.example, Left <left@prospect.example>
+        X-Failed-Recipients: gone@prospect.example, Left <left@prospect.example>, sales: c@prospect.example;
         Auto-Submitted: auto-replied
         Content-Type: text/plain; charset=utf-8
 
@@ -204,6 +207,22 @@ class EmailMessageKindUtilsTest {
       assertEquals(MessageKind.NORMAL, classification.kind(), header);
       assertEquals(List.of(), classification.bouncedRecipients(), header);
     }
+  }
+
+  /**
+   * Only a report that declares itself a delivery status is read as one: a report of
+   * another type is no bounce, whatever part it carries.
+   */
+  @Test
+  void aReportOfAnotherTypeIsNotReadAsADeliveryStatus() throws Exception {
+    MessageClassification classification = classify(report("disposition-notification", "message/delivery-status", """
+        Reporting-MTA: dns; mx.corp.example
+
+        Final-Recipient: rfc822; gone@prospect.example
+        Action: failed
+        """, ""));
+    assertEquals(MessageKind.AUTO_REPLY, classification.kind());
+    assertEquals(List.of(), classification.bouncedRecipients());
   }
 
   /** A read receipt is no bounce, though it is a multipart/report too. */
