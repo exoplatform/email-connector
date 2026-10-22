@@ -69,6 +69,12 @@ public class EmailScheduledSendStorage {
                                                                           ScheduledSendStatus.SENT);
 
   /**
+   * Every status but UNCERTAIN: what {@link #cancelUncertain} keeps (EXO-91996).
+   */
+  private static final Set<ScheduledSendStatus> CANCELLABLE_BUT_UNCERTAIN_KEPT =
+                                                                              java.util.EnumSet.complementOf(java.util.EnumSet.of(ScheduledSendStatus.UNCERTAIN));
+
+  /**
    * The statuses an Undo may not take back (EXO-90837): the mail is going, gone, or may
    * have gone. An UNCERTAIN mail is the owner's to decide in the "Scheduled" view, not
    * an Undo's to turn back into a draft.
@@ -364,6 +370,20 @@ public class EmailScheduledSendStorage {
    */
   public boolean cancel(String userId, String draftLocalId) {
     return emailScheduledSendDAO.cancel(userId, draftLocalId, NOT_CANCELLABLE) == 1;
+  }
+
+  /**
+   * Removes a schedule only while its sending could not be confirmed (EXO-91996): the
+   * same conditional removal as {@link #cancel}, kept to UNCERTAIN, so a caller learns
+   * from the write itself, and not from an earlier read, that the mail it took back may
+   * already have reached its recipients.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @return true when removed
+   */
+  public boolean cancelUncertain(String userId, String draftLocalId) {
+    return emailScheduledSendDAO.cancel(userId, draftLocalId, CANCELLABLE_BUT_UNCERTAIN_KEPT) == 1;
   }
 
   /**

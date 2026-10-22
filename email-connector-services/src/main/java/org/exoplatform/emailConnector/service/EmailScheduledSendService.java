@@ -501,7 +501,8 @@ public class EmailScheduledSendService {
    * @param draftLocalId the draft's handle
    * @param username the owner
    * @param check throws to refuse the scheduled mail; nothing is cancelled then
-   * @return the scheduled mail as it stood when it was cancelled
+   * @return the scheduled mail as it stood when it was cancelled: UNCERTAIN exactly when
+   *         the removal took a mail whose sending could not be confirmed
    * @throws IllegalAccessException if the owner may not use their mailbox
    * @throws ObjectNotFoundException if the owner has no such scheduled mail
    * @throws IllegalArgumentException what {@code check} refuses with
@@ -517,12 +518,24 @@ public class EmailScheduledSendService {
     if (row == null) {
       throw new ObjectNotFoundException(draftLocalId);
     }
+    // The status the mail had when it was removed comes from the removal itself: an
+    // UNCERTAIN-only removal first, then the usual one, each a conditional write.
+    boolean[] uncertain = new boolean[1];
     Email draft = emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
-      if (!emailScheduledSendStorage.cancel(username, draftLocalId)) {
+      uncertain[0] = emailScheduledSendStorage.cancelUncertain(username, draftLocalId);
+      if (!uncertain[0] && !emailScheduledSendStorage.cancel(username, draftLocalId)) {
         rejectAsConflictOrNotFound(username, draftLocalId);
       }
     }, stored -> check.accept(toScheduledEmail(row, stored)));
-    return toScheduledEmail(row, draft);
+    ScheduledEmail cancelled = toScheduledEmail(row, draft);
+    if (uncertain[0]) {
+      cancelled.setStatus(ScheduledSendStatus.UNCERTAIN);
+    } else if (cancelled.getStatus() == ScheduledSendStatus.UNCERTAIN) {
+      // Read UNCERTAIN before the transaction, retried by its owner since: the usual
+      // removal took it from another state.
+      cancelled.setStatus(ScheduledSendStatus.SCHEDULED);
+    }
+    return cancelled;
   }
 
   /**

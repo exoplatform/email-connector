@@ -1323,6 +1323,40 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * EXO-91996 -- a checked cancel says the mail was UNCERTAIN exactly when the removal
+   * took it in that state: the UNCERTAIN-only removal is tried first, the usual one only
+   * when it took nothing, whatever the status read before the transaction.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCheckedCancelSaysUncertainExactlyWhenTheRemovalTookAnUncertainMail() throws Exception {
+    EmailScheduledSend row = new EmailScheduledSend();
+    row.setUserId(USER);
+    row.setDraftLocalId(LOCAL_ID);
+    row.setScheduledDate(NOW);
+    row.setTimeZone("UTC");
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+    when(emailBoxService.changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(2)).take();
+      return draft();
+    });
+
+    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(true);
+    assertEquals(ScheduledSendStatus.UNCERTAIN, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus());
+    verify(storage, never()).cancel(USER, LOCAL_ID);
+
+    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(false);
+    when(storage.cancel(USER, LOCAL_ID)).thenReturn(true);
+    row.setStatus(ScheduledSendStatus.UNCERTAIN);
+    assertEquals(ScheduledSendStatus.SCHEDULED, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus(), "read UNCERTAIN before, removed in another state");
+    verify(storage).cancel(USER, LOCAL_ID);
+  }
+
+  /**
    * Asserts a call is refused with a message code.
    *
    * @param code the code

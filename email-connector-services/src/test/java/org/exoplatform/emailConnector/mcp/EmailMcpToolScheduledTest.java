@@ -522,12 +522,14 @@ class EmailMcpToolScheduledTest {
     verify(emailScheduledSendService).cancel(eq(DRAFT_ID), eq(USERNAME), any());
     verify(emailScheduledSendService, never()).cancel(anyString(), anyString());
     assertTrue(answer.contains("back in your drafts") && !answer.contains("may already have reached"), answer);
+    // The answer follows the status the removal took the mail in, not the one read before:
+    // read SCHEDULED, removed UNCERTAIN (its run ended so meanwhile).
     ScheduledEmail uncertain = scheduled("Proposal", current.getScheduledDate(), "Europe/Paris", "bob@acme.com");
     uncertain.setStatus(ScheduledSendStatus.UNCERTAIN);
-    when(emailScheduledSendService.getScheduledEmail(DRAFT_ID, USERNAME)).thenReturn(uncertain);
+    cancelRuns(uncertain);
     String uncertainAnswer = emailMcpTool.cancelScheduledEmail(DRAFT_ID, "Proposal", List.of("bob@acme.com"));
     assertTrue(uncertainAnswer.contains("may already have reached its recipients"), uncertainAnswer);
-    when(emailScheduledSendService.getScheduledEmail(DRAFT_ID, USERNAME)).thenReturn(current);
+    cancelRuns(current);
 
     cancelRuns(scheduled("Changed in the Email app", current.getScheduledDate(), "Europe/Paris", "bob@acme.com"));
     IllegalArgumentException edited = assertThrows(IllegalArgumentException.class,
