@@ -93,7 +93,6 @@ import javax.mail.StoreClosedException;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.AddressException;
-import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
