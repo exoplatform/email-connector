@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,6 +34,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -56,6 +58,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -1292,7 +1295,7 @@ public class EmailScheduledSendServiceTest {
       steps.add("reschedule");
       return true;
     });
-    when(storage.cancel(USER, LOCAL_ID)).thenAnswer(invocation -> {
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenAnswer(invocation -> {
       steps.add("cancel");
       return true;
     });
@@ -1324,8 +1327,9 @@ public class EmailScheduledSendServiceTest {
 
   /**
    * EXO-91996 -- a checked cancel says the mail was UNCERTAIN exactly when the removal
-   * took it in that state: the UNCERTAIN-only removal is tried first, the usual one only
-   * when it took nothing, whatever the status read before the transaction.
+   * took it in that state: the removal of a confirmed state runs first, the
+   * UNCERTAIN-only one only when it took nothing, whatever the status read before the
+   * transaction.
    *
    * @throws Exception never
    */
@@ -1343,17 +1347,23 @@ public class EmailScheduledSendServiceTest {
       return draft();
     });
 
+    // Read SCHEDULED, its run ended UNCERTAIN meanwhile: the confirmed removal takes
+    // nothing, the UNCERTAIN-only one takes it.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(false);
     when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(true);
     assertEquals(ScheduledSendStatus.UNCERTAIN, service.cancel(LOCAL_ID, USER, mail -> {
     }).getStatus());
-    verify(storage, never()).cancel(USER, LOCAL_ID);
+    InOrder order = inOrder(storage);
+    order.verify(storage).cancelConfirmed(USER, LOCAL_ID);
+    order.verify(storage).cancelUncertain(USER, LOCAL_ID);
 
-    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(false);
-    when(storage.cancel(USER, LOCAL_ID)).thenReturn(true);
+    // Read UNCERTAIN, retried and ended in a confirmed state since: not said uncertain.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(true);
     row.setStatus(ScheduledSendStatus.UNCERTAIN);
-    assertEquals(ScheduledSendStatus.SCHEDULED, service.cancel(LOCAL_ID, USER, mail -> {
-    }).getStatus(), "read UNCERTAIN before, removed in another state");
-    verify(storage).cancel(USER, LOCAL_ID);
+    assertNotEquals(ScheduledSendStatus.UNCERTAIN, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus(), "read UNCERTAIN before, removed in a confirmed state");
+    verify(storage, times(1)).cancelUncertain(USER, LOCAL_ID);
+    verify(storage, never()).cancel(USER, LOCAL_ID);
   }
 
   /**

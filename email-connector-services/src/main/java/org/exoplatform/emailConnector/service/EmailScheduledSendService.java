@@ -518,22 +518,26 @@ public class EmailScheduledSendService {
     if (row == null) {
       throw new ObjectNotFoundException(draftLocalId);
     }
-    // The status the mail had when it was removed comes from the removal itself: an
-    // UNCERTAIN-only removal first, then the usual one, each a conditional write.
+    // Whether the mail's sending could not be confirmed comes from the removal itself:
+    // the removal of a confirmed state first, then the UNCERTAIN-only one, so a run that
+    // ends UNCERTAIN in between is still told apart (see cancelUncertain).
     boolean[] uncertain = new boolean[1];
     Email draft = emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
-      uncertain[0] = emailScheduledSendStorage.cancelUncertain(username, draftLocalId);
-      if (!uncertain[0] && !emailScheduledSendStorage.cancel(username, draftLocalId)) {
-        rejectAsConflictOrNotFound(username, draftLocalId);
+      if (!emailScheduledSendStorage.cancelConfirmed(username, draftLocalId)) {
+        uncertain[0] = emailScheduledSendStorage.cancelUncertain(username, draftLocalId);
+        if (!uncertain[0]) {
+          rejectAsConflictOrNotFound(username, draftLocalId);
+        }
       }
     }, stored -> check.accept(toScheduledEmail(row, stored)));
     ScheduledEmail cancelled = toScheduledEmail(row, draft);
     if (uncertain[0]) {
       cancelled.setStatus(ScheduledSendStatus.UNCERTAIN);
     } else if (cancelled.getStatus() == ScheduledSendStatus.UNCERTAIN) {
-      // Read UNCERTAIN before the transaction, retried by its owner since: the usual
-      // removal took it from another state.
-      cancelled.setStatus(ScheduledSendStatus.SCHEDULED);
+      // Read UNCERTAIN before the transaction, then retried by its owner and ended in a
+      // confirmed state: the state it was removed in is not known here, and it was not
+      // uncertain.
+      cancelled.setStatus(null);
     }
     return cancelled;
   }
