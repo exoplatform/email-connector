@@ -32,9 +32,10 @@ import io.meeds.mcp.server.model.McpToolGrantConstraint;
 
 /**
  * Pins the "only to recipients in one domain" limit of standing approvals on
- * the mail tools: bare addresses only, exact IDNA-normalised domains (a
- * subdomain is another domain), bcc included, no shared mailbox and no other
- * person's name under any grant, and every doubt read as "no match".
+ * the mail tools: bare addresses only, exact ASCII domains (a subdomain is
+ * another domain, a Unicode domain is compared with nothing), bcc included, no
+ * shared mailbox and no other person's name under any grant, and every doubt
+ * read as "no match".
  */
 class EmailGrantConstraintEvaluatorTest {
 
@@ -88,13 +89,43 @@ class EmailGrantConstraintEvaluatorTest {
   }
 
   /**
-   * Recipients all in the domain match, case and Unicode spelling aside.
+   * Recipients all in the domain match, case aside; an internationalised domain
+   * matches when written as its {@code xn--} labels, as a limit and as a
+   * recipient.
    */
   @Test
   void matchesRecipientsOfTheExactDomain() {
     assertTrue(evaluator.matches(SEND, args("to", List.of("a@example.com", " B@EXAMPLE.COM "), "cc", List.of("c@example.com")), EXAMPLE));
-    assertTrue(evaluator.matches(SEND, args("to", List.of("a@bücher.de")), domain("xn--bcher-kva.de")));
-    assertTrue(evaluator.matches(SEND, args("to", List.of("a@xn--bcher-kva.de")), domain("BÜCHER.de")));
+    assertTrue(evaluator.matches(SEND, args("to", List.of("a@XN--BCHER-KVA.de")), domain("xn--bcher-kva.de")));
+  }
+
+  /**
+   * A domain written in Unicode is compared with nothing, as a recipient or as a
+   * limit, and offers no limit: the tools send it as written, and its IDNA2003
+   * form can be another domain ({@code faß.de} is {@code fass.de} there,
+   * {@code ς} is {@code σ}).
+   */
+  @Test
+  void unicodeDomainMatchesNothing() {
+    assertFalse(evaluator.matches(SEND, args("to", List.of("bob@faß.de")), domain("fass.de")));
+    assertFalse(evaluator.matches(SEND, args("to", List.of("bob@ς.gr")), domain("xn--4xa.gr")));
+    assertFalse(evaluator.matches(SEND, args("to", List.of("a@bücher.de")), domain("xn--bcher-kva.de")));
+    assertFalse(evaluator.matches(SEND, args("to", List.of("a@xn--bcher-kva.de")), domain("bücher.de")));
+    assertFalse(evaluator.matches(SEND, args("to", List.of("a@example.com", "bob@faß.de")), EXAMPLE));
+    assertNull(evaluator.proposeConstraint(SEND, args("to", List.of("bob@faß.de"))));
+    assertNull(EmailAddressRules.domainOf("bob@σ.gr"));
+  }
+
+  /**
+   * A domain is read as written before it is lower-cased: the Kelvin sign
+   * lower-cases to an ASCII {@code k}, and the tools send the sign.
+   */
+  @Test
+  void nonAsciiLetterThatLowerCasesToAsciiMatchesNothing() {
+    assertFalse(evaluator.matches(SEND, args("to", List.of("a@\u212Aey.com")), domain("key.com")));
+    assertFalse(evaluator.matches(SEND, args("to", List.of("a@key.com")), domain("\u212Aey.com")));
+    assertNull(evaluator.proposeConstraint(SEND, args("to", List.of("a@\u212Aey.com"))));
+    assertEquals("key.com", EmailAddressRules.domainOf("j\u00FCrgen@KEY.com"));
   }
 
   /**

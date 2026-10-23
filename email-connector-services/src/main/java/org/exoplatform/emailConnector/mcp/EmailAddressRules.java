@@ -60,10 +60,16 @@ final class EmailAddressRules {
   }
 
   /**
-   * The domain of a bare address, in the form domains are compared: lower-cased
-   * and converted to its ASCII (IDNA) form under the STD3 rules. An entry that
-   * is not a bare address, does not hold exactly one {@code @} with text on both
-   * sides, or whose domain IDNA refuses (an address literal such as
+   * The domain of a bare address, in the form domains are compared: lower-cased,
+   * and already in its ASCII form, an internationalised domain counting only when
+   * written as its {@code xn--} labels. The tools send an entry as written, and
+   * IDNA2003 maps some Unicode domains onto another one ({@code faß.de} onto
+   * {@code fass.de}, {@code ς} onto {@code σ}), so a domain holding any non-ASCII
+   * character as written is compared with nothing -- lower-casing comes after
+   * that check, since it turns some non-ASCII letters into ASCII ones (the Kelvin
+   * sign into {@code k}). An entry that is not a bare address, does not hold
+   * exactly one {@code @} with text on both sides, or whose domain is not such an
+   * ASCII domain under the STD3 rules (an address literal such as
    * {@code [192.0.2.1]}, an empty label, a trailing dot) has no domain.
    *
    * @param entry the entry as given, possibly null
@@ -73,7 +79,7 @@ final class EmailAddressRules {
     if (!isBareAddress(entry)) {
       return null;
     }
-    String address = normalisedAddress(entry);
+    String address = StringUtils.trim(entry);
     int at = address.indexOf('@');
     if (at <= 0 || at != address.lastIndexOf('@') || at == address.length() - 1) {
       return null;
@@ -85,10 +91,15 @@ final class EmailAddressRules {
    * A domain in the form domains are compared, see {@link #domainOf(String)}.
    *
    * @param domain the domain, possibly null
-   * @return the normalised domain, or null when IDNA refuses it
+   * @return the normalised domain, or null when it is not written in ASCII or
+   *         IDNA refuses it
    */
   static String normalisedDomain(String domain) {
-    String value = StringUtils.trimToEmpty(domain).toLowerCase(Locale.ROOT);
+    String written = StringUtils.trimToEmpty(domain);
+    if (!StringUtils.isAsciiPrintable(written)) {
+      return null;
+    }
+    String value = written.toLowerCase(Locale.ROOT);
     if (value.isEmpty() || value.endsWith(".") || value.startsWith(".")) {
       return null;
     }
