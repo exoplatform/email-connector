@@ -1,4 +1,5 @@
 {
+  "icon": "fa-envelope",
   "tools": [
     {
       "name": "get_email_by_id",
