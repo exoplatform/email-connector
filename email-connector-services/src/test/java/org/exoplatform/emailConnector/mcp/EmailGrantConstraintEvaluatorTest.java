@@ -126,6 +126,7 @@ class EmailGrantConstraintEvaluatorTest {
     assertFalse(evaluator.matches(SEND, args("to", List.of("a@key.com")), domain("\u212Aey.com")));
     assertNull(evaluator.proposeConstraint(SEND, args("to", List.of("a@\u212Aey.com"))));
     assertEquals("key.com", EmailAddressRules.domainOf("j\u00FCrgen@KEY.com"));
+    assertEquals("a@\u212Aey.com", EmailAddressRules.normalisedAddress(" A@\u212Aey.com "));
   }
 
   /**
