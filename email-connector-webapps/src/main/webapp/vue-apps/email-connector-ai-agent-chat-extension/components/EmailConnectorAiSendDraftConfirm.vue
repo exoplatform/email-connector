@@ -48,22 +48,12 @@ export default {
       const key = this.files.length
         ? 'AiAgentChat.tool.confirm.send_email_draft.withFiles'
         : 'AiAgentChat.tool.confirm.send_email_draft';
-      return this.withLinks(this.$t(key, this.parameters));
+      // No user or content reference is marked: every value is free text (a reply's
+      // subject is a received mail's), and a marking would draw a mention on the card.
+      return this.$t(key, this.parameters);
     },
   },
   methods: {
-    /**
-     * The card's text with the user and content references marked as the AI app's own
-     * approval card marks them, so a draft without files reads as it did before.
-     *
-     * @param {string} text the card's text
-     * @returns {string} the text, its references marked
-     */
-    withLinks(text) {
-      return text
-        .replace(/(\/user:([a-zA-Z0-9]+))/ig, '<user-by-name>$2</user-by-name>')
-        .replace(/(\/[a-z]+:[a-zA-Z0-9]+)/ig, '<content-link>$1</content-link>');
-    },
     /**
      * A value as text inside the card's HTML: the values come from the assistant and,
      * through a reply's subject, from a received mail.
