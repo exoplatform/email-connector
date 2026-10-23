@@ -839,7 +839,7 @@ public class EmailMcpTool implements McpToolPlugin {
     addRecipientsExcluding(ccRecipients, original.getTo(), selfAddress);
     addRecipientsExcluding(ccRecipients, original.getCc(), selfAddress);
     if (share != null) {
-      ccRecipients.removeIf(recipient -> recipient.getAddress().equalsIgnoreCase(share.ownerMailbox()));
+      ccRecipients.removeIf(recipient -> sameAddress(recipient.getAddress(), share.ownerMailbox()));
     }
     reply.setCc(ccRecipients);
     requireSameRecipients("to", to, reply.getTo(), Set.of());
@@ -1297,7 +1297,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * name would be shown where the address it wraps is swallowed as a tag -- the card
    * would name one person while the reply goes to another. The two lists are then
    * compared as sets of {@link #normalisedAddress normalised} addresses: order,
-   * repetition, case and surrounding blanks do not count, an address does. The
+   * repetition, the case of ASCII letters and surrounding blanks do not count, an
+   * address does. The
    * {@code tolerated} addresses -- the ones the server's own rule leaves out -- are
    * dropped from the given list before comparing. Whatever is given, the caller sends
    * the list worked out, never the one given.
@@ -1404,20 +1405,20 @@ public class EmailMcpTool implements McpToolPlugin {
    * @return true for a bare address
    */
   private static boolean isBareAddress(String entry) {
-    String value = StringUtils.trimToEmpty(entry);
-    return !value.isEmpty() && !StringUtils.containsWhitespace(value) && !StringUtils.containsAny(value, '<', '>', '"', ',', ';', '&');
+    return EmailAddressRules.isBareAddress(entry);
   }
 
   /**
-   * An address as recipients are compared: trimmed and lower-cased. Nothing else is
-   * taken away -- a given entry is a bare address ({@link #requireBareAddresses}), so
-   * what is compared is what the approval card shows.
+   * An address as recipients are compared: trimmed, its ASCII letters lower-cased
+   * ({@link EmailAddressRules#normalisedAddress}). Nothing else is taken away -- a
+   * given entry is a bare address ({@link #requireBareAddresses}), so what is
+   * compared is what the approval card shows.
    *
    * @param address the address, possibly null
-   * @return the address, trimmed and lower-cased; empty for a blank one
+   * @return the address, trimmed, its ASCII letters lower-cased; empty for a blank one
    */
   private static String normalisedAddress(String address) {
-    return StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
+    return EmailAddressRules.normalisedAddress(address);
   }
 
   /**
@@ -1439,6 +1440,18 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
+   * Whether two addresses are the same as recipients are compared
+   * ({@link #normalisedAddress}).
+   *
+   * @param address an address, possibly null
+   * @param other another address, possibly null
+   * @return true when both are given and the same once normalised
+   */
+  private static boolean sameAddress(String address, String other) {
+    return StringUtils.isNotBlank(address) && StringUtils.isNotBlank(other) && normalisedAddress(address).equals(normalisedAddress(other));
+  }
+
+  /**
    * Append recipients to the target list, skipping blanks and the excluded (self)
    * address so the current user is never CC'd back on their own reply-all.
    */
@@ -1449,7 +1462,7 @@ public class EmailMcpTool implements McpToolPlugin {
     source.stream()
           .filter(Objects::nonNull)
           .filter(recipient -> StringUtils.isNotBlank(recipient.getAddress()))
-          .filter(recipient -> !recipient.getAddress().equalsIgnoreCase(excludedAddress))
+          .filter(recipient -> !sameAddress(recipient.getAddress(), excludedAddress))
           .forEach(target::add);
   }
 
