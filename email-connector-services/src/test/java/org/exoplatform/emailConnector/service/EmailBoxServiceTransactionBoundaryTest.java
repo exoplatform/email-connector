@@ -111,6 +111,9 @@ class EmailBoxServiceTransactionBoundaryTest {
   private EmailDelegationService        emailDelegationService;
 
   @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
+  @MockitoBean
   private CategoryService               categoryService;
 
   @MockitoBean
@@ -203,6 +206,24 @@ class EmailBoxServiceTransactionBoundaryTest {
 
     Email email = emailBoxService.getOwnedEmailById(id, USERNAME);
 
+    assertEquals(1, email.getContent().getAttachments().size());
+  }
+
+  /**
+   * The live regression of the mail filters: a filter's assistant runs on a background
+   * queue thread, and its post-actions find the matched message again by its Message-ID;
+   * that lookup maps the message's attachments inside a transaction of its own, so the
+   * message comes back whole instead of failing on the lazy collection.
+   */
+  @Test
+  void aFiltersLookupByMessageIdLoadsItsAttachments() throws Exception {
+    cacheMessageWithAttachment();
+    when(userEmailSettingService.canConnect(1L, USERNAME)).thenReturn(true);
+
+    Email email = emailBoxService.getOwnEmailByMailHeaderId(USERNAME, "<inbox-7@example.org>", MailFolder.INBOX);
+
+    assertNotNull(email);
+    assertNotNull(email.getContent().getAttachments());
     assertEquals(1, email.getContent().getAttachments().size());
   }
 

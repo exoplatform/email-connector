@@ -204,4 +204,29 @@ public class Email {
   // NONE. Computed on the reads that feed the reader, never stored.
   @JsonProperty(access = JsonProperty.Access.READ_ONLY)
   private String               readReceiptAddress;
+
+  // On a draft, the mailbox shared with its writer that it was written in (EXO-90595):
+  // the share's delegation id, null for the writer's own mailbox. In on a draft's FIRST
+  // save only, where the server resolves it against the writer's own shares, whatever
+  // their status; ignored by every later save and by every send. Also written by the
+  // import of a draft re-read from the server's Drafts folder (EXO-90598), resolved the
+  // same way from the copy's private header, or -1 (EmailBoxService.
+  // UNRESOLVED_DRAFT_MAILBOX) when that header named a mailbox that could not be
+  // confirmed. Any id that does not resolve -- -1 included -- is read as a mailbox no
+  // longer shared, and NEVER as the writer's own: no reader may map it to null, and the
+  // column carries no foreign key on purpose. Out on every read of a draft, so the
+  // composer resumes it in its own mailbox whatever the switcher shows.
+  private Long                 sendDelegationId;
+
+  // The mailbox named by sendDelegationId, as the Drafts listing shows it (EXO-90595):
+  // its owner, and whether it is still shared. Set on that listing, never stored.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private DraftMailbox         sendMailbox;
+
+  // On a draft of a mailbox shared with its writer, the name it is to go out in
+  // (EXO-90584): NONE, ON_BEHALF or AS, as the composer's picker shows it. In on every save,
+  // where the server normalises it and stores it with the revision -- blank leaves the
+  // stored one as it is; out on every read of a draft, null when the draft never said.
+  // Every send of the draft reads it from the row and checks the owner's consent again.
+  private String               sendMode;
 }

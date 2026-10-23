@@ -18,6 +18,9 @@ package org.exoplatform.emailConnector.model;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -34,6 +37,39 @@ public class EmailContent {
   private List<EmailAttachment> attachments;
 
   private boolean               html;
+
+  /**
+   * Whether the body served to the reader had resources fetched from the internet
+   * (images, backgrounds, fonts) taken out until the user agrees to load them
+   * (EXO-90841). Set on the reads that feed the reader, never stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private boolean               remoteContentBlocked;
+
+  /**
+   * Why the message looks suspicious, one entry per rule it trips (EXO-90841). Empty
+   * when it trips none. Set on the reads that feed the reader, never stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private List<EmailSecurityWarning> securityWarnings;
+
+  /**
+   * The sender-authentication method that failed according to the receiving server's
+   * own {@code Authentication-Results} header (DMARC, SPF or DKIM), null when none did
+   * or the server did not say. Read at sync, when the header still exists, and stored
+   * with the row. Backend-only.
+   */
+  @JsonIgnore
+  private String                authFailure;
+
+  /**
+   * Whether the receiving server's own {@code Authentication-Results} header says the
+   * message passed DMARC for its {@code From} domain (EXO-90893), the condition for
+   * showing the sender's brand logo. Read at sync and stored with the row; false on a
+   * row cached before it was recorded. Backend-only.
+   */
+  @JsonIgnore
+  private boolean               dmarcPassed;
 
   public EmailContent(String body) {
     this.body = body;

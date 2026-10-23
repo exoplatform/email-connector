@@ -16,16 +16,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div>
+    <!-- Lined up with the rows' checkboxes, centred in their 32 px avatar box (EXO-90891). -->
     <v-checkbox
-      class="ps-4 my-2 pt-0"
+      class="ps-5 my-2 pt-0"
       v-if="selectMode"
       :indeterminate="indeterminate"
       color="#707070"
       :background-color="selectAllBackground"
       hide-details
-      :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
+      :aria-label="$t('emailConnector.mailBox.list.drawer.selectAll')"
       v-model="selectedAll"
-      @click.stop />
+      @click.stop>
+      <!-- How many mails are selected, once some are, said where the selection is
+           made; announced as it changes. -->
+      <template #label>
+        <span aria-live="polite">{{ selectAllLabel }}</span>
+      </template>
+    </v-checkbox>
     <email-connector-mail-box-drawer-list
       ref="list"
       :emails="emails"
@@ -90,6 +97,17 @@ export default {
       set(value) {
         this.onSelectAllChange(value);
       }
+    },
+    /**
+     * What the select-all control says: "Select all" until something is selected, then
+     * how many mails are.
+     *
+     * @returns {String} the label
+     */
+    selectAllLabel() {
+      return this.selectedEmails.length
+        ? this.$t('emailConnector.mailBox.list.drawer.multiSelect.count', { 0: this.selectedEmails.length })
+        : this.$t('emailConnector.mailBox.list.drawer.selectAll');
     },
     /**
      * The select-all row's background: none in full screen, where the list sits on the

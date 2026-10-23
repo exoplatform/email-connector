@@ -140,15 +140,24 @@ public class EmailFolderService {
   public static final String      UNKNOWN_FOLDER_MESSAGE             = "emailConnector.folder.unknown";
 
   /**
-   * The longest name a user may type for a folder they create or rename to. Bound by
-   * {@code DISPLAY_NAME VARCHAR(255)} rather than {@code REMOTE_NAME VARCHAR(500)}:
-   * for a folder this add-on writes (create) or moves within its own parent (rename),
-   * the remote name IS the display name -- there is no server-supplied path to make
-   * the two diverge the way discovery's {@code StringUtils.abbreviate(255)} allows --
-   * so the tighter of the two columns is the real limit, and typing past it is refused
-   * rather than silently shortened the way a discovered name is.
+   * The longest name a user may type for a folder they create or rename to: the
+   * folder's own name, which the registry keeps as its {@code DISPLAY_NAME VARCHAR(255)}.
+   * Typing past it is refused rather than silently shortened the way a discovered name
+   * is. The full name a folder gets inside its parents has its own bound,
+   * {@link #MAX_FOLDER_FULL_NAME_LENGTH}.
    */
   public static final int         MAX_FOLDER_NAME_LENGTH             = 255;
+
+  /**
+   * The longest full name a folder this add-on creates, renames or moves may get -- its
+   * parents' names, the delimiters and its own name -- and so may any folder inside it:
+   * the registry keeps it as {@code REMOTE_NAME VARCHAR(500)}. Checked before the
+   * server is asked, so the server never holds a folder the registry cannot.
+   */
+  public static final int         MAX_FOLDER_FULL_NAME_LENGTH        = 500;
+
+  /** The message code a full name past {@link #MAX_FOLDER_FULL_NAME_LENGTH} carries. */
+  public static final String      FOLDER_FULL_NAME_TOO_LONG_MESSAGE  = "emailConnector.folder.path.tooLong";
 
   /** The message code a blank or whitespace-only typed name carries. */
   public static final String      FOLDER_NAME_BLANK_MESSAGE          = "emailConnector.folder.name.blank";
@@ -158,12 +167,10 @@ public class EmailFolderService {
 
   /**
    * The message code a typed name carrying the server's own hierarchy delimiter
-   * carries -- creating or renaming into a NESTED folder is refused in v1 rather than
-   * supported half-way (no parent picker, no path typing): every existing custom
-   * folder, nested ones included, is still shown, opted in and moved to and from; what
-   * is refused is a user typing the separator themselves, which would either silently
-   * create a sub-folder under whatever the last segment before it names (if it
-   * exists) or be refused by the server for a segment that does not.
+   * carries. A folder is nested by choosing its parent (EXO-90839: create under a
+   * parent, move under another), never by typing a path: a typed separator would
+   * either silently create a sub-folder under whatever the segment before it names (if
+   * it exists) or be refused by the server for a segment that does not.
    */
   public static final String      FOLDER_NAME_NESTED_MESSAGE         = "emailConnector.folder.name.nested";
 
@@ -201,6 +208,30 @@ public class EmailFolderService {
 
   /** The message code a server-refused DELETE carries. */
   public static final String      FOLDER_DELETE_FAILED_MESSAGE       = "emailConnector.folder.deleteFailed";
+
+  /**
+   * The message code a parent a folder cannot be created in or moved under carries: not
+   * one of the user's own folders, a folder the last walk did not find, a mailbox with
+   * no hierarchy delimiter, or -- for a move -- the folder itself or one inside it.
+   */
+  public static final String      FOLDER_PARENT_INVALID_MESSAGE      = "emailConnector.folder.parent.invalid";
+
+  /**
+   * The message code a delete carries when the folder has sub-folders on the server and
+   * the caller did not say it deletes them too -- a client that never showed the
+   * confirmation saying so never destroys more than the folder it named.
+   */
+  public static final String      FOLDER_HAS_SUB_FOLDERS_MESSAGE     = "emailConnector.folder.hasSubFolders";
+
+  /**
+   * The message code a delete, a rename or a move carries when a folder inside the
+   * folder is one the mailbox uses as a built-in (its Sent, Archive, Drafts, Trash or
+   * Spam): never deleted, renamed or moved as a sub-folder of the user's own.
+   */
+  public static final String      FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE = "emailConnector.folder.subFolderBuiltIn";
+
+  /** The message code a delete carries when a sub-folder of the folder still holds mail. */
+  public static final String      FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE = "emailConnector.folder.subFolderNotEmpty";
 
   // The reserved-namespace bracket every big provider parks its own special-use tree
   // under (Gmail's [Gmail]/Spam, [Gmail]/Trash, ...). A folder the user types starting
@@ -752,16 +783,30 @@ public class EmailFolderService {
    * that walk has a chance to see it.
    *
    * @param username the mailbox owner
-   * @param remoteName the folder's full name on the server, as created (top-level, so
-   *          this is also its display name in v1 -- see {@link #FOLDER_NAME_NESTED_MESSAGE})
+   * @param remoteName the folder's full name on the server, as created at the top
+   *          level, so also its display name
    * @param delimiter the mailbox's hierarchy separator, for path rendering later
    * @return the registered row, opt-in off
    */
   public EmailFolder registerCreatedFolder(String username, String remoteName, String delimiter) {
+    return registerCreatedFolder(username, remoteName, remoteName, delimiter);
+  }
+
+  /**
+   * Registers the row for a folder this add-on just created on the server, top-level
+   * or inside one of the user's folders -- see {@link #registerCreatedFolder(String, String, String)}.
+   *
+   * @param username the mailbox owner
+   * @param remoteName the folder's full name on the server, as created
+   * @param displayName its own name, the last segment of that full name
+   * @param delimiter the mailbox's hierarchy separator, for path rendering later
+   * @return the registered row, opt-in off
+   */
+  public EmailFolder registerCreatedFolder(String username, String remoteName, String displayName, String delimiter) {
     EmailFolder folder = new EmailFolder();
     folder.setUserId(username);
     folder.setRemoteName(remoteName);
-    folder.setDisplayName(remoteName);
+    folder.setDisplayName(displayName);
     folder.setDelimiter(delimiter);
     folder.setType(MailFolderView.TYPE_CUSTOM);
     Date now = new Date();
@@ -817,6 +862,141 @@ public class EmailFolderService {
   }
 
   /**
+   * Moves the registry rows of a folder this add-on just renamed or moved on the server,
+   * and of every folder inside it: an IMAP {@code RENAME} takes the folder's inferiors
+   * with it (RFC 3501 6.3.5), so each registered descendant gets the new prefix in
+   * place of the old one, its own name unchanged. Every row keeps its id, and with it
+   * the {@code CUSTOM:<id>} key its mirrored rows carry, its opt-in and its sync memory
+   * -- see {@link #renameFolder}. Without the descendants, the next walk would find
+   * them under names the registry does not know, mark the old rows missing, purge them
+   * and register new ones: the user's opt-ins and mirrors lost for a rename of the
+   * parent. A descendant whose row cannot be written (a stale row already holding its
+   * new name) is left to that walk rather than failing a rename the server already
+   * made.
+   *
+   * @param username the mailbox owner
+   * @param folder the folder as registered before the change
+   * @param remoteName its new full name on the server
+   * @param displayName its new own name
+   * @return the folder's row as it now stands
+   */
+  public EmailFolder relocateFolder(String username, EmailFolder folder, String remoteName, String displayName) {
+    List<EmailFolder> descendants = getOwnDescendants(username, folder);
+    // A name kept from the server on a move may be longer than the column, as a
+    // discovered one may: shortened the way discovery shortens it.
+    EmailFolder relocated = emailFolderStorage.renameFolder(username,
+                                                            folder.getId(),
+                                                            remoteName,
+                                                            StringUtils.abbreviate(displayName, MAX_FOLDER_NAME_LENGTH));
+    String oldName = folder.getRemoteName();
+    for (EmailFolder descendant : descendants) {
+      String descendantName = remoteName + descendant.getRemoteName().substring(oldName.length());
+      try {
+        emailFolderStorage.renameFolder(username, descendant.getId(), descendantName, descendant.getDisplayName());
+      } catch (RuntimeException e) {
+        LOG.warn("Could not follow the rename of folder '{}' of user {} to '{}'; the next walk registers it again",
+                 descendant.getRemoteName(),
+                 username,
+                 descendantName,
+                 e);
+      }
+    }
+    return relocated;
+  }
+
+  /**
+   * Refuses a new full name the registry could not keep: the name itself, or -- for a
+   * folder that is renamed or moved -- the longest name one of the registered folders
+   * inside it would get. See {@link #MAX_FOLDER_FULL_NAME_LENGTH}.
+   *
+   * @param username the mailbox owner
+   * @param folder the folder renamed or moved, or null for a folder being created
+   * @param newRemoteName its new full name
+   * @throws IllegalArgumentException {@link #FOLDER_FULL_NAME_TOO_LONG_MESSAGE} past the bound
+   */
+  public void checkFullNameFits(String username, EmailFolder folder, String newRemoteName) {
+    int longest = newRemoteName.length();
+    if (folder != null) {
+      int growth = newRemoteName.length() - folder.getRemoteName().length();
+      for (EmailFolder descendant : getOwnDescendants(username, folder)) {
+        longest = Math.max(longest, descendant.getRemoteName().length() + growth);
+      }
+    }
+    if (longest > MAX_FOLDER_FULL_NAME_LENGTH) {
+      throw new IllegalArgumentException(FOLDER_FULL_NAME_TOO_LONG_MESSAGE);
+    }
+  }
+
+  /**
+   * The user's own registered folders inside a folder, at any depth, by full name and
+   * the folder's own delimiter -- the rows a rename, a move or a delete of the folder
+   * takes along. Never a folder of a mailbox shared with the user ({@link #getFolders}
+   * lists the user's own only).
+   *
+   * @param username the mailbox owner
+   * @param folder the folder
+   * @return the folders inside it, possibly empty, never null
+   */
+  public List<EmailFolder> getOwnDescendants(String username, EmailFolder folder) {
+    if (folder == null || StringUtils.isBlank(folder.getRemoteName()) || StringUtils.isEmpty(folder.getDelimiter())) {
+      return List.of();
+    }
+    return emailFolderStorage.getFolders(username)
+                             .stream()
+                             .filter(candidate -> !folder.getId().equals(candidate.getId()))
+                             .filter(candidate -> isInside(candidate.getRemoteName(), folder.getRemoteName(), folder.getDelimiter()))
+                             .toList();
+  }
+
+  /**
+   * One of the user's own folders as the parent of a folder created or moved inside
+   * it: registered, the user's own (never a folder of a mailbox shared with them),
+   * present on the server at the last walk, and on a mailbox that has a hierarchy
+   * delimiter -- a flat namespace has no inside.
+   *
+   * @param username the mailbox owner
+   * @param parentId the parent's registry id
+   * @return the parent, never null
+   * @throws IllegalArgumentException {@link #UNKNOWN_FOLDER_MESSAGE} for no such folder
+   *           of the user's, {@link #FOLDER_PARENT_INVALID_MESSAGE} for one that cannot
+   *           hold a folder
+   */
+  public EmailFolder getParentFolder(String username, long parentId) {
+    EmailFolder parent = getFolder(username, parentId);
+    if (parent.getDelegationId() != null || !MailFolderView.TYPE_CUSTOM.equals(parent.getType()) || parent.isMissing()
+        || StringUtils.isEmpty(parent.getDelimiter()) || StringUtils.isBlank(parent.getRemoteName())) {
+      throw new IllegalArgumentException(FOLDER_PARENT_INVALID_MESSAGE);
+    }
+    return parent;
+  }
+
+  /**
+   * Whether a full name lies strictly inside another, at any depth: the ancestor's name
+   * followed by the delimiter is its prefix. A folder is never inside itself, and on a
+   * flat namespace nothing is inside anything.
+   *
+   * @param fullName the candidate's full name
+   * @param ancestor the ancestor's full name
+   * @param delimiter the hierarchy delimiter
+   * @return true when the candidate is inside the ancestor
+   */
+  public static boolean isInside(String fullName, String ancestor, String delimiter) {
+    return StringUtils.isNotEmpty(delimiter) && StringUtils.isNotBlank(fullName) && StringUtils.isNotBlank(ancestor)
+        && fullName.startsWith(ancestor + delimiter);
+  }
+
+  /**
+   * A folder's own name: its full name without its parent's prefix -- what a move keeps
+   * when it only changes the parent.
+   *
+   * @param folder the folder
+   * @return the last segment of its full name, as the server spells it
+   */
+  public static String ownName(EmailFolder folder) {
+    return folder.getRemoteName().substring(parentPrefix(folder.getRemoteName(), folder.getDelimiter()).length());
+  }
+
+  /**
    * Drops one registered folder -- the explicit-delete counterpart of
    * {@link #deleteFolders}, which drops every row of a mailbox wipe. The mirrored rows
    * this folder kept are NOT deleted here, for the reason {@link #reconcileDiscovered}
@@ -833,9 +1013,8 @@ public class EmailFolderService {
   /**
    * The parent prefix of a full name -- everything up to and including the last
    * occurrence of the delimiter, or the empty string on a top-level folder or a flat
-   * namespace. What a rename adds the new last segment onto, so a rename can only ever
-   * change a folder's own name, never move it to a different parent (v1 does not offer
-   * a parent picker -- see {@link #FOLDER_NAME_NESTED_MESSAGE}).
+   * namespace. What a rename adds the new last segment onto, so a rename only ever
+   * changes a folder's own name; a move to another parent is its own act.
    *
    * @param fullName the folder's current full name
    * @param delimiter the mailbox's hierarchy separator, or null/blank on a flat

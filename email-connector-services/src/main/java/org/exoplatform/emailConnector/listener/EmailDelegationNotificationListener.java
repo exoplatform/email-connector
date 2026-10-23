@@ -16,17 +16,26 @@
  */
 package org.exoplatform.emailConnector.listener;
 
+import java.util.List;
+import java.util.Map;
+
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.model.NotificationInfo;
 import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
+import org.exoplatform.commons.api.notification.service.WebNotificationService;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEventType;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationResponseNotificationPlugin;
@@ -52,6 +61,10 @@ import org.exoplatform.services.log.Log;
  * The grantee-facing ones are never gated: the server notifies the <i>owner</i>, and
  * on the servers observed the grantee is told nothing by anybody but eXo.
  * <p>
+ * The grantee's invitation is also kept up to date (EXO-90830): once the share no
+ * longer waits, its stored web notification says how it stands, and stops offering
+ * Accept and Refuse.
+ * <p>
  * AFTER_COMMIT with a fallback, like this package's other outward-facing listener: a
  * notification about a state change that then rolled back is a message about something
  * that never happened, and it cannot be taken back. The fallback covers the ordinary
@@ -61,7 +74,22 @@ import org.exoplatform.services.log.Log;
 @Component
 public class EmailDelegationNotificationListener {
 
-  private static final Log       LOG = ExoLogger.getLogger(EmailDelegationNotificationListener.class);
+  private static final Log       LOG                       = ExoLogger.getLogger(EmailDelegationNotificationListener.class);
+
+  /**
+   * The response a consent to writing in the owner's name is told under, before the
+   * mode's name: {@code SEND_MODE_ON_BEHALF}, {@code SEND_MODE_AS}, {@code SEND_MODE_NONE}.
+   */
+  static final String            SEND_MODE_RESPONSE_PREFIX = "SEND_MODE_";
+
+  /**
+   * How many stored invitations of one share are brought up to date at most: one per
+   * invite, and a share is invited again only after its owner revoked it.
+   */
+  static final int               INVITATIONS_LIMIT         = 10;
+
+  @Autowired
+  private WebNotificationService webNotificationService;
 
   /**
    * Routes one delegation transition to the person it concerns.
@@ -79,6 +107,7 @@ public class EmailDelegationNotificationListener {
       case INVITED -> notifyGrantee(delegation);
       case ACCEPTED, DECLINED, LEFT -> notifyOwner(delegation, event.type());
       case REVOKED -> notifyRevokedGrantee(delegation);
+      case SEND_MODE_CHANGED -> notifySendMode(delegation);
       // A transition added to the enum without a line here would otherwise notify
       // nobody in silence; this says so in the log rather than in nothing at all.
       default -> LOG.debug("Delegation {} went {}, which nothing here is written to tell anybody about",
@@ -89,6 +118,64 @@ public class EmailDelegationNotificationListener {
       // A notification is never worth failing the act it reports: the share is granted,
       // accepted or revoked on the server whatever the notification service answers.
       LOG.warn("The mailbox delegation {} of {} could not be notified", event.type(), delegation.getId(), e);
+    }
+    try {
+      markInvitations(delegation, invitationStatus(event.type(), delegation));
+    } catch (RuntimeException | LinkageError e) {
+      // The invitation then keeps offering Accept and Refuse, and the server's answer
+      // to either says the share is no longer waiting: worse, never wrong.
+      LOG.warn("The invitation to mailbox delegation {} could not be marked {}", delegation.getId(), event.type(), e);
+    }
+  }
+
+  /**
+   * Where the share an invitation is about now stands, as its stored web notification
+   * says it once it no longer waits (EXO-90830) -- the space invitation's pattern, whose
+   * stored notification is marked once the invitation is answered so that it stops
+   * offering its buttons, wherever the answer was given.
+   * <p>
+   * The transition names the outcome rather than the row's status, because a left share
+   * goes back to DECLINED or AVAILABLE and the reader is owed "you stopped using it",
+   * not "you refused it". A rights change says something only when it found the share
+   * gone; the other transitions leave the invitation where it was.
+   *
+   * @param type the transition
+   * @param delegation the row as it now stands
+   * @return the status to write, or null when the invitation is not concerned
+   */
+  static String invitationStatus(EmailDelegationEventType type, EmailDelegation delegation) {
+    return switch (type) {
+    case ACCEPTED, DECLINED, LEFT, REVOKED -> type.name();
+    case RIGHTS_CHANGED -> delegation.getStatus() == DelegationStatus.REVOKED
+                           || delegation.getStatus() == DelegationStatus.GONE ? EmailDelegationEventType.REVOKED.name() : null;
+    default -> null;
+    };
+  }
+
+  /**
+   * Writes where the share now stands onto the grantee's stored invitations to it, so
+   * that each one shows the outcome instead of Accept and Refuse -- on every device, and
+   * whichever screen the answer was given on. Only the parameter is written: the
+   * notification keeps its place and its read state: an answer is the grantee's own act,
+   * and a revocation reaches them through a notification of its own.
+   *
+   * @param delegation the row
+   * @param status the status to write, or null to leave the invitations alone
+   */
+  private void markInvitations(EmailDelegation delegation, String status) {
+    if (status == null || StringUtils.isBlank(delegation.getGranteeId())
+        || delegation.getId() == null) {
+      return;
+    }
+    WebNotificationFilter filter = new WebNotificationFilter(delegation.getGranteeId());
+    filter.setPluginKey(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN));
+    filter.setParameter(NotificationConstants.DELEGATION_ID, String.valueOf(delegation.getId()));
+    List<NotificationInfo> invitations = webNotificationService.getNotificationInfos(filter, 0, INVITATIONS_LIMIT);
+    for (NotificationInfo invitation : invitations) {
+      if (!status.equals(invitation.getValueOwnerParameter(NotificationConstants.DELEGATION_STATUS))) {
+        webNotificationService.updateNotificationParameters(invitation.getId(),
+                                                            Map.of(NotificationConstants.DELEGATION_STATUS, status));
+      }
     }
   }
 
@@ -147,7 +234,7 @@ public class EmailDelegationNotificationListener {
     if (StringUtils.isBlank(delegation.getOwnerId()) || StringUtils.isBlank(delegation.getGranteeId())) {
       return;
     }
-    dispatchResponse(delegation.getOwnerId(), delegation.getGranteeId(), delegation, type);
+    dispatchResponse(delegation.getOwnerId(), delegation.getGranteeId(), delegation, type.name());
   }
 
   /**
@@ -163,7 +250,26 @@ public class EmailDelegationNotificationListener {
     dispatchResponse(delegation.getGranteeId(),
                      delegation.getOwnerId(),
                      delegation,
-                     EmailDelegationEventType.REVOKED);
+                     EmailDelegationEventType.REVOKED.name());
+  }
+
+  /**
+   * Tells the grantee the owner set, changed or withdrew her consent to them writing mail
+   * in her name (EXO-90582), as one more "where that share now stands" news -- the
+   * response names the consent as it now stands: {@code SEND_MODE_ON_BEHALF},
+   * {@code SEND_MODE_AS} or {@code SEND_MODE_NONE}. Only a grantee using the share is
+   * told: one still invited has the invitation, and reads the consent on the share when
+   * they accept it (PO decision Q-B). Never gated: no mail server tells the grantee.
+   *
+   * @param delegation the row, carrying the consent as it now stands
+   */
+  private void notifySendMode(EmailDelegation delegation) {
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED || StringUtils.isBlank(delegation.getGranteeId())
+        || StringUtils.isBlank(delegation.getOwnerId())) {
+      return;
+    }
+    SendMode mode = delegation.getSendMode() == null ? SendMode.NONE : delegation.getSendMode();
+    dispatchResponse(delegation.getGranteeId(), delegation.getOwnerId(), delegation, SEND_MODE_RESPONSE_PREFIX + mode.name());
   }
 
   /**
@@ -172,15 +278,15 @@ public class EmailDelegationNotificationListener {
    * @param receiver who is told
    * @param actor whose act it was
    * @param delegation the row
-   * @param type the transition
+   * @param response which news it is: a transition's name, or a consent's
    */
-  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, EmailDelegationEventType type) {
+  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, String response) {
     NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                      .append(BaseEmailDelegationNotificationPlugin.RECEIVER, receiver)
                                                      .append(BaseEmailDelegationNotificationPlugin.ACTOR, actor)
                                                      .append(BaseEmailDelegationNotificationPlugin.DELEGATION_ID,
                                                              String.valueOf(delegation.getId()))
-                                                     .append(EmailDelegationResponseNotificationPlugin.RESPONSE, type.name());
+                                                     .append(EmailDelegationResponseNotificationPlugin.RESPONSE, response);
     dispatch(ctx, NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN);
   }
 

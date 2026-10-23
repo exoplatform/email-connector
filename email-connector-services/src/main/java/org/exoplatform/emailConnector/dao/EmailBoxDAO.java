@@ -190,6 +190,146 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * The owner's cached copies of some messages, by their Message-IDs, outside the given
+   * folders, as the light rows a list of mails shows: what the mailbox's "Suggestions"
+   * view lists (EXO-90851). No body, no attachment. Never called with an empty list of
+   * Message-IDs -- an empty {@code IN} is not valid SQL everywhere --; the mailbox's
+   * pending cap on suggestions bounds it.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs, not empty
+   * @param excludedFolders the folders left out, not empty
+   * @return rows of {@code [id, folder, mailHeaderId, mailRemoteId, subject, sender,
+   *         receivedDate, read, starred, threadId]}, newest first
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.subject, email.sender, email.receivedDate,"
+      + " email.read, email.starred, email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds"
+      + " AND email.folder NOT IN :excludedFolders AND email.draftLocalId IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
+  List<Object[]> findListedByUserIdAndMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  Collection<String> mailHeaderIds, @Param("excludedFolders")
+  Collection<String> excludedFolders);
+
+  /**
+   * Some folders of the cached mailbox WITHOUT their attachments, for the search over
+   * cached mail: the folders of the mailboxes shared with the user that the unified
+   * search reads (EXO-90554). Never called with an empty list -- an empty {@code IN}
+   * is not valid SQL everywhere.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the {@code CUSTOM:<id>} keys to read
+   * @return their cached messages, newest first, attachments not fetched
+   */
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder IN :folders ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdAndFoldersForSearch(@Param("userId")
+  String userId, @Param("folders")
+  Collection<String> folders);
+
+  /**
+   * One page of a mailbox's cached messages whose subject or sender contains a
+   * keyword, for the editors' "/mail" link picker.
+   * <p>
+   * A projection, not the entity: the picker shows a subject and nothing else, so
+   * neither the body nor the attachments are read. The sender column stores
+   * {@code name,address}, so one {@code LIKE} on it matches the name and the
+   * address alike. Both sides are lowered, the pattern by the caller, so the match
+   * is case-insensitive on every database whatever its collation. The escape
+   * character is {@code !}, not a backslash, which MySQL would read as the escape
+   * of the SQL string literal itself.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param excludedFolders the folders never offered (drafts, trash, junk)
+   * @param pattern the lower-cased {@code %keyword%} pattern, its {@code %},
+   *          {@code _} and {@code !} escaped with {@code !}
+   * @param offset how many matches to skip
+   * @param limit how many matches at most
+   * @return rows of {@code [id, subject, sender, receivedDate]}, newest first
+   */
+  @Query("SELECT email.id, email.subject, email.sender, email.receivedDate FROM EmailBoxEntity email"
+      + " WHERE email.userId = :userId AND email.folder NOT IN :excludedFolders"
+      + " AND (LOWER(email.subject) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) LIKE :pattern ESCAPE '!')"
+      + " ORDER BY email.receivedDate DESC, email.id DESC LIMIT :limit OFFSET :offset")
+  List<Object[]> findLinkCandidatesByUserId(@Param("userId")
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders, @Param("pattern")
+  String pattern, @Param("offset")
+  int offset, @Param("limit")
+  int limit);
+
+  /**
+   * One message of a mailbox sent from an address, if there is any (EXO-90891): what
+   * lets the mail list name the owner of a connected mailbox only to a user who holds
+   * mail from it. The sender column stores {@code name,address}, or the address alone;
+   * both sides are lowered, so the match ignores case on every database.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param pattern the lower-cased {@code %,address} pattern, its {@code %}, {@code _}
+   *          and {@code !} escaped with {@code !}
+   * @param address the lower-cased address, for a column holding it alone
+   * @return the id of one such message, or an empty list
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId"
+      + " AND (LOWER(email.sender) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) = :address) LIMIT 1")
+  List<Long> findOneIdBySenderAddress(@Param("userId")
+  String userId, @Param("pattern")
+  String pattern, @Param("address")
+  String address);
+
+  /**
+   * One message of a mailbox sent from an address that the receiving server vouched
+   * for, if there is any (EXO-90893): DMARC passed for its domain and no sender check
+   * failed. What lets the mail list offer the brand logo of an address only to a user
+   * who holds genuine mail from it. Matched as {@link #findOneIdBySenderAddress}.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param pattern the lower-cased {@code %,address} pattern, its {@code %}, {@code _}
+   *          and {@code !} escaped with {@code !}
+   * @param address the lower-cased address, for a column holding it alone
+   * @return the id of one such message, or an empty list
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.dmarcPass = TRUE"
+      + " AND email.authFailure IS NULL"
+      + " AND (LOWER(email.sender) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) = :address) LIMIT 1")
+  List<Long> findOneVerifiedIdBySenderAddress(@Param("userId")
+  String userId, @Param("pattern")
+  String pattern, @Param("address")
+  String address);
+
+  /**
+   * The newest rows of a folder whose DMARC verdict was never recorded (EXO-90909):
+   * cached before changeset 1.0.0-exo-90893-01, so the list cannot offer their sender's brand
+   * logo. The key projection {@code [id, folder, mailHeaderId, mailRemoteId, sender]}
+   * the verdict is filled in from.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param folder the folder discriminator
+   * @param pageable how many, the newest first
+   * @return the rows' keys and senders
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.sender FROM EmailBoxEntity email"
+      + " WHERE email.userId = :userId AND email.folder = :folder AND email.dmarcPass IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
+  List<Object[]> findWithoutDmarcVerdict(@Param("userId")
+  String userId, @Param("folder")
+  String folder, Pageable pageable);
+
+  /**
+   * Records the DMARC verdict of rows that had none (EXO-90909); a row given one
+   * meanwhile, by a sync, keeps its own.
+   *
+   * @param userId the mailbox owner: only their own rows are written
+   * @param ids the rows
+   * @param dmarcPass the verdict
+   * @return how many rows were written
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.dmarcPass = :dmarcPass WHERE email.userId = :userId AND email.id IN :ids AND email.dmarcPass IS NULL")
+  int setDmarcVerdict(@Param("userId")
+  String userId, @Param("ids")
+  Collection<Long> ids, @Param("dmarcPass")
+  boolean dmarcPass);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
@@ -565,6 +705,24 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder);
 
   /**
+   * The UIDs of a folder's cached rows carrying a given Message-ID: what the undo of a
+   * move reads to find, at its UID, a message the server's search misses, once the
+   * folder has been re-read since the move. UIDs only, for the reason the id lookup
+   * above gives: nothing else of the row is needed.
+   *
+   * @param mailHeaderId the Message-ID to look for
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator to look in
+   * @return the UIDs of the matching rows that carry one
+   */
+  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId"
+      + " AND email.folder = :folder AND email.mailRemoteId IS NOT NULL")
+  List<Long> findUidsByMailHeaderIdAndUserIdAndFolder(@Param("mailHeaderId")
+  String mailHeaderId, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
    * Cuts a draft's row loose from the copy it had on the mail server: the state
    * goes back to {@link org.exoplatform.emailConnector.model.DraftState#LOCAL_ONLY}
    * and the UID is cleared. Used by the Drafts sync when the copy this row pointed
@@ -713,6 +871,41 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Object[]> summarizeThreadsByUserIdInFolders(@Param("userId")
   String userId, @Param("folders")
   List<String> folders);
+
+  /**
+   * {@link #summarizeThreadsByUserId} over some conversations only: what a list of
+   * search hits or of the "Suggestions" view counts its mails' conversations by
+   * (EXO-90882), so a search does not aggregate the whole mailbox to read a page of
+   * them. Never called with an empty list of thread ids -- an empty {@code IN} is not
+   * valid SQL everywhere.
+   *
+   * @param userId the mailbox owner
+   * @param threadIds the conversations, not empty
+   * @param excludedFolders the folders to leave out, the hidden ones at least
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per conversation
+   *         found
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds AND email.folder NOT IN :excludedFolders GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserIdAndThreadIds(@Param("userId")
+  String userId, @Param("threadIds")
+  Collection<String> threadIds, @Param("excludedFolders")
+  Collection<String> excludedFolders);
+
+  /**
+   * {@link #summarizeThreadsByUserIdInFolders} over some conversations only, for the
+   * same lists (EXO-90882). Never called with an empty list.
+   *
+   * @param userId the mirror's owner -- for a shared mailbox, the delegate
+   * @param threadIds the conversations, not empty
+   * @param folders the folders to count, the shared mailbox's {@code CUSTOM:<id>} keys
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per conversation
+   *         found
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds AND email.folder IN :folders GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserIdAndThreadIdsInFolders(@Param("userId")
+  String userId, @Param("threadIds")
+  Collection<String> threadIds, @Param("folders")
+  Collection<String> folders);
 
   /**
    * Who wrote the messages of each conversation that carries an unsent draft, with
@@ -879,21 +1072,37 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> threadIds);
 
   /**
-   * Of the given IMAP UIDs, the ones already cached in a folder — one IN query
-   * for the whole search result list, so decorating hits with their "already
-   * openable locally" flag costs a single statement rather than one lookup per
-   * hit (the same per-row discipline the sync reconcile follows).
+   * Of the given IMAP UIDs, the cached ones in a folder of one user, each with its
+   * row's local id -- the (UID, id) pairs a search result list is decorated with, so a
+   * hit found on the mail server names its mail by the key the agent tools take
+   * (EXO-90555), in one IN statement for the whole page.
+   * Scoped by owner and folder: a UID numbers a message within one folder only.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the candidate IMAP UIDs
-   * @return the subset of {@code mailRemoteIds} present in the local cache
+   * @return {UID, id} pairs of the cached ones
    */
-  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
-  List<Long> findCachedMailRemoteIds(@Param("userId")
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Object[]> findCachedIdsByMailRemoteIds(@Param("userId")
   String userId, @Param("folder")
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds);
+
+  /**
+   * Every message of one user's folder that eXo holds with its IMAP UID, as (UID, id)
+   * pairs: what a server search narrowed to categories starts from (EXO-90888), the
+   * categories being eXo's links on these rows. A draft not yet on the server has no
+   * UID and is left out. A projection: no body, recipient or attachment is read.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return {UID, id} pairs of the folder's cached messages
+   */
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IS NOT NULL")
+  List<Object[]> findCachedIdsByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
 
   /**
    * The identity of a conversation's real mail, newest first — what a stored summary

@@ -223,6 +223,30 @@ public class EmailCredentialsResolver {
   }
 
   /**
+   * Whether a provider of that exact name is registered with the platform's credentials
+   * contract. A connector may name a provider an add-on contributes (the BlueMind
+   * service account); without that add-on the name is known to nobody, and asking it
+   * anything throws. Answers true when the registry itself cannot be read, so a caller
+   * falls back to asking the provider and reports whatever that says.
+   *
+   * @param providerName the provider a connector is configured with
+   * @return false when no provider of that name is registered, or the name is blank
+   */
+  public boolean isProviderRegistered(String providerName) {
+    if (StringUtils.isBlank(providerName)) {
+      return false;
+    }
+    try {
+      return connectorCredentialsService.getProviders()
+                                        .stream()
+                                        .anyMatch(provider -> providerName.equals(provider.getName()));
+    } catch (RuntimeException e) {
+      LOG.debug("The credentials providers could not be listed", e);
+      return true;
+    }
+  }
+
+  /**
    * Whether a refused credential is worth one more attempt after invalidating it: only
    * for a provider that produces its material itself (no user action), whose
    * invalidation can yield something new. A provider carrying what the user typed would

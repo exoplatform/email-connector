@@ -65,6 +65,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.upload.UploadService;
@@ -351,6 +352,31 @@ public class EmailBoxStorageTest {
     assertNotNull(retrievedEmail);
   }
 
+  /**
+   * The reader's sender picture after the platform photo is read from the reading
+   * user's own contacts (EXO-90908): the storage hands the contact lookup the user it
+   * reads the message for.
+   */
+  @Test
+  void theReaderAsksTheReadingUsersOwnContactsForItsSendersPicture() {
+    Email email1 = email("root");
+    email1.setSender(new EmailSender("Ann", "ann@client.org", null, null));
+    emailBoxStorage.createEmail(email1);
+    List<String> asked = new ArrayList<>();
+    EmailConnectorUtils.setSenderProfileResolver(address -> null);
+    EmailConnectorUtils.setContactPhotoResolver((reader, address) -> {
+      asked.add(reader + " " + address);
+      return "root".equals(reader) ? "root-contact" : null;
+    });
+    try {
+      assertEquals("root-contact", emailBoxStorage.getEmailById(ID, "root", null).getSender().getAvatarUrl());
+      assertEquals(List.of("root ann@client.org"), asked);
+    } finally {
+      EmailConnectorUtils.setSenderProfileResolver(null);
+      EmailConnectorUtils.setContactPhotoResolver(null);
+    }
+  }
+
   @Test
   void getEmails() {
     List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
@@ -561,7 +587,11 @@ public class EmailBoxStorageTest {
                                                        false,
                                                        null,
                                                        null,
-                                                       false);
+                                                       false,
+                                                       null,
+                                                       null,
+                                                       null,
+                                                       null);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -807,7 +837,7 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null);
+                     false, null, null, false, null, null, null, null, null, null);
   }
 
   /**
@@ -859,5 +889,18 @@ public class EmailBoxStorageTest {
 
   private EmailAttachment emailAttachment() {
     return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX, null, null, null);
+  }
+
+  /**
+   * EXO-90555 -- the (UID, id) pairs of a search page become the local ids by UID, each
+   * UID mapped to its own row -- never the reverse -- and nothing is asked for no UID.
+   */
+  @Test
+  void theCachedIdsOfAPageAreMappedByUid() {
+    when(emailBoxDAO.findCachedIdsByMailRemoteIds("user", MailFolder.INBOX, List.of(8L, 9L))).thenReturn(List.<Object[]>of(new Object[] { 8L, 42L }));
+
+    assertEquals(Map.of(8L, 42L), emailBoxStorage.getCachedEmailIds("user", MailFolder.INBOX, List.of(8L, 9L)));
+    assertEquals(Map.of(), emailBoxStorage.getCachedEmailIds("user", MailFolder.INBOX, List.of()));
+    verify(emailBoxDAO, times(1)).findCachedIdsByMailRemoteIds(anyString(), anyString(), anyList());
   }
 }

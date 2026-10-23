@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -221,6 +222,105 @@ public class EmailScheduledSendStorageTest {
   }
 
   /**
+   * A mail held for its Undo (EXO-90837) is out of the Drafts list and out of the
+   * "Scheduled" view, its badge and the limit's count; only the held-mail scan finds it
+   * once due, never the scheduled-mail scan; it is claimed from HELD, once, and never by
+   * a claim from SCHEDULED. The statuses go through the real statements on the
+   * changelog-built database.
+   */
+  @Test
+  void aHeldMailIsUnlistedAndClaimedOnlyFromHeldOnceDue() {
+    EmailScheduledSend held = storage.create(heldRow(draft("held"), new Date(NOW.getTime() - 1000)));
+    EmailScheduledSend notYet = storage.create(heldRow(draft("not-yet"), new Date(NOW.getTime() + 10_000)));
+    EmailScheduledSend scheduled = storage.create(row(draft("scheduled")));
+
+    assertTrue(emailBoxStorage.getUnscheduledDrafts(USER).isEmpty(), "a held draft is not in Drafts");
+    assertEquals(List.of("scheduled"), storage.getListed(USER, 0, 10).stream().map(EmailScheduledSend::getDraftLocalId).toList());
+    assertEquals(1, storage.countListed(USER));
+    assertArrayEquals(new long[] { 1, 0 }, storage.countListedAndAttention(USER));
+
+    assertEquals(List.of(held.getId()), storage.findDueHeld(NOW, 10));
+    assertEquals(List.of(scheduled.getId()), storage.findDueToSend(NOW, 10));
+    assertTrue(storage.findDueHeld(NOW, 0).isEmpty());
+
+    assertFalse(storage.claim(held.getId(), NODE, NOW), "a held mail is not claimed as a scheduled one");
+    assertFalse(storage.claim(scheduled.getId(), NODE, NOW, ScheduledSendStatus.HELD), "nor a scheduled one as held");
+    assertFalse(storage.claim(notYet.getId(), NODE, NOW, ScheduledSendStatus.HELD), "not before its wait is over");
+    assertTrue(storage.claim(held.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertFalse(storage.claim(held.getId(), NODE, NOW, ScheduledSendStatus.HELD), "once");
+    assertEquals(ScheduledSendStatus.SENDING, storage.get(held.getId()).getStatus());
+    assertEquals(NODE, storage.get(held.getId()).getClaimedBy());
+  }
+
+  /**
+   * The Undo (EXO-90837) takes back a mail held, scheduled again after a failure to
+   * connect, or failed -- nothing of those went out -- and never one being sent, sent,
+   * or that may have gone; nor another user's.
+   */
+  @Test
+  void anUndoTakesBackOnlyAMailThatHasNotStartedToGo() {
+    EmailScheduledSend held = storage.create(heldRow(draft("held"), NOW));
+    assertFalse(storage.cancelUndoable("mallory", "held"), "another user's handle takes nothing back");
+    assertTrue(storage.cancelUndoable(USER, "held"));
+    assertNull(storage.get(held.getId()));
+    assertFalse(storage.cancelUndoable(USER, "held"), "nothing left to take back");
+
+    EmailScheduledSend sending = storage.create(heldRow(draft("sending"), NOW));
+    assertTrue(storage.claim(sending.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertFalse(storage.cancelUndoable(USER, "sending"), "being sent");
+    assertTrue(storage.endRun(sending.getId(), NODE, NOW, ScheduledSendStatus.SCHEDULED, ScheduledSendError.NETWORK, NOW, NOW));
+    assertTrue(storage.cancelUndoable(USER, "sending"), "scheduled again after a failure to connect: nothing went out");
+
+    EmailScheduledSend failed = storage.create(heldRow(draft("failed"), NOW));
+    assertTrue(storage.claim(failed.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertTrue(storage.endRun(failed.getId(), NODE, NOW, ScheduledSendStatus.FAILED, ScheduledSendError.REFUSED, null, NOW));
+    assertTrue(storage.cancelUndoable(USER, "failed"), "refused before anything was accepted");
+
+    EmailScheduledSend uncertain = storage.create(heldRow(draft("uncertain"), NOW));
+    assertTrue(storage.claim(uncertain.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertEquals(1, storage.markUncertainOf(NODE, List.of(), NOW));
+    assertFalse(storage.cancelUndoable(USER, "uncertain"), "may have gone");
+    assertTrue(storage.cancel(USER, "uncertain"), "while the Scheduled view's own cancel still may");
+
+    EmailScheduledSend sent = storage.create(heldRow(draft("sent"), NOW));
+    assertTrue(storage.claim(sent.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertTrue(storage.markSent(sent.getId(), NODE, NOW, NOW));
+    assertFalse(storage.cancelUndoable(USER, "sent"), "sent");
+  }
+
+  /**
+   * The wait of a held mail starts only while it is still held (EXO-90837): never on a
+   * mail claimed meanwhile, nor on one taken back; and the compensation of a scheduling
+   * that could not complete removes a row only while it waits, never one a dispatcher
+   * claimed meanwhile.
+   */
+  @Test
+  void aWaitStartsAndACompensationRemovesOnlyARowStillWaiting() {
+    Date far = new Date(NOW.getTime() + 120_000);
+    Date due = new Date(NOW.getTime() + 10_000);
+    EmailScheduledSend held = storage.create(heldRow(draft("held"), far));
+    assertTrue(storage.findDueHeld(new Date(NOW.getTime() + 60_000), 10).isEmpty(), "not due while frozen");
+    assertTrue(storage.startHeldWait(held.getId(), due, NOW));
+    assertEquals(due, storage.get(held.getId()).getNextAttemptDate());
+    assertEquals(due, storage.get(held.getId()).getScheduledDate());
+    assertEquals(List.of(held.getId()), storage.findDueHeld(due, 10));
+
+    EmailScheduledSend claimed = storage.create(heldRow(draft("claimed"), NOW));
+    assertTrue(storage.claim(claimed.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertFalse(storage.startHeldWait(claimed.getId(), due, NOW), "claimed meanwhile");
+    assertEquals(ScheduledSendStatus.SENDING, storage.get(claimed.getId()).getStatus());
+    assertFalse(storage.deleteWaiting(claimed.getId()), "a claimed row is never taken from its run");
+    assertNotNull(storage.get(claimed.getId()));
+    assertFalse(storage.startHeldWait(-1L, due, NOW), "gone");
+
+    EmailScheduledSend scheduled = storage.create(row(draft("scheduled")));
+    assertFalse(storage.startHeldWait(scheduled.getId(), due, NOW), "only a held mail");
+    assertTrue(storage.deleteWaiting(scheduled.getId()));
+    assertTrue(storage.deleteWaiting(held.getId()));
+    assertNull(storage.get(held.getId()));
+  }
+
+  /**
    * The recovery statements work with nothing in flight: the empty list is replaced by
    * a sentinel, since some vendors refuse an empty NOT IN.
    */
@@ -251,6 +351,23 @@ public class EmailScheduledSendStorageTest {
     row.setStatus(ScheduledSendStatus.SCHEDULED);
     row.setCreatedDate(NOW);
     row.setUpdatedDate(NOW);
+    return row;
+  }
+
+  /**
+   * A schedule row of a mail held for its Undo (EXO-90837), as the service writes it:
+   * no zone, due at the end of the wait.
+   *
+   * @param draft the draft
+   * @param due the end of the wait
+   * @return the row, not stored
+   */
+  private EmailScheduledSend heldRow(EmailBoxEntity draft, Date due) {
+    EmailScheduledSend row = row(draft);
+    row.setScheduledDate(due);
+    row.setNextAttemptDate(due);
+    row.setTimeZone(null);
+    row.setStatus(ScheduledSendStatus.HELD);
     return row;
   }
 

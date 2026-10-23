@@ -25,7 +25,6 @@ import java.util.Set;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -38,7 +37,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class EmailDelegation {
 
   /** {@link #grantedRoles} of a grant made in one call on a per-mailbox server. */
@@ -117,6 +115,127 @@ public class EmailDelegation {
   private Map<FolderRole, String> ownerRoleFolders = new EnumMap<>(FolderRole.class);
 
   /**
+   * Whether the grantee's unified search returns this shared mailbox's mail, labelled
+   * with its owner (EXO-90554, PO decision Q-6): on by default, turned off per share.
+   */
+  private boolean                 searchIncluded   = true;
+
+  /**
+   * The owner's per-folder exceptions to the share's preset, on the role folders a grant
+   * covers beside INBOX (EXO-90556): {@code TRASH=READER}, or {@link FolderAccess#NONE}
+   * for a role folder the owner chose not to share. A role absent here follows the
+   * preset. The owner's other folders are never recorded: the mail server's ACL is their
+   * only truth, read when the owner opens the list. Never null.
+   */
+  private Map<FolderRole, FolderAccess> folderAccess = new EnumMap<>(FolderRole.class);
+
+  /**
+   * The owner's consent to the grantee writing mail in the owner's name (EXO-90582):
+   * {@link SendMode#ON_BEHALF} or {@link SendMode#AS}, null for none -- never
+   * {@link SendMode#NONE}. Kept out of the positional constructors: only the owner's
+   * targeted write sets it, and the storage reads it back.
+   */
+  private SendMode                      sendMode;
+
+  /** When the owner last set {@link #sendMode}, null when never set. */
+  private Date                          sendModeDate;
+
+  /**
+   * When the owner's mail server last refused a mail in the owner's name for this
+   * grantee, null for never; cleared when the owner sets the consent again.
+   */
+  private Date                          sendRefusedDate;
+
+  /**
+   * The shape that refusal was in (EXO-90626): {@link SendMode#ON_BEHALF} or
+   * {@link SendMode#AS}; null with a {@link #sendRefusedDate} for a refusal recorded
+   * before the shape was, which {@link SendMode#refusedByServer} reads as every shape
+   * refused.
+   */
+  private SendMode                      sendRefusedMode;
+
+  /**
+   * Every column but the owner's consent to writing in her name, in the row's order.
+   *
+   * @param id the row id
+   * @param granteeId the grantee's username
+   * @param ownerId the owner's username, when an eXo user
+   * @param ownerMailbox the owner's mailbox identifier
+   * @param granteeMailbox the grantee's mailbox identifier
+   * @param connectorId the connector preset
+   * @param remoteRoot the shared root in the grantee's listing
+   * @param preset the preset
+   * @param rights the letters last observed
+   * @param nativeRights the server's own vocabulary last observed
+   * @param status the status
+   * @param origin who wrote the share
+   * @param badgeIncluded whether it counts in the badge
+   * @param notifyNewMail whether new mail notifies
+   * @param lastActivityDate the grantee's last use
+   * @param lastRightsCheckDate when the rights were last read
+   * @param invitedDate when invited
+   * @param respondedDate when answered
+   * @param revokedDate when revoked
+   * @param createdDate when created
+   * @param updatedDate when updated
+   * @param grantedRoles the roles eXo's grant wrote beside INBOX
+   * @param ownerRoleFolders the owner's role-to-folder-name map
+   * @param searchIncluded whether the unified search returns this mailbox
+   * @param folderAccess the owner's per-folder exceptions to the preset
+   */
+  public EmailDelegation(Long id,
+                         String granteeId,
+                         String ownerId,
+                         String ownerMailbox,
+                         String granteeMailbox,
+                         Long connectorId,
+                         String remoteRoot,
+                         DelegationPreset preset,
+                         String rights,
+                         String nativeRights,
+                         DelegationStatus status,
+                         DelegationOrigin origin,
+                         boolean badgeIncluded,
+                         boolean notifyNewMail,
+                         Date lastActivityDate,
+                         Date lastRightsCheckDate,
+                         Date invitedDate,
+                         Date respondedDate,
+                         Date revokedDate,
+                         Date createdDate,
+                         Date updatedDate,
+                         String grantedRoles,
+                         Map<FolderRole, String> ownerRoleFolders,
+                         boolean searchIncluded,
+                         Map<FolderRole, FolderAccess> folderAccess) {
+    this.id = id;
+    this.granteeId = granteeId;
+    this.ownerId = ownerId;
+    this.ownerMailbox = ownerMailbox;
+    this.granteeMailbox = granteeMailbox;
+    this.connectorId = connectorId;
+    this.remoteRoot = remoteRoot;
+    this.preset = preset;
+    this.rights = rights;
+    this.nativeRights = nativeRights;
+    this.status = status;
+    this.origin = origin;
+    this.badgeIncluded = badgeIncluded;
+    this.notifyNewMail = notifyNewMail;
+    this.lastActivityDate = lastActivityDate;
+    this.lastRightsCheckDate = lastRightsCheckDate;
+    this.invitedDate = invitedDate;
+    this.respondedDate = respondedDate;
+    this.revokedDate = revokedDate;
+    this.createdDate = createdDate;
+    this.updatedDate = updatedDate;
+    this.grantedRoles = grantedRoles;
+    this.ownerRoleFolders = ownerRoleFolders;
+    this.searchIncluded = searchIncluded;
+    this.folderAccess = folderAccess;
+  }
+
+  /**
    * The delegation as it was before EXO-90548 recorded what a grant covered: every
    * existing positional caller keeps building it this way.
    *
@@ -166,6 +285,73 @@ public class EmailDelegation {
     this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
          badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
          updatedDate, null, new EnumMap<>(FolderRole.class));
+  }
+
+  /**
+   * A delegation searched by default: {@code searchIncluded} true.
+   *
+   * @param id the row id
+   * @param granteeId the grantee's username
+   * @param ownerId the owner's username, when an eXo user
+   * @param ownerMailbox the owner's mailbox identifier
+   * @param granteeMailbox the grantee's mailbox identifier
+   * @param connectorId the connector preset
+   * @param remoteRoot the shared root in the grantee's listing
+   * @param preset the preset
+   * @param rights the letters last observed
+   * @param nativeRights the server's own vocabulary last observed
+   * @param status the status
+   * @param origin who wrote the share
+   * @param badgeIncluded whether it counts in the badge
+   * @param notifyNewMail whether new mail notifies
+   * @param lastActivityDate the grantee's last use
+   * @param lastRightsCheckDate when the rights were last read
+   * @param invitedDate when invited
+   * @param respondedDate when answered
+   * @param revokedDate when revoked
+   * @param createdDate when created
+   * @param updatedDate when updated
+   * @param grantedRoles the roles eXo's grant wrote beside INBOX
+   * @param ownerRoleFolders the owner's role-to-folder-name map
+   */
+  public EmailDelegation(Long id,
+                         String granteeId,
+                         String ownerId,
+                         String ownerMailbox,
+                         String granteeMailbox,
+                         Long connectorId,
+                         String remoteRoot,
+                         DelegationPreset preset,
+                         String rights,
+                         String nativeRights,
+                         DelegationStatus status,
+                         DelegationOrigin origin,
+                         boolean badgeIncluded,
+                         boolean notifyNewMail,
+                         Date lastActivityDate,
+                         Date lastRightsCheckDate,
+                         Date invitedDate,
+                         Date respondedDate,
+                         Date revokedDate,
+                         Date createdDate,
+                         Date updatedDate,
+                         String grantedRoles,
+                         Map<FolderRole, String> ownerRoleFolders) {
+    this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
+         badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
+         updatedDate, grantedRoles, ownerRoleFolders, true, new EnumMap<>(FolderRole.class));
+  }
+
+  /**
+   * Whether the owner's consent covers a shape of writing in her name (EXO-90582): the
+   * consent alone, not what the server accepts nor whether the share is in use -- the
+   * send guard checks those beside it.
+   *
+   * @param requested the shape a mail would go out under
+   * @return true when the owner consented to it
+   */
+  public boolean allowsSend(SendMode requested) {
+    return sendMode != null && sendMode.allows(requested);
   }
 
   /**
@@ -237,7 +423,92 @@ public class EmailDelegation {
       return List.of();
     }
     Set<FolderRole> granted = grantedRoleSet();
-    return FolderRole.GRANTED.stream().filter(role -> ownerRoleFolders.containsKey(role) && !granted.contains(role)).toList();
+    // A folder the owner chose not to share is not one the server refused (EXO-90556).
+    return FolderRole.GRANTED.stream()
+                             .filter(role -> ownerRoleFolders.containsKey(role) && !granted.contains(role))
+                             .filter(role -> accessException(role) != FolderAccess.NONE)
+                             .toList();
+  }
+
+  /**
+   * The owner's exception for one role folder, null when it follows the preset
+   * (EXO-90556).
+   *
+   * @param role the role
+   * @return READER, EDITOR, NONE, or null
+   */
+  public FolderAccess accessException(FolderRole role) {
+    return folderAccess == null || role == null ? null : folderAccess.get(role);
+  }
+
+  /**
+   * The stored form of per-folder exceptions: {@code ROLE=ACCESS} pairs in grant order,
+   * comma-separated; null when there is none, which is also how every share written
+   * before EXO-90556 reads.
+   *
+   * @param access the exceptions
+   * @return the stored form, or null
+   */
+  public static String folderAccessOf(Map<FolderRole, FolderAccess> access) {
+    if (access == null || access.isEmpty()) {
+      return null;
+    }
+    StringBuilder stored = new StringBuilder();
+    for (FolderRole role : FolderRole.GRANTED) {
+      FolderAccess value = access.get(role);
+      if (value != null) {
+        stored.append(stored.isEmpty() ? "" : ",").append(role.name()).append('=').append(value.name());
+      }
+    }
+    return stored.isEmpty() ? null : stored.toString();
+  }
+
+  /**
+   * The stored exceptions read back. A pair this version cannot read -- a role or an
+   * access it does not know -- is skipped: that folder then follows the preset.
+   *
+   * @param stored the stored form
+   * @return the exceptions, empty when none, never null
+   */
+  public static Map<FolderRole, FolderAccess> folderAccessFrom(String stored) {
+    Map<FolderRole, FolderAccess> access = new EnumMap<>(FolderRole.class);
+    if (stored == null || stored.isBlank()) {
+      return access;
+    }
+    for (String pair : stored.split(",")) {
+      int equals = pair.indexOf('=');
+      if (equals <= 0) {
+        continue;
+      }
+      FolderRole role = FolderRole.of(pair.substring(0, equals));
+      FolderAccess value = FolderAccess.of(pair.substring(equals + 1));
+      if (role != null && role != FolderRole.DRAFTS && value != null) {
+        access.put(role, value);
+      }
+    }
+    return access;
+  }
+
+  /**
+   * Exceptions without the ones that say what the preset says anyway: a role set to the
+   * share's own preset follows it again (EXO-90556, "Change access" keeps only real
+   * exceptions).
+   *
+   * @param access the exceptions
+   * @param preset the share's preset
+   * @return the exceptions that still differ, never null
+   */
+  public static Map<FolderRole, FolderAccess> withoutPreset(Map<FolderRole, FolderAccess> access, DelegationPreset preset) {
+    Map<FolderRole, FolderAccess> kept = new EnumMap<>(FolderRole.class);
+    FolderAccess follows = FolderAccess.of(preset);
+    if (access != null) {
+      access.forEach((role, value) -> {
+        if (role != null && value != null && value != follows) {
+          kept.put(role, value);
+        }
+      });
+    }
+    return kept;
   }
 
   /**

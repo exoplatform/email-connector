@@ -124,12 +124,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item>
         <v-divider class="mx-4" />
         <email-connector-user-setting-signature />
-        <v-divider class="mx-4" />
-        <!-- Mailbox delegation (EXO-90503, EXO-90559): one row for both sides of it,
-             over one drawer with a tab each. After the preferences about your own
-             mail, because it is the only block on this screen about somebody else's. -->
-        <email-connector-user-setting-sharing />
-        <!-- The rarely used settings, collapsed; Reset & re-sync last among them. -->
+        <!-- The rarely used settings, collapsed, with the automatic reply and mailbox
+             sharing among them; Reset & re-sync last. -->
         <email-connector-user-setting-advanced :user-email-setting="userEmailSetting" />
       </template>
     </v-list>

@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.service.CategoryLinkService;
@@ -105,6 +106,47 @@ class EmailBoxReadReceiptStorageTest {
     assertEquals("bob@partner.example", read.getReadReceiptTo());
     assertTrue(read.isReadReceiptReturnPathMatch());
     assertNull(read.getReadReceiptState());
+  }
+
+  /**
+   * EXO-90841: the sync's authentication verdict is stored with the row and read back
+   * on the message the reader opens; a message with none reads back none.
+   */
+  @Test
+  void theAuthenticationVerdictIsStoredAndReadBack() {
+    Email failing = incoming("<spoof@partner.example>", MailFolder.INBOX, 11L);
+    failing.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DMARC);
+    Email created = emailBoxStorage.createEmail(failing);
+    assertEquals(EmailSecurityUtils.AUTH_DMARC, read(created.getId(), USER, "alice@corp.example").getContent().getAuthFailure());
+
+    Email passing = emailBoxStorage.createEmail(incoming("<honest@partner.example>", MailFolder.INBOX, 12L));
+    assertNull(read(passing.getId(), USER, "alice@corp.example").getContent().getAuthFailure());
+  }
+
+  /**
+   * EXO-90893: the sync's DMARC pass is stored with the row and read back on the
+   * message the reader opens, and the row's sender is vouched for only when it passed
+   * and failed nothing; a message without it reads back false.
+   */
+  @Test
+  void theDmarcPassIsStoredAndReadBack() {
+    Email passing = incoming("<brand@partner.example>", MailFolder.INBOX, 13L);
+    passing.getContent().setDmarcPassed(true);
+    Email created = emailBoxStorage.createEmail(passing);
+    Email readPassing = read(created.getId(), USER, "alice@corp.example");
+    assertTrue(readPassing.getContent().isDmarcPassed());
+    assertTrue(readPassing.getSender().isDomainVerified(), "the list may show its address's logo on this row");
+
+    Email unknown = emailBoxStorage.createEmail(incoming("<plain@partner.example>", MailFolder.INBOX, 14L));
+    Email readUnknown = read(unknown.getId(), USER, "alice@corp.example");
+    assertFalse(readUnknown.getContent().isDmarcPassed());
+    assertFalse(readUnknown.getSender().isDomainVerified());
+
+    Email mixed = incoming("<mixed@partner.example>", MailFolder.INBOX, 15L);
+    mixed.getContent().setDmarcPassed(true);
+    mixed.getContent().setAuthFailure(EmailSecurityUtils.AUTH_SPF);
+    Email readMixed = read(emailBoxStorage.createEmail(mixed).getId(), USER, "alice@corp.example");
+    assertFalse(readMixed.getSender().isDomainVerified(), "a failed sender check vouches for nothing");
   }
 
   /**

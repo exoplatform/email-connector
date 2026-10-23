@@ -83,6 +83,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
       <div v-if="delegation.ownerId" class="caption text-sub-title text-truncate">{{ delegation.ownerMailbox }}</div>
       <div class="caption text-sub-title text-wrap">{{ rightsSummary }}</div>
+      <!-- Whether the owner lets the user write mail in her name (EXO-90582), and whether
+           her mail server refused it since. -->
+      <div v-if="sendModeSummary" class="caption text-sub-title text-wrap">{{ sendModeSummary }}</div>
+      <div v-if="sendRefused" class="caption warning--text text-wrap">{{ sendRefused }}</div>
       <div v-if="note" class="caption text-sub-title text-wrap mt-1">{{ note }}</div>
       <!-- The badge choice, as a settings row: only where read state is kept (s),
            since without it there is no unread count to add. -->
@@ -116,6 +120,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
         <div class="caption text-sub-title text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.notify.hint') }}</div>
       </template>
+      <!-- The search choice (EXO-90554): whether the platform's search returns this
+           mailbox's mail, labelled with its owner. Any share in use has something to
+           search. -->
+      <div v-if="searchOffered" class="d-flex align-center mt-1">
+        <span class="caption text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.search') }}</span>
+        <v-spacer />
+        <v-switch
+          :input-value="delegation.searchIncluded"
+          :loading="saving"
+          :disabled="disabled"
+          :aria-label="$t('UserSettings.emailConnector.sharedWithMe.search')"
+          class="mt-0 pt-0 ms-2 flex-grow-0"
+          dense
+          hide-details
+          @change="$emit('search', !!$event)" />
+      </div>
       <div v-if="visibleActions.length" class="d-flex justify-end mt-1">
         <v-btn
           v-for="action in visibleActions"
@@ -162,6 +182,39 @@ export default {
         : this.$t('UserSettings.emailConnector.sharedWithMe.preset.CUSTOM');
     },
     /**
+     * Whether the owner lets the user write mail in her name, and in which shape
+     * (EXO-90582): the owner's consent as recorded, for a share on offer or in use.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeSummary() {
+      const mode = this.delegation.sendMode;
+      const live = this.delegation.status === 'PENDING' || this.delegation.status === 'ACCEPTED';
+      return live && (mode === 'ON_BEHALF' || mode === 'AS')
+        ? this.$t(`UserSettings.emailConnector.sharedWithMe.sendMode.${mode}`)
+        : '';
+    },
+    /**
+     * Said when the owner's mail server refused a mail in her name since she set the
+     * consent, and in which shape (EXO-90626): as her, or in her name at all. Whether
+     * writing on her behalf still works is the composer's to say, which knows what the
+     * server is declared to accept; this row does not.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendRefused() {
+      if (!this.sendModeSummary || !this.delegation.sendRefusedDate) {
+        return '';
+      }
+      const language = window.eXo?.env?.portal?.language || 'en';
+      const key = this.delegation.sendRefusedMode === 'AS' && this.delegation.sendMode === 'AS'
+        ? 'UserSettings.emailConnector.sharedWithMe.sendMode.refused.AS'
+        : 'UserSettings.emailConnector.sharedWithMe.sendMode.refused';
+      return this.$t(key, {
+        0: new Date(this.delegation.sendRefusedDate).toLocaleDateString(language),
+      });
+    },
+    /**
      * One sentence of what the user can do in the mailbox, from the same rule the mail
      * drawer's controls follow (sharedMailboxCapabilities): nothing here may promise a
      * control the drawer does not show.
@@ -196,6 +249,14 @@ export default {
      * @returns {Boolean} true when the switch is shown
      */
     notifyOffered() {
+      return this.delegation.status === 'ACCEPTED';
+    },
+    /**
+     * Whether the search choice applies: a share in use (EXO-90554).
+     *
+     * @returns {Boolean} true when the switch is shown
+     */
+    searchOffered() {
       return this.delegation.status === 'ACCEPTED';
     },
     /**

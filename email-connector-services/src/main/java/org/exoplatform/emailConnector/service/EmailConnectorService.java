@@ -21,6 +21,8 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
@@ -39,9 +41,13 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailConnectorProviderConfig;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
+import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -112,6 +118,12 @@ public class EmailConnectorService {
 
   /** Administration-wide kill switch of the copy into a shared mailbox owner's Sent (EXO-90551). */
   public static final String        SHARED_MAILBOX_SENT_COPY_ENABLED_KEY         = "sharedMailboxSentCopyEnabled";
+
+  /** Setting key of the administration-wide switch of the sender brand logos (EXO-90893). */
+  public static final String        SENDER_LOGOS_ENABLED_KEY                     = "senderLogosEnabled";
+
+  /** The JVM property the sender brand logo switch falls back to, true by default. */
+  public static final String        SENDER_LOGOS_ENABLED_PROPERTY                = "email.connector.senderLogos.enabled";
 
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
@@ -189,6 +201,9 @@ public class EmailConnectorService {
   private static final Log          LOG                                          =
                                         ExoLogger.getLogger(EmailConnectorService.class);
 
+  /** The provider names already reported as not installed, so each is said once. */
+  private final Set<String>         unregisteredProvidersReported                = ConcurrentHashMap.newKeySet();
+
   @Autowired
   private SettingService            settingService;
 
@@ -217,6 +232,10 @@ public class EmailConnectorService {
 
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
+
+  /** The engines the administration screen chose per connector. */
+  @Autowired
+  private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
   private EmailManagedModeService   emailManagedModeService;
@@ -675,6 +694,38 @@ public class EmailConnectorService {
   }
 
   /**
+   * Whether the reader shows a company sender's brand logo, administration-wide
+   * (EXO-90893): the logo its domain publishes (BIMI), else its site's icon, both
+   * fetched by the server from the internet. Off, nothing is fetched and senders keep
+   * their initials: the switch of a deployment with no outbound calls. Falls back to
+   * the {@value #SENDER_LOGOS_ENABLED_PROPERTY} JVM property (default {@code true}).
+   *
+   * @return true when brand logos are shown
+   */
+  public boolean isSenderLogosEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SENDER_LOGOS_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty(SENDER_LOGOS_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
+   * Save the administration-wide switch of the sender brand logos (EXO-90893).
+   * Administrators only.
+   *
+   * @param enabled whether brand logos should be shown
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveSenderLogosEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SENDER_LOGOS_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
    * Create new email connector that will be available for all users.
    *
    * @param emailConnector emailConnector to create
@@ -692,6 +743,7 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    trimServerFields(emailConnector);
     // Before the insert, not after: a setting key carries the connector id, so the
     // configuration can only be written once the connector exists - and a refusal then
     // would leave a connector created with nothing configured, which an administrator
@@ -743,6 +795,7 @@ public class EmailConnectorService {
     // connector and its configuration are two writes, and a refusal on the second
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
+    trimServerFields(emailConnector);
     validateProviderConfig(emailConnector);
     // The managed connector may not move to a provider that asks each user for
     // something: designating it refused exactly that, and an edit must not be the way
@@ -799,17 +852,88 @@ public class EmailConnectorService {
   }
 
   /**
+   * Whether users of a connector may forward their mail from eXo, and to which domains,
+   * as the administration screen shows it: the value that applies, whether the screen
+   * was ever saved (until then the deployment's properties apply), and whether the
+   * deployment's kill switch overrides it.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user asking, checked against the administration ACL
+   * @return the settings that apply
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists
+   */
+  public ConnectorForwarding getForwarding(Long emailConnectorId, String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * Saves whether users of a connector may forward their mail from eXo, and to which
+   * domains, in the global settings only administrators can write. It applies at once;
+   * the deployment's kill switch still wins. Switching it off keeps the forwards already
+   * on: users can still remove them, and no new one is accepted.
+   *
+   * @param emailConnectorId the connector
+   * @param forwarding the switch and the domains, each a plain domain
+   * @param username the user saving, checked against the administration ACL
+   * @return the settings that apply after the save
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists, or a domain is not a
+   *           plain domain ({@value ForwardingGuard#INVALID_DOMAIN})
+   */
+  public ConnectorForwarding saveForwarding(Long emailConnectorId,
+                                            ConnectorForwarding forwarding,
+                                            String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    if (forwarding == null) {
+      throw new IllegalArgumentException(ForwardingGuard.INVALID_DOMAIN);
+    }
+    ForwardingGuard.save(settingService, connector.getId(), forwarding.isAuthoringEnabled(), forwarding.getAllowedDomains());
+    LOG.info("Forwarding of connector {} set by {}: authoring {}, allowed domains {}",
+             connector.getId(),
+             username,
+             forwarding.isAuthoringEnabled(),
+             forwarding.getAllowedDomains());
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * A connector an administrator acts on.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user, checked against the administration ACL
+   * @return the connector
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when the id is missing or names no connector
+   */
+  private EmailConnector administeredConnector(Long emailConnectorId, String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE, username, emailConnectorId));
+    }
+    EmailConnector connector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (connector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    return connector;
+  }
+
+  /**
    * The provider configuration of a connector, as an administration screen may see it:
-   * every field except the secret ones, which are never read back on this path.
+   * every field except the secret ones, which are never read back on this path, and the
+   * keys of the secret fields that have a value stored.
    *
    * @param emailConnectorId the connector whose configuration is read
    * @param username the user asking, checked against the administration ACL - reading a
    *          technical account is an administration act
-   * @return the stored values without any secret, empty when nothing is stored or when
-   *         the storage is not deployed
+   * @return the stored values without any secret and the stored secrets' keys, both
+   *         empty when nothing is stored or when the storage is not deployed
    * @throws IllegalAccessException if the user may not administer email connectors
    */
-  public Map<String, String> getProviderConfig(Long emailConnectorId, String username) throws IllegalAccessException {
+  public EmailConnectorProviderConfig getProviderConfig(Long emailConnectorId, String username) throws IllegalAccessException {
     if (emailConnectorId == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
@@ -821,10 +945,12 @@ public class EmailConnectorService {
     EmailConnector storedEmailConnector = emailConnectorStorage.getEmailConnector(emailConnectorId);
     if (providerConfigStorage == null || storedEmailConnector == null
         || StringUtils.isBlank(storedEmailConnector.getAuthProviderName())) {
-      return Map.of();
+      return EmailConnectorProviderConfig.EMPTY;
     }
-    return providerConfigStorage.readWithoutSecrets(providerConfigContext(emailConnectorId,
-                                                                         storedEmailConnector.getAuthProviderName()));
+    ConnectorCredentialsContext context = providerConfigContext(emailConnectorId,
+                                                                storedEmailConnector.getAuthProviderName());
+    return new EmailConnectorProviderConfig(providerConfigStorage.readWithoutSecrets(context),
+                                            providerConfigStorage.readStoredSecretKeys(context));
   }
 
   /**
@@ -985,8 +1111,24 @@ public class EmailConnectorService {
       providerConfigStorage.delete(providerConfigContext(emailConnectorId, storedEmailConnector.getAuthProviderName()));
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+    forgetEngineChoices(emailConnectorId);
     activateEmailApp();
     eventPublisher.publishEvent(new UserEmailSettingCleanupEvent(emailConnectorId));
+  }
+
+  /**
+   * Forgets the engines the administration screen chose for a deleted connector. Its
+   * id is never given again, so an entry left behind is only clutter: a failure is said
+   * and does not fail the deletion.
+   *
+   * @param emailConnectorId the deleted connector
+   */
+  private void forgetEngineChoices(Long emailConnectorId) {
+    try {
+      connectorEngineChoiceStorage.removeChoices(emailConnectorId);
+    } catch (RuntimeException e) {
+      LOG.warn("The engines chosen for deleted connector {} could not be forgotten", emailConnectorId, e);
+    }
   }
 
   /**
@@ -1014,6 +1156,22 @@ public class EmailConnectorService {
       logProviderConfigRefusal(emailConnector, values, e);
       throw new IllegalArgumentException(e.getMessage(), e);
     }
+  }
+
+  /**
+   * Trims the server fields of a connector preset as it is saved: the IMAP and SMTP hosts
+   * and ports and the SMTP security type. JavaMail resolves a host verbatim, so a value
+   * typed with surrounding whitespace is an unknown host, a failure no screen shows. The
+   * provider configuration, which may carry secrets, is left as it came.
+   *
+   * @param emailConnector the preset being saved
+   */
+  private static void trimServerFields(EmailConnector emailConnector) {
+    emailConnector.setImapUrl(StringUtils.trim(emailConnector.getImapUrl()));
+    emailConnector.setImapPort(StringUtils.trim(emailConnector.getImapPort()));
+    emailConnector.setSmtpUrl(StringUtils.trim(emailConnector.getSmtpUrl()));
+    emailConnector.setSmtpPort(StringUtils.trim(emailConnector.getSmtpPort()));
+    emailConnector.setSmtpSecurityType(StringUtils.trim(emailConnector.getSmtpSecurityType()));
   }
 
   /**
@@ -1110,13 +1268,23 @@ public class EmailConnectorService {
   }
 
   /**
-   * Whether that provider asks, answering true whenever nobody can tell.
+   * Whether that provider asks, answering true whenever nobody can tell, a provider that
+   * is not installed included.
    *
    * @param providerName the provider to ask about
    * @return true when the user must supply something
    */
   private boolean asksTheUser(String providerName) {
     if (emailCredentialsResolver == null) {
+      return true;
+    }
+    if (StringUtils.isNotBlank(providerName) && !emailCredentialsResolver.isProviderRegistered(providerName)) {
+      // A provider an add-on contributes, and the add-on is not installed: expected, not
+      // an incident, and asked on every listing. Said once per name, without a stack.
+      if (unregisteredProvidersReported.add(providerName)) {
+        LOG.warn("No credentials provider named '{}' is installed: the connectors configured with it ask the user for credentials until it is",
+                 providerName);
+      }
       return true;
     }
     try {

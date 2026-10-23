@@ -25,6 +25,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -34,6 +35,7 @@ import javax.mail.Store;
 import org.junit.jupiter.api.Test;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
 /**
@@ -121,5 +123,35 @@ class MailboxAclSessionTest {
       throw new ConnectorCredentialsException("no material");
     });
     assertEquals(MailboxAclException.UNREACHABLE, assertThrows(MailboxAclException.class, failing::httpAuthorization).getCode());
+  }
+
+  /**
+   * A refusal reported through the session reaches its handler for the channel given,
+   * and the handler decides whether one more attempt is worth it.
+   */
+  @Test
+  void aRefusalReachesTheHandlerAndItDecidesTheRetry() {
+    MailCredentialsRefusal refusal = mock(MailCredentialsRefusal.class);
+    when(refusal.retriesAfterRefusal()).thenReturn(true);
+    MailboxAclSession session = new MailboxAclSession(null, USERNAME, null, null, null, null, refusal);
+
+    session.invalidateCredentials(ConnectorCredentialsChannel.IMAP);
+    verify(refusal).invalidate(ConnectorCredentialsChannel.IMAP);
+    assertTrue(session.retriesAfterRefusal());
+
+    when(refusal.retriesAfterRefusal()).thenReturn(false);
+    assertFalse(session.retriesAfterRefusal(), "the handler's no is the session's no");
+  }
+
+  /**
+   * Without the platform's credentials contract, a refusal is reported to nobody and
+   * never retried: nothing could renew the material.
+   */
+  @Test
+  void withoutAHandlerARefusalIsNeverRetried() {
+    MailboxAclSession session = new MailboxAclSession(null, USERNAME, null, null, null, null);
+
+    session.invalidateCredentials(ConnectorCredentialsChannel.IMAP);
+    assertFalse(session.retriesAfterRefusal());
   }
 }

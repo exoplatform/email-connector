@@ -276,6 +276,22 @@
     </depends>
   </module>
 
+  <!-- Contributes the "In your mail filters" group to the AI assistant's standing
+       approvals drawer (EXO-90956). The name MUST contain "AiToolGrantGroupExtension": the
+       drawer loads AiToolGrantGroupGRP, then runs the modules whose NAME holds it
+       (includeExtensions matches on the name, as for the favorites below). Pure
+       extensionRegistry: no AI code, harmless where the AI add-on is not installed. -->
+  <module>
+    <name>EmailConnectorAiToolGrantGroupExtension</name>
+    <load-group>AiToolGrantGroupGRP</load-group>
+    <script>
+      <path>/js/emailConnectorAiToolGrantGroupExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
+
   <!-- Contributes the "Emails" section to the platform's global Favorites drawer. The
        name MUST contain "FavoriteDrawerExtension": the favorites portlet discovers its
        contributors with includeExtensions('FavoriteDrawerExtension'), which matches on
@@ -321,6 +337,25 @@
       <module>extensionRegistry</module>
     </depends>
     <!-- Required lazily as SHARED/eXoVueI18n from init(): requirejs only knows a
+         shared module on a page where something depends on it. -->
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+  </module>
+
+  <!-- Opens a mail chip's mail in the mailbox drawer, over the page the chip is on.
+       The name MUST contain "ContentLinkExtension": Social's content-link app
+       discovers the listeners of its drawer chips with
+       includeExtensions('ContentLinkExtension'), which matches on the module NAME,
+       then dispatches content-link-email-drawer. In contentLinkGRP with the other
+       add-ons' content-link extensions. -->
+  <module>
+    <name>EmailConnectorContentLinkExtension</name>
+    <load-group>contentLinkGRP</load-group>
+    <script>
+      <path>/js/emailConnectorContentLinkExtension.bundle.js</path>
+    </script>
+    <!-- Required lazily as SHARED/eXoVueI18n, for the alert: requirejs only knows a
          shared module on a page where something depends on it. -->
     <depends>
       <module>eXoVueI18n</module>

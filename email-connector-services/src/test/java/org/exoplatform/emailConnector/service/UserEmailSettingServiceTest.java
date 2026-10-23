@@ -45,6 +45,7 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 
 import javax.crypto.BadPaddingException;
@@ -960,6 +961,31 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * EXO-90555 -- a preset saved with a stray space around its IMAP host or port is used
+   * trimmed, rather than looked up as a host named " imap.example.org".
+   */
+  @Test
+  void theImapServerFieldsAreUsedTrimmed() throws MessagingException, ConnectorCredentialsException {
+    EmailConnector spaced = emailConnector();
+    spaced.setImapUrl(" imap.example.org ");
+    spaced.setImapPort(" 993 ");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(spaced);
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(new Authenticator() {
+    });
+    Session session = mock(Session.class);
+    ArgumentCaptor<Properties> props = ArgumentCaptor.forClass(Properties.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(props.capture(), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+
+      userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+
+      assertEquals("imap.example.org", props.getValue().getProperty("mail.imaps.host"));
+      assertEquals("993", props.getValue().getProperty("mail.imaps.port"));
+    }
+  }
+
+  /**
    * EXO-90548 -- a store remembers whose account (user and server) it was connected for, so the folder walk
    * and the Trash and Archive finders, handed only the store, can keep out the mailboxes
    * shared with that user. A store not connected here answers nobody.
@@ -1139,6 +1165,27 @@ public class UserEmailSettingServiceTest {
         .thenReturn(null);
 
     assertEquals(List.of("alice"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L));
+    verifyNoInteractions(codecInitializer, emailConnectorService);
+  }
+
+  /**
+   * The connected mailboxes' owners, by normalized address, read from the documents
+   * alone: an address two users connected names neither, a disconnected document and an
+   * unreadable one name nobody (EXO-90891).
+   */
+  @Test
+  void theConnectedMailboxesNameTheirOwnersButNeverAShared() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol"),
+                            Context.USER.id("dan"), Context.USER.id("eve"), Context.USER.id("fay")));
+    storedDocument("alice", "{\"emailConnectorId\":\"3\",\"emailAddress\":\" Alice.Private@Gmail.com \",\"emailPassword\":\"cipher\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"3\",\"emailAddress\":\"team@acme.org\"}");
+    storedDocument("carol", "{\"emailConnectorId\":\"4\",\"emailAddress\":\"TEAM@acme.org\"}");
+    storedDocument("dan", "{\"emailAddress\":\"dan@acme.org\"}");
+    storedDocument("eve", "{not json");
+    storedDocument("fay", "{\"emailConnectorId\":\"3\",\"emailAddress\":\"fay@acme.org\"}");
+
+    assertEquals(Map.of("alice.private@gmail.com", "alice", "fay@acme.org", "fay"), userEmailSettingService.getConnectedMailboxOwners());
     verifyNoInteractions(codecInitializer, emailConnectorService);
   }
 

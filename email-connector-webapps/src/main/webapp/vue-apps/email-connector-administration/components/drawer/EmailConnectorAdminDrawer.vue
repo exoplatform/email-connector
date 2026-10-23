@@ -217,8 +217,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <provider-config-fields
           v-model="providerConfig"
           :fields="selectedProviderFields"
-          :secrets-stored="!!emailConnector.id"
+          :stored-secret-keys="storedSecretKeys"
+          :stored-values="storedProviderConfig.values"
           @valid="providerConfigValid = $event" />
+        <email-connector-admin-forwarding-section
+          v-if="emailConnector.id && forwarding"
+          v-model="forwarding"
+          @valid="forwardingValid = $event" />
+        <email-connector-admin-engines-section
+          v-if="emailConnector.id && engines"
+          v-model="engines" />
       </form>
     </template>
     <template #footer>
@@ -287,12 +295,37 @@ export default {
     // any secret, so a secret field shows empty and an unrelated save leaves
     // the stored one alone.
     providerConfig: {},
+    // What the server holds for the stored provider, as opened: its non-secret values
+    // and which of its secrets have a value. Kept apart from providerConfig, which the
+    // administrator edits, because the secret fields compare against it.
+    storedProviderConfig: {values: {}, storedSecretKeys: []},
     // Whether the selected provider's required fields are all filled. The drawer does
     // not know what those fields are - the renderer tells it, so the save button can
     // be disabled without this file learning anything about any provider.
-    providerConfigValid: true
+    providerConfigValid: true,
+    // Whether the connector's users may forward their mail, and where: read on opening
+    // an existing connector, saved with it.
+    forwarding: null,
+    // The forwarding settings as loaded: saved again only when the section changed them,
+    // so editing another field never turns the properties' values into saved ones.
+    loadedForwarding: null,
+    forwardingValid: true,
+    // The connector's engines (EXO-90793), as the server answers them: saved again only
+    // when the section changed them.
+    engines: null,
+    loadedEngines: null,
   }),
   computed: {
+    /**
+     * The secrets stored for the provider being edited. None once another provider is
+     * selected: what is stored belongs to the stored provider, and the new one has
+     * nothing yet, so its required secret must be typed.
+     *
+     * @returns {Array} the keys of the stored secret fields
+     */
+    storedSecretKeys() {
+      return this.changesProvider() ? [] : this.storedProviderConfig.storedSecretKeys || [];
+    },
     disconnectionConfirmMessage() {
       const count = this.pendingDisconnections === 1
         ? this.$t('emailConnector.admin.connectors.drawer.disconnection.one')
@@ -306,7 +339,7 @@ export default {
       return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.imapPort 
       || !this.emailConnector.smtpUrl || !this.emailConnector.smtpPort || !this.emailConnector.smtpSecurityType
       || (this.activeWebmailAccess && !this.emailConnector.webmailUrl)
-      || !this.providerConfigValid;
+      || !this.providerConfigValid || !this.forwardingValid;
     },
     drawerTitle() {
       return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.edit.title', {
@@ -378,9 +411,19 @@ export default {
       this.storedProviderName = emailConnector && emailConnector.authProviderName || '';
       this.pendingDisconnections = 0;
       this.activeWebmailAccess = !!this.emailConnector.webmailUrl;
-      this.providerConfig = emailConnector && emailConnector.id
+      this.storedProviderConfig = emailConnector && emailConnector.id
         && await this.loadProviderConfig(emailConnector.id)
-        || {};
+        || {values: {}, storedSecretKeys: []};
+      this.providerConfig = {...this.storedProviderConfig.values};
+      this.forwardingValid = true;
+      this.forwarding = emailConnector && emailConnector.id
+        && await this.$emailConnectorAdministrationService.getConnectorForwarding(emailConnector.id).catch(() => null)
+        || null;
+      this.loadedForwarding = this.forwarding && { ...this.forwarding, allowedDomains: [...(this.forwarding.allowedDomains || [])] };
+      this.engines = emailConnector && emailConnector.id
+        && await this.$emailConnectorAdministrationService.getConnectorEngines(emailConnector.id).catch(() => null)
+        || null;
+      this.loadedEngines = this.engines && { ...this.engines };
       this.$refs.emailConnectorDrawer.open();
     },
     close() {
@@ -403,23 +446,55 @@ export default {
       // Not kept between two openings: it holds what an administrator typed for
       // one connector, and the next one they open is not the same connector.
       this.providerConfig = {};
+      this.forwarding = null;
+      this.loadedForwarding = null;
+      this.engines = null;
+      this.loadedEngines = null;
+      this.storedProviderConfig = {values: {}, storedSecretKeys: []};
       this.$refs.emailConnectorDrawer.close();
+    },
+    /**
+     * Whether the Forwarding section changed what was loaded.
+     *
+     * @returns {boolean} true when the switch or the domains differ
+     */
+    forwardingChanged() {
+      if (!this.forwarding || !this.loadedForwarding) {
+        return false;
+      }
+      return this.forwarding.authoringEnabled !== this.loadedForwarding.authoringEnabled
+        || JSON.stringify(this.forwarding.allowedDomains || []) !== JSON.stringify(this.loadedForwarding.allowedDomains || []);
+    },
+    /**
+     * Whether the Engines section changed what was loaded.
+     *
+     * @returns {boolean} true when either choice differs
+     */
+    enginesChanged() {
+      if (!this.engines || !this.loadedEngines) {
+        return false;
+      }
+      return this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice
+        || this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice;
     },
     resetImage() {
       this.emailConnector.imageUrl = null;
       this.emailConnector.imageFileId = null;
     },
     /**
-     * The configuration already stored for a connector, without its secrets.
+     * The configuration already stored for a connector, without its secrets, and which
+     * of its secrets are stored.
      *
      * @param {number} emailConnectorId technical id of the connector being edited
-     * @returns {Promise} the stored values, empty on failure
+     * @returns {Promise} the stored values and secret keys, both empty on failure - a
+     *          secret then reads as missing, and the administrator is asked for it
      */
     async loadProviderConfig(emailConnectorId) {
       try {
-        return await this.$emailConnectorAdministrationService.getProviderConfig(emailConnectorId);
+        const stored = await this.$emailConnectorAdministrationService.getProviderConfig(emailConnectorId);
+        return {values: stored?.values || {}, storedSecretKeys: stored?.storedSecretKeys || []};
       } catch (e) {
-        return {};
+        return null;
       }
     },
     /**
@@ -458,6 +533,85 @@ export default {
       }
       return false;
     },
+    /**
+     * The message a refused save shows.
+     *
+     * @param {Error} e the refusal
+     * @param {Boolean} isNew whether the connector was being created
+     * @returns {String} the translated message
+     */
+    saveErrorMessage(e, isNew) {
+      // A refusal comes back as a message code some bundle translates - the
+      // provider's (a configuration field), or this add-on's (the managed
+      // connector may not move to a provider that asks the user). Whatever the
+      // bundle, a translatable code beats the generic "error" that tells the
+      // administrator nothing about a form they can correct.
+      if (e?.message === 'emailConnector.forwarding.domain.invalid') {
+        return this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid');
+      }
+      const engineMessage = this.engineRefusalMessage(e);
+      if (engineMessage) {
+        return engineMessage;
+      }
+      if (e?.messageCode && this.$te(e.messageCode)) {
+        return this.$t(e.messageCode);
+      }
+      return this.$t(isNew ? 'emailConnector.admin.connectors.drawer.add.error' : 'emailConnector.admin.connectors.drawer.edit.error');
+    },
+    /**
+     * The message of a refused engine choice: an engine that is not installed, or a
+     * switch refused while what the current engine set is still in use, with the
+     * counts of what is left.
+     *
+     * @param {Error} e the refusal
+     * @returns {String} the translated message, or null when the refusal is not an
+     *          engine choice's
+     */
+    engineRefusalMessage(e) {
+      switch (e?.message) {
+      case 'emailConnector.engines.unknown':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.unknown');
+      case 'emailConnector.engines.rulesInUse':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.rulesInUse', {
+          0: e.details?.replies || 0,
+          1: e.details?.forwards || 0,
+          2: e.details?.rules || 0,
+        });
+      case 'emailConnector.engines.aclInUse':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.aclInUse', {0: e.details?.shares || 0});
+      default:
+        return null;
+      }
+    },
+    /**
+     * Saves an existing connector: the connector itself, then its forwarding and its
+     * engines when they changed.
+     *
+     * @returns {Promise} resolved once every changed part is saved
+     */
+    async updateConnector() {
+      await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
+      if (this.forwardingChanged()) {
+        await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
+      }
+      if (this.enginesChanged()) {
+        await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, this.changedEngines());
+      }
+    },
+    /**
+     * The engine choices to save: only the one that changed, the other left null so
+     * it stays as kept, whatever a deployment property makes apply meanwhile.
+     *
+     * @returns {Object} the rules and sharing engine choices, null when unchanged
+     */
+    changedEngines() {
+      const rulesChanged = this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice;
+      const aclChanged = this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice;
+      return {
+        rulesEngine: rulesChanged ? this.engines.rulesEngineChoice : null,
+        aclEngine: aclChanged ? this.engines.aclEngineChoice : null,
+      };
+    },
     async saveConnector(confirmed) {
       // Only the confirmation's OK passes a provider change: the Save button hands in
       // its click event, and a dialog dismissed any other way leaves nothing behind.
@@ -481,7 +635,7 @@ export default {
           emailConnector = await this.$emailConnectorAdministrationService.createEmailConnector(this.emailConnector);
         }
         else {
-          await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
+          await this.updateConnector();
         }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
         if (isNew) {
@@ -493,20 +647,7 @@ export default {
         this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
-        // A refusal comes back as a message code some bundle translates - the
-        // provider's (a configuration field), or this add-on's (the managed
-        // connector may not move to a provider that asks the user). Whatever the
-        // bundle, a translatable code beats the generic "error" that tells the
-        // administrator nothing about a form they can correct.
-        if (e?.messageCode && this.$te(e.messageCode)) {
-          this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
-        }
-        else if (isNew) {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.error'), 'error');
-        }
-        else {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.error'), 'error');
-        } 
+        this.$root.$emit('alert-message', this.saveErrorMessage(e, isNew), 'error');
       } finally {
         this.loading = false;
       }

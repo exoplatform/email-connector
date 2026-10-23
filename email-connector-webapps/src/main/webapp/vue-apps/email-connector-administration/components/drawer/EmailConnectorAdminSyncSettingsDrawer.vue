@@ -96,7 +96,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="trashSyncEnabled"
+              :input-value="trashSyncShown"
               :loading="savingTrash"
               :disabled="savingTrash"
               @change="onTrashSyncChange" />
@@ -113,7 +113,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="junkSyncEnabled"
+              :input-value="junkSyncShown"
               :loading="savingJunk"
               :disabled="savingJunk"
               @change="onJunkSyncChange" />
@@ -130,7 +130,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="draftsServerEnabled"
+              :input-value="draftsServerShown"
               :loading="savingDraftsServer"
               :disabled="savingDraftsServer"
               @change="onDraftsServerChange" />
@@ -147,7 +147,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="customFoldersEnabled"
+              :input-value="customFoldersShown"
               :loading="savingCustomFolders"
               :disabled="savingCustomFolders"
               @change="onCustomFoldersChange" />
@@ -168,6 +168,29 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onSharedMailboxSentCopyChange" />
           </v-list-item-action>
         </v-list-item>
+        <v-list-item dense class="px-0 height-auto mt-6">
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.syncSettings.senderLogos.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-wrap text-light-color">
+              {{ $t('emailConnector.admin.syncSettings.senderLogos.subtitle') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-switch
+              :input-value="senderLogosShown"
+              :loading="savingSenderLogos"
+              :disabled="savingSenderLogos"
+              @change="onSenderLogosChange" />
+          </v-list-item-action>
+        </v-list-item>
+        <!-- Writing mail in a shared mailbox owner's name depends on the mail server, and is
+             declared in the server's properties rather than here: one help line says so. -->
+        <div class="caption text-light-color text-wrap mt-6 email-connector-send-identity-help">
+          <v-icon size="14" class="me-1">fas fa-info-circle</v-icon>
+          {{ $t('emailConnector.admin.syncSettings.sendIdentity.help') }}
+        </div>
       </div>
       <confirm-dialog
         ref="cacheSizeConfirmDialog"
@@ -206,17 +229,24 @@ export default {
       savingSyncPeriod: false,
       pendingSyncPeriod: null,
       trashSyncEnabled: true,
+      trashSyncShown: true,
       savingTrash: false,
       junkSyncEnabled: true,
+      junkSyncShown: true,
       savingJunk: false,
       draftsServerEnabled: true,
+      draftsServerShown: true,
       savingDraftsServer: false,
       customFoldersEnabled: true,
+      customFoldersShown: true,
       savingCustomFolders: false,
       sharedMailboxSentCopyEnabled: true,
       sharedMailboxSentCopyShown: true,
       savingSharedMailboxSentCopy: false,
       queuedSharedMailboxSentCopy: null,
+      senderLogosEnabled: true,
+      senderLogosShown: true,
+      savingSenderLogos: false,
     };
   },
   created() {
@@ -267,17 +297,34 @@ export default {
           }
         });
       this.$emailConnectorAdministrationService.getTrashSyncEnabled()
-        .then(enabled => this.trashSyncEnabled = enabled);
+        .then(enabled => {
+          this.trashSyncEnabled = enabled;
+          this.trashSyncShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getJunkSyncEnabled()
-        .then(enabled => this.junkSyncEnabled = enabled);
+        .then(enabled => {
+          this.junkSyncEnabled = enabled;
+          this.junkSyncShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getServerDraftsEnabled()
-        .then(enabled => this.draftsServerEnabled = enabled);
+        .then(enabled => {
+          this.draftsServerEnabled = enabled;
+          this.draftsServerShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
-        .then(enabled => this.customFoldersEnabled = enabled);
+        .then(enabled => {
+          this.customFoldersEnabled = enabled;
+          this.customFoldersShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getSharedMailboxSentCopyEnabled()
         .then(enabled => {
           this.sharedMailboxSentCopyEnabled = enabled;
           this.sharedMailboxSentCopyShown = enabled;
+        });
+      this.$emailConnectorAdministrationService.getSenderLogosEnabled()
+        .then(enabled => {
+          this.senderLogosEnabled = enabled;
+          this.senderLogosShown = enabled;
         });
     },
     /**
@@ -344,10 +391,14 @@ export default {
      * @returns {void}
      */
     onTrashSyncChange(enabled) {
+      this.trashSyncShown = enabled;
       this.savingTrash = true;
       this.$emailConnectorAdministrationService.updateTrashSyncEnabled(enabled)
         .then(() => this.trashSyncEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.trashSyncShown = this.trashSyncEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingTrash = false);
     },
     /**
@@ -357,10 +408,14 @@ export default {
      * @returns {void}
      */
     onJunkSyncChange(enabled) {
+      this.junkSyncShown = enabled;
       this.savingJunk = true;
       this.$emailConnectorAdministrationService.updateJunkSyncEnabled(enabled)
         .then(() => this.junkSyncEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.junkSyncShown = this.junkSyncEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingJunk = false);
     },
     /**
@@ -370,10 +425,14 @@ export default {
      * @returns {void}
      */
     onDraftsServerChange(enabled) {
+      this.draftsServerShown = enabled;
       this.savingDraftsServer = true;
       this.$emailConnectorAdministrationService.updateServerDraftsEnabled(enabled)
         .then(() => this.draftsServerEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.draftsServerShown = this.draftsServerEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingDraftsServer = false);
     },
     /**
@@ -387,10 +446,14 @@ export default {
      * @returns {void}
      */
     onCustomFoldersChange(enabled) {
+      this.customFoldersShown = enabled;
       this.savingCustomFolders = true;
       this.$emailConnectorAdministrationService.updateCustomFoldersEnabled(enabled)
         .then(() => this.customFoldersEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.customFoldersShown = this.customFoldersEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingCustomFolders = false);
     },
     /**
@@ -429,6 +492,24 @@ export default {
             this.onSharedMailboxSentCopyChange(queued);
           }
         });
+    },
+    /**
+     * Saves the switch of the senders' brand logos on change (EXO-90893). Off, the
+     * server fetches nothing more and senders keep their initials.
+     *
+     * @param {Boolean} enabled the new switch value
+     * @returns {void}
+     */
+    onSenderLogosChange(enabled) {
+      this.senderLogosShown = enabled;
+      this.savingSenderLogos = true;
+      this.$emailConnectorAdministrationService.updateSenderLogosEnabled(enabled)
+        .then(() => this.senderLogosEnabled = enabled)
+        .catch(() => {
+          this.senderLogosShown = this.senderLogosEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
+        .finally(() => this.savingSenderLogos = false);
     },
   },
 };

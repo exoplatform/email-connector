@@ -37,6 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.io.ByteArrayInputStream;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,7 @@ import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
 import org.exoplatform.emailConnector.service.EmailContactVCardService;
+import org.exoplatform.emailConnector.service.EmailSenderProfileService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -114,6 +116,9 @@ public class EmailContactRestTest {
 
   @MockitoBean
   private EmailContactVCardService       emailContactVCardService;
+
+  @MockitoBean
+  private EmailSenderProfileService      emailSenderProfileService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -326,12 +331,73 @@ public class EmailContactRestTest {
            .andExpect(status().isNotFound());
   }
 
+  /** The mail list's avatars: the addresses travel as a JSON array, the pictures come back by address. */
   @Test
-  void getFromAttachmentWithoutAMailboxAnswersUnauthorized() throws Exception {
+  void platformAvatarsAnswerThePicturesByAddress() throws Exception {
+    when(emailSenderProfileService.getAvatars(List.of("bob@example.org", "ann@client.org"), SIMPLE_USER))
+        .thenReturn(Map.of("bob@example.org", "/portal/rest/v1/social/users/bob/avatar"));
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content("[\"bob@example.org\",\"ann@client.org\"]"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['bob@example.org']").value("/portal/rest/v1/social/users/bob/avatar"))
+           .andExpect(jsonPath("$['ann@client.org']").doesNotExist());
+  }
+
+  /**
+   * The contacts the avatars read are the caller's own (EXO-90908): the batch names no
+   * user, the service is handed the authenticated caller, and another user asking for
+   * the same addresses gets their own answer, never the first caller's contact photo.
+   */
+  @Test
+  void avatarsReadTheCallersOwnContactsOnly() throws Exception {
+    String contactPhoto = "/email-connector/rest/contacts/7/photo?v=1700000000000";
+    when(emailSenderProfileService.getAvatars(List.of("ann@client.org"), SIMPLE_USER)).thenReturn(Map.of("ann@client.org", contactPhoto));
+    when(emailSenderProfileService.getAvatars(List.of("ann@client.org"), "mallory")).thenReturn(Map.of());
+
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content("[\"ann@client.org\"]"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['ann@client.org']").value(contactPhoto));
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars?username=" + SIMPLE_USER).with(user("mallory").password("password")
+                                                                                                  .authorities(new SimpleGrantedAuthority("users")))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .content("[\"ann@client.org\"]"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['ann@client.org']").doesNotExist());
+
+    verify(emailSenderProfileService).getAvatars(List.of("ann@client.org"), SIMPLE_USER);
+    verify(emailSenderProfileService).getAvatars(List.of("ann@client.org"), "mallory");
+  }
+
+  /** Past the cap the service refuses, and the caller reads a 400 naming why. */
+  @Test
+  void platformAvatarsPastTheCapAnswerBadRequest() throws Exception {
+    when(emailSenderProfileService.getAvatars(any(), any())).thenThrow(new IllegalArgumentException(EmailSenderProfileService.AVATARS_TOO_MANY));
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content("[\"bob@example.org\"]"))
+           .andExpect(status().isBadRequest());
+  }
+
+  /** The lookup is for platform users: an identity without the users role never reaches the directory. */
+  @Test
+  void platformAvatarsAreRefusedWithoutTheUsersRole() throws Exception {
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars").with(user(SIMPLE_USER).password("password")
+                                                                           .authorities(new SimpleGrantedAuthority("guests")))
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content("[\"bob@example.org\"]"))
+           .andExpect(status().isForbidden());
+    verify(emailSenderProfileService, never()).getAvatars(any(), any());
+  }
+
+  @Test
+  void getFromAttachmentWithoutAMailboxAnswersForbidden() throws Exception {
     when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString(), anyString()))
         .thenThrow(new IllegalAccessException("no mailbox"));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   @Test

@@ -33,9 +33,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
       </div>
       <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
+        <!-- A folder inside another is indented under it, and a folder with folders
+             inside collapses them (EXO-90839). -->
         <v-list-item
           v-for="folder in visibleFolders"
           :key="folder.key"
+          :disabled="folder.labelOnly"
+          :style="folder.depth ? { paddingInlineStart: `${16 + Math.min(folder.depth, 6) * 16}px` } : null"
+          :title="folder.path || null"
+          :aria-label="folder.countDescription"
           class="height-auto"
           @click="switchFolder(folder.key)">
           <v-sheet
@@ -49,17 +55,34 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ folder.icon }}
             </v-icon>
           </v-sheet>
-          <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+          <span :class="{ 'primary--text': folder.key === currentFolder && !categoryViewId, 'font-weight-bold': folder.unread || (folder.key === currentFolder && !categoryViewId) }">
             {{ folder.label }}
           </span>
-          <!-- The Scheduled view's count, in the warning colour when one of its mails was
-               not sent (EXO-90434). -->
+          <!-- The count the full-screen folder column shows, from the same counts and with
+               its rules (EXO-90881): the unread mail of the inbox and the spam, every mail
+               of the drafts, the Scheduled view's -- in the warning colour when one of its
+               mails was not sent (EXO-90434) --, the suggestions waiting (EXO-90851). -->
           <span
             v-if="folder.count"
-            :class="folder.attention ? 'warning--text font-weight-bold' : 'text-sub-title'"
+            :title="folder.countDescription"
+            :class="folder.attention ? 'warning--text font-weight-bold' : (folder.unread ? 'font-weight-bold' : 'text-sub-title')"
             class="ms-auto ps-2 caption folder-menu-count">
             {{ $emailConnectorMailBoxService.formatCount(folder.count) }}
           </span>
+          <v-btn
+            v-if="folder.hasChildren"
+            :title="toggleLabel(folder)"
+            :aria-label="toggleLabel(folder)"
+            :aria-expanded="String(!collapsed[folder.key])"
+            :class="{ 'ms-auto': !folder.count }"
+            class="ms-1"
+            icon
+            x-small
+            @click.stop="toggle(folder.key)">
+            <v-icon size="12" class="icon-default-color">
+              {{ collapsed[folder.key] ? 'fa-chevron-right' : 'fa-chevron-down' }}
+            </v-icon>
+          </v-btn>
         </v-list-item>
       </div>
       <!-- Categories: the complete list, Important included — its quick chip
@@ -76,6 +99,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item
           v-for="category in categories"
           :key="category.id"
+          :aria-label="categoryCountDescription(category)"
           class="height-auto"
           @click="openCategoryView(category.id)">
           <v-sheet
@@ -89,8 +113,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ category.icon || 'fa-tag' }}
             </v-icon>
           </v-sheet>
-          <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
+          <span :class="{ 'primary--text': category.id === categoryViewId, 'font-weight-bold': category.id === categoryViewId || categoryCount(category) > 0 }">
             {{ category.name }}
+          </span>
+          <!-- Its unread mail, as the full-screen column counts it (EXO-90881). -->
+          <span
+            v-if="categoryCount(category)"
+            :title="categoryCountDescription(category)"
+            class="ms-auto ps-2 caption font-weight-bold folder-menu-count">
+            {{ $emailConnectorMailBoxService.formatCount(categoryCount(category)) }}
           </span>
         </v-list-item>
       </template>
@@ -122,7 +153,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. Not in the
-         Scheduled view, whose mails are acted on one at a time (EXO-90434). -->
+         Scheduled view, whose mails are acted on one at a time (EXO-90434). The
+         Suggestions view lists mails, and they are selected as any list's (EXO-90891). -->
     <v-list-item
       v-if="!scheduledView"
       class="height-auto"
@@ -139,6 +171,44 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
+      </span>
+    </v-list-item>
+    <!-- The listed folder as one .mbox file (EXO-90845), and mail imported into it from
+         files (EXO-90846), offered where the server would allow them. -->
+    <v-list-item
+      v-if="folderExportable"
+      class="height-auto"
+      @click="exportFolder()">
+      <v-sheet
+        class="d-flex me-2"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-file-download
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.export.folder') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      v-if="folderImportable"
+      class="height-auto"
+      @click="importIntoFolder()">
+      <v-sheet
+        class="d-flex me-2"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-file-import
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.import.folder') }}
       </span>
     </v-list-item>
     <!-- The AI entry is contributed by the enterprise AI addon, which renders a complete
@@ -176,6 +246,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
+import { isScheduledView } from '../../js/EmailConnectorMailBoxService.js';
+import { OPEN_IMPORT_DRAWER_EVENT, canExportFolder, canImportInto, downloadFolderMbox, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
+
 // The folder list scrolls inside its own pane once it is longer than seven rows,
 // built-ins counted with the rest: what makes the menu a wall is its total length, not
 // how many of the folders happen to be the user's own, and a rule that counted only
@@ -209,6 +283,13 @@ export default {
       type: Array,
       default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
+    // Every folder of the user's, mirrored or not: what decides whether INBOX is the
+    // namespace their folders live under, so a path reads the same on every screen
+    // (EXO-90839). The offered folders when not given.
+    namespaceFolders: {
+      type: Array,
+      default: null,
+    },
     // The categories offered as views ({id, name, icon}) — the add-on's full
     // set, Important included (its chip above the list is a shortcut to the
     // same view). Empty hides the section.
@@ -221,6 +302,18 @@ export default {
     categoryViewId: {
       type: [Number, String],
       default: null,
+    },
+    // The count each folder shows, by folder key ({count, unread, attention}): the
+    // drawer's folderCounts, the very counts the full-screen folder column shows
+    // (EXO-90881).
+    folderCounts: {
+      type: Object,
+      default: () => ({}),
+    },
+    // The unread mail of each category, by category id: the column's too (EXO-90881).
+    categoryUnreadCounts: {
+      type: Object,
+      default: () => ({}),
     },
     syncInProgress: {
       type: Boolean,
@@ -242,41 +335,88 @@ export default {
   data() {
     return {
       FOLDERS_MAX_HEIGHT,
+      collapsed: readCollapsedFolders(),
     };
   },
   computed: {
     /**
-     * The folders to display, each with its icon and its label. The label comes from
+     * The folders to display, each with its icon, its label and its count. The label comes from
      * the one labelling function: a built-in through the bundle, a custom folder as
      * the user wrote it -- never through $t; the icon from the one icon function the
      * full-screen folder column reads too. The ORDER of the list is the server's: inbox,
      * Sent, Archive, Drafts, then the two hidden folders (Spam before Trash the way
      * every mail client orders them), then the user's own -- see
-     * EmailBoxService#buildFolderViews.
+     * EmailBoxService#buildFolderViews --, with the Suggestions view the drawer adds after
+     * the Scheduled one (withSuggestionsView, EXO-90851).
      *
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      return this.availableFolders.map(folder => {
-        const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
+      // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
+      // a collapsed one's folders left out.
+      // A folder the user may only see is a label: never listed, never collapsed.
+      const collapsed = Object.assign({}, this.collapsed);
+      this.availableFolders.filter(folder => folder.readable === false).forEach(folder => delete collapsed[folder.key]);
+      return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), collapsed).map(row => {
+        const folder = row.folder;
+        const { count, unread, attention } = this.$emailConnectorMailBoxService.folderCountOf(this.folderCounts, folder.key);
+        const label = row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return {
           key: folder.key,
+          depth: row.depth,
+          hasChildren: row.hasChildren && folder.readable !== false,
+          labelOnly: folder.readable === false,
+          path: this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders || this.availableFolders),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
-          label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
-          // Counted in the menu only for the Scheduled view, which is listed only when it
-          // holds something and says when one of its mails needs the user (EXO-90434).
-          count: scheduled ? folder.count || 0 : 0,
-          attention: scheduled && !!folder.attention,
+          label,
+          // The full-screen column's count, by its rules (EXO-90881): the Scheduled view's
+          // says when one of its mails needs the user (EXO-90434).
+          count,
+          unread,
+          attention,
+          countDescription: this.$emailConnectorMailBoxService.countDescription(this.$t.bind(this), label, count, unread, attention),
         };
       });
     },
     /**
-     * Whether the Scheduled view is listed: no multi-selection there.
+     * Whether the Scheduled view is listed: no multi-selection there, its mails are
+     * acted on one at a time.
      *
      * @returns {Boolean} true on the Scheduled view
      */
     scheduledView() {
-      return this.$emailConnectorMailBoxService.isScheduledView(this.currentFolder);
+      return isScheduledView(this.currentFolder);
+    },
+    /**
+     * Whether the listed folder can be exported whole (EXO-90845).
+     *
+     * @returns {Boolean} true when the export is offered
+     */
+    folderExportable() {
+      return !this.categoryViewId && canExportFolder(this.currentFolder);
+    },
+    /**
+     * Whether mail can be imported into the listed folder (EXO-90846).
+     *
+     * @returns {Boolean} true when the import is offered
+     */
+    folderImportable() {
+      return !this.categoryViewId && canImportInto(this.currentFolder);
+    },
+    /**
+     * The listed folder's name, as the menu shows it.
+     *
+     * @returns {String} the label
+     */
+    currentFolderLabel() {
+      // From the whole tree, not the rows on show: the listed folder stays listed when its
+      // parent is collapsed (EXO-90839), and must keep its name in the import drawer.
+      const folders = this.namespaceFolders || this.availableFolders;
+      const row = visibleFolderRows(buildFolderTree(this.availableFolders, folders), {}).find(candidate => candidate.folder.key === this.currentFolder);
+      if (!row) {
+        return this.currentFolder;
+      }
+      return row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(row.folder, this.$t.bind(this));
     },
     /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
@@ -291,6 +431,45 @@ export default {
     },
   },
   methods: {
+    /**
+     * The unread mail of a category, as the full-screen column shows it.
+     *
+     * @param {Object} category the category ({id, name, icon})
+     * @returns {Number} the count, 0 for none
+     */
+    categoryCount(category) {
+      return this.$emailConnectorMailBoxService.categoryCountOf(this.categoryUnreadCounts, category.id);
+    },
+    /**
+     * A category's name with its unread mail, as a screen reader and a hover say it.
+     *
+     * @param {Object} category the category ({id, name, icon})
+     * @returns {String} the description
+     */
+    categoryCountDescription(category) {
+      const count = this.categoryCount(category);
+      return this.$emailConnectorMailBoxService.countDescription(this.$t.bind(this), category.name, count, count > 0, false);
+    },
+    /**
+     * What the collapse button of a folder says: the action it takes, with the folder's name.
+     *
+     * @param {Object} folder the folder descriptor
+     * @returns {String} the label
+     */
+    toggleLabel(folder) {
+      const key = this.collapsed[folder.key] ? 'emailConnector.mailBox.list.drawer.navigation.expandFolder'
+        : 'emailConnector.mailBox.list.drawer.navigation.collapseFolder';
+      return this.$t(key, { 0: folder.label });
+    },
+    /**
+     * Collapses or expands the folders inside a folder, the menu staying open.
+     *
+     * @param {String} key the folder's key
+     * @returns {void}
+     */
+    toggle(key) {
+      this.collapsed = toggleCollapsedFolder(this.collapsed, key);
+    },
     /**
      * Switches the listed folder. Always emitted, even for the folder already
      * listed: inside a category view, re-picking the current folder is the way
@@ -334,6 +513,24 @@ export default {
      */
     enterSelectMode() {
       this.$root.$emit('enter-select-mode');
+    },
+    /**
+     * Downloads the listed folder as an .mbox, once the server checked it; a refusal or a
+     * folder past the cap is told rather than downloaded.
+     *
+     * @returns {void}
+     */
+    exportFolder() {
+      downloadFolderMbox(this.currentFolder)
+        .catch(error => this.$root.$emit('alert-message', this.$t(exportErrorKey(error), { 0: error?.max }), 'error'));
+    },
+    /**
+     * Opens the import drawer on the listed folder.
+     *
+     * @returns {void}
+     */
+    importIntoFolder() {
+      this.$root.$emit(OPEN_IMPORT_DRAWER_EVENT, { folder: this.currentFolder, label: this.currentFolderLabel });
     },
     /**
      * Opens the user's webmail in a new tab.

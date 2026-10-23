@@ -56,6 +56,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
            not an action taken on mail. -->
       <email-connector-user-setting-folders />
       <email-connector-user-setting-read-receipts />
+      <!-- Undo send (EXO-90837): beside the read receipts, the other choice about how a
+           mail the user sends goes out. -->
+      <email-connector-user-setting-undo-send />
+      <!-- Images in received mail (EXO-90841): with the read receipts, what a sender
+           learns from a mail being opened. -->
+      <email-connector-user-setting-remote-content />
+      <!-- The automatic reply (EXO-90642): a setting of the user's own mailbox, run by
+           the mail server. Each of these two rows is self-contained -- it reads its own
+           summary and opens a drawer mounted at the app's root -- so it can move in this
+           list with no other change. -->
+      <email-connector-user-setting-absence />
+      <!-- Mail filters (EXO-90652): the rules the mail server runs at delivery, next to
+           the automatic reply, the other thing the server does with incoming mail. -->
+      <email-connector-user-setting-filters />
+      <!-- Mailbox delegation (EXO-90503, EXO-90559): one row for both sides of it, over
+           one drawer with a tab each; after the automatic reply, because it is the only
+           row here about somebody else's mail. -->
+      <email-connector-user-setting-sharing />
       <v-divider class="mx-4 mt-4" />
       <v-list-item class="mt-2">
         <v-list-item-content>

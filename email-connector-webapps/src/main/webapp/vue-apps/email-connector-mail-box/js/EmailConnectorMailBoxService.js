@@ -24,6 +24,7 @@ export * from './EmailConnectorReadReceiptService.js';
 export * from './EmailConnectorSharedMailboxes.js';
 import { inboxOnlyShareOf, isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxCanFileInto, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
+import { folderPathLabel } from './EmailConnectorFolderTree.js';
 
 const presentation = {
   class: 'fas fa-file-powerpoint',
@@ -290,18 +291,25 @@ export function canDelete(folder) {
   return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
 }
 
+// The folders the server never archives out of (EmailBoxService#canMoveOutOf).
+const NOT_ARCHIVABLE_FOLDERS = ['ARCHIVE', 'ALL_MAIL'];
+
 /**
  * Whether a row may be archived: where mail may be taken out of its folder, and in a
  * shared mailbox only where its owner shares an Archive the user may file into -- and
- * never out of that Archive itself, a copy into the folder the message is in
- * (EXO-90548). A server with no Archive (Stalwart has none by default) offers none,
- * even after the owner extends the share.
+ * never out of an Archive itself, the user's own (EXO-91677) or a shared mailbox's
+ * (EXO-90548), nor out of All Mail: a copy into the folder the message is in, which
+ * the server refuses (EmailBoxService#canMoveOutOf). A server with no Archive
+ * (Stalwart has none by default) offers none, even after the owner extends the share.
  *
  * @param {String} folder the folder a row carries; blank means INBOX
  * @returns {Boolean} true when Archive may be offered on those messages
  */
 export function canArchive(folder) {
-  return canMoveOutOf(folder) && sharedFolderRole(folder) !== 'ARCHIVE' && sharedMailboxCanFileInto(folder, 'ARCHIVE');
+  return canMoveOutOf(folder)
+    && !NOT_ARCHIVABLE_FOLDERS.includes(folder || 'INBOX')
+    && sharedFolderRole(folder) !== 'ARCHIVE'
+    && sharedMailboxCanFileInto(folder, 'ARCHIVE');
 }
 
 /**
@@ -441,6 +449,61 @@ export function isScheduledView(folder) {
   return folder === SCHEDULED_VIEW;
 }
 
+/**
+ * The key of the "Suggestions" view (EXO-90851): the user's own mails with a suggestion
+ * of an assistant waiting for them. Like the Scheduled view, no folder of the mail
+ * server: the drawer adds it to the column after the Scheduled view, only when a
+ * suggestion waits, and its mails are listed by their own endpoint.
+ */
+export const SUGGESTIONS_VIEW = 'SUGGESTIONS';
+
+/**
+ * Whether a folder key is the "Suggestions" view.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true for the view
+ */
+export function isSuggestionsView(folder) {
+  return folder === SUGGESTIONS_VIEW;
+}
+
+/**
+ * Whether a folder key is one of the mailbox's views -- Scheduled, Suggestions --, listed
+ * by an endpoint of its own rather than by the folder listing: no chips, search,
+ * selection or drag there.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true for a view
+ */
+export function isMailboxView(folder) {
+  return isScheduledView(folder) || isSuggestionsView(folder);
+}
+
+// The folders the Suggestions view is listed after, in the server's order
+// (EmailBoxService#buildFolderViews): it comes right after the Scheduled view, or where
+// that view would be.
+const BEFORE_SUGGESTIONS_VIEW = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', SCHEDULED_VIEW];
+
+/**
+ * The user's own folders with the Suggestions view among them (EXO-90851): right after the
+ * Scheduled view, counting the suggestions waiting, while one waits -- or while the view
+ * is listed, so the column keeps the entry the user stands on once the last one is
+ * decided. The server's list is never changed.
+ *
+ * @param {Array} folders the folders as the server lists them
+ * @param {Number} waiting how many suggestions wait for the user
+ * @param {Boolean} listed whether the view is listed
+ * @returns {Array} the folders, the view added when it shows
+ */
+export function withSuggestionsView(folders, waiting, listed) {
+  if (!(waiting > 0) && !listed) {
+    return folders;
+  }
+  const view = { key: SUGGESTIONS_VIEW, type: 'BUILT_IN', syncEnabled: true, count: waiting > 0 ? waiting : 0 };
+  const index = folders.reduce((last, folder, position) => (BEFORE_SUGGESTIONS_VIEW.includes(folder.key) ? position : last), -1);
+  return [...folders.slice(0, index + 1), view, ...folders.slice(index + 1)];
+}
+
 // The icon of each built-in folder; a folder of the user's own gets the plain folder.
 // Read by the 3-dots menu and the full-screen folder column alike (folderIcon), so the
 // two can never show one folder under two icons (EXO-90415).
@@ -452,6 +515,7 @@ const BUILT_IN_FOLDER_ICONS = {
   JUNK: 'fa-ban',
   TRASH: 'fa-trash',
   SCHEDULED: 'fa-clock',
+  SUGGESTIONS: 'fa-magic',
 };
 
 /**
@@ -509,17 +573,70 @@ export function formatCount(count) {
 }
 
 /**
+ * The event the narrow 3-dots menu sends when it opens on its categories: their unread
+ * counts take the subcategories, which the drawer reads only once something shows them
+ * (EXO-90881).
+ */
+export const CATEGORY_COUNTS_NEEDED_EVENT = 'email-category-counts-needed';
+
+/**
+ * The count one folder shows, read from the mailbox's counts by folder (the drawer's
+ * folderCounts, which holds the rules: which folders count, unread or total). Read by the
+ * full-screen folder column and the narrow 3-dots menu alike, so the two can never show
+ * one folder with two counts (EXO-90881).
+ *
+ * @param {Object} folderCounts the counts by folder key, each {count, unread, attention}
+ * @param {String} key the folder's key
+ * @returns {Object} {count, unread, attention}: count 0 for none, unread only with a count
+ */
+export function folderCountOf(folderCounts, key) {
+  const counted = folderCounts?.[key];
+  const count = counted?.count > 0 ? counted.count : 0;
+  return { count, unread: !!(count && counted.unread), attention: !!counted?.attention };
+}
+
+/**
+ * The unread mail one category shows, read from the drawer's categoryUnreadCounts. Read by
+ * the full-screen folder column and the narrow 3-dots menu alike (EXO-90881).
+ *
+ * @param {Object} categoryUnreadCounts the unread mail by category id
+ * @param {Number|String} id the category's id
+ * @returns {Number} the count, 0 for none
+ */
+export function categoryCountOf(categoryUnreadCounts, id) {
+  const count = categoryUnreadCounts?.[id];
+  return count > 0 ? count : 0;
+}
+
+/**
+ * An entry's name with its count, as a screen reader and a hover say it: "Inbox, 7
+ * unread", "Drafts, 12", and whether one of its mails needs the user. The name alone
+ * without a count. Shared by the folder column and the 3-dots menu (EXO-90881).
+ *
+ * @param {Function} translate the component's $t
+ * @param {String} label the entry's name
+ * @param {Number} count its count, 0 for none
+ * @param {Boolean} unread whether the count is unread mail
+ * @param {Boolean} attention whether one of its mails needs the user (EXO-90434)
+ * @returns {String} the description
+ */
+export function countDescription(translate, label, count, unread, attention) {
+  const key = unread ? 'emailConnector.mailBox.list.drawer.navigation.unread' : 'emailConnector.mailBox.list.drawer.navigation.total';
+  const described = count ? translate(key, { 0: label, 1: count }) : label;
+  return attention ? translate('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described }) : described;
+}
+
+/**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
- * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.
+ * a spaced slash ("Customers / Acme"), so a nested folder says where it lives -- without
+ * the INBOX every folder lives under on some servers (EmailConnectorFolderTree).
  *
  * @param {Object} folder the folder as the server lists it
+ * @param {Array} folders the folders it is listed with, which tell whether INBOX is that namespace
  * @returns {String} the path, or nothing for a built-in
  */
-export function folderPath(folder) {
-  if (!folder?.path) {
-    return '';
-  }
-  return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+export function folderPath(folder, folders) {
+  return folderPathLabel(folder, folders);
 }
 
 // Folders the server keeps rows of but lists to nobody: All Mail is a thread-completion
@@ -550,11 +667,13 @@ export function moveTargets(folders, sourceFolder) {
   // A move never crosses from one mailbox to another (EmailBoxService
   // #checkDelegatedMove): out of a shared mailbox, only that mailbox's own folders the
   // user may insert into -- none in phase 1, which registers its INBOX alone -- and out
-  // of the user's own, never a shared mailbox's folder.
+  // of the user's own, never a shared mailbox's folder; never a folder the user may only
+  // see, kept in the lists as the label its folders nest under.
   const sourceMailbox = sharedMailboxOfFolder(source);
   if (sourceMailbox) {
     return (folders || []).filter(folder => folder.key !== source
                                             && !folder.missing
+                                            && folder.readable !== false
                                             && sharedMailboxOfFolder(folder.key)?.delegationId === sourceMailbox.delegationId
                                             && sharedMailboxAllows(folder.key, 'moveTarget'));
   }
@@ -966,6 +1085,8 @@ export function unlinkEmailsFromCategory(mailRemoteIds, categoryId, folder) {
  * @param {Object} options {broadcast}: false when the read must not count as the user
  *   opening the message -- a message the reader opened on its own, whose opening is
  *   signalled later by broadcastOpenEmail (EXO-90414). Counts when omitted.
+ *   {remoteContent}: true when the user asked to load the images and other resources
+ *   the message fetches from the internet (EXO-90841); held back when omitted.
  * @returns {Promise<Object>} the message
  */
 export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
@@ -975,6 +1096,9 @@ export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
   }
   if (options.broadcast === false) {
     params.set('broadcast', 'false');
+  }
+  if (options.remoteContent) {
+    params.set('remoteContent', 'true');
   }
   const query = params.toString() ? `?${params.toString()}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
@@ -1092,27 +1216,24 @@ export function completeThreadByThreadId(threadId, folder) {
  * telling whether the message can be opened straight from the local cache.
  *
  * @param {String} query free text matched against subject or sender
- * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE
+ * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE, searched on the
+ *          mail server, or CUSTOM:<id> for a folder of a mailbox shared with the user,
+ *          searched in the copy of it kept in eXo (EXO-90590)
  * @param {Number} limit how many hits to return (newest first)
  * @param {Boolean} favorites when true, only messages carrying the server's \Flagged
- *          flag come back, so the mailbox's Favorites chip narrows the search too
+ *          flag come back -- in a shared mailbox, the owner's star as the copy holds
+ *          it -- so the mailbox's Favorites chip narrows the search too
  * @param {Boolean} unread when true, only unread messages come back, for the same
  *          reason: the chip is lit, so it must still be filtering
+ * @param {Object} criteria the advanced search's criteria (EXO-90838), may be absent:
+ *          {from, to, words, after, before, attachment, categoryIds, attachmentTypes,
+ *          attachmentName} -- the days as yyyy-MM-dd, the first included and the last
+ *          excluded; an empty one is not sent; the categories, and the kind and name of
+ *          an attachment, are eXo's, so only mail eXo holds can match them
  * @returns {Promise} resolves with { results, totalMatches }
  */
-export function searchEmails(query, folder, limit, favorites, unread) {
-  const params = new URLSearchParams({ query, limit });
-  if (folder && folder !== 'INBOX') {
-    params.append('folder', folder);
-  }
-  // Sent only when on: the endpoint defaults both to false, and an explicit
-  // favorites=false would say "the caller considered this" when it has not.
-  if (favorites) {
-    params.append('favorites', 'true');
-  }
-  if (unread) {
-    params.append('unread', 'true');
-  }
+export function searchEmails(query, folder, limit, favorites, unread, criteria) {
+  const params = searchParams(query, folder, limit, favorites, unread, criteria);
   return fetch(`/email-connector/rest/email-box/search?${params}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -1126,6 +1247,83 @@ export function searchEmails(query, folder, limit, favorites, unread) {
       throw new Error('Error when searching the mailbox');
     }
   });
+}
+
+/**
+ * Searches one folder of the copy of the mailbox kept in eXo, with the advanced search's
+ * criteria (EXO-90838): what the advanced search reads first, without touching the mail
+ * server. Same parameters as searchEmails.
+ *
+ * @param {String} query free text matched against subject or sender, may be empty
+ * @param {String} folder INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox
+ *          shared with the user
+ * @param {Number} limit how many hits to return (newest first)
+ * @param {Boolean} favorites when true, only starred messages
+ * @param {Boolean} unread when true, only unread messages
+ * @param {Object} criteria {from, to, words, after, before, attachment, categoryIds,
+ *          attachmentTypes, attachmentName}
+ * @returns {Promise} resolves with { results, totalMatches }; rejects with
+ *          the response status on the error
+ */
+export function searchCachedFolder(query, folder, limit, favorites, unread, criteria) {
+  return fetch(`/email-connector/rest/email-box/search/local?${searchParams(query, folder, limit, favorites, unread, criteria)}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    const error = new Error('Error when searching the copy of the mailbox');
+    error.status = resp?.status;
+    throw error;
+  });
+}
+
+/**
+ * The query of a search, as /search and /search/local take it: only what is set is sent.
+ *
+ * @param {String} query free text matched against subject or sender
+ * @param {String} folder the folder to search
+ * @param {Number} limit how many hits to return
+ * @param {Boolean} favorites when true, only starred messages
+ * @param {Boolean} unread when true, only unread messages
+ * @param {Object} criteria the advanced search's criteria, may be absent
+ * @returns {URLSearchParams} the query
+ */
+function searchParams(query, folder, limit, favorites, unread, criteria) {
+  const params = new URLSearchParams({ query: query || '', limit });
+  if (folder && folder !== 'INBOX') {
+    params.append('folder', folder);
+  }
+  // Sent only when on: the endpoint defaults both to false, and an explicit
+  // favorites=false would say "the caller considered this" when it has not.
+  if (favorites) {
+    params.append('favorites', 'true');
+  }
+  if (unread) {
+    params.append('unread', 'true');
+  }
+  ['from', 'to', 'words', 'after', 'before'].forEach(name => {
+    const value = (criteria?.[name] || '').trim();
+    if (value) {
+      params.append(name, value);
+    }
+  });
+  if (criteria?.attachment) {
+    params.append('attachment', 'true');
+    // What the attachment must be (EXO-90910): one parameter per kind, and its name.
+    (criteria.attachmentTypes || []).forEach(type => params.append('attachmentTypes', type));
+    const attachmentName = (criteria.attachmentName || '').trim();
+    if (attachmentName) {
+      params.append('attachmentName', attachmentName);
+    }
+  }
+  // The categories eXo filed the mail under, one parameter each (EXO-90888).
+  (criteria?.categoryIds || []).forEach(id => params.append('categoryIds', id));
+  return params;
 }
 
 /**
@@ -1311,15 +1509,19 @@ function jsonOrEmpty(resp) {
  * From a mailbox shared with the user when `delegationId` names it, in which case a
  * copy is also filed in its owner's Sent folder (EXO-90551).
  *
+ * In the owner's name when `sendMode` asks for it (EXO-90583): ON_BEHALF or AS, as the
+ * owner allowed; the server checks it against her consent.
+ *
  * @param {Object} email the composed email, including its optional attachments
  * @param {Number} delegationId the share the mail is sent from, or nothing
+ * @param {String} sendMode ON_BEHALF or AS to write in the owner's name, or nothing
  * @returns {Promise<Object>} resolves once the email has been sent, with { ownerCopy } --
  *          FILED, FAILED or SKIPPED -- when a share is named; rejects with a
- *          {@link refusal} error -- its code says a share is gone
+ *          {@link refusal} error -- its code says a share is gone, or why the owner's
+ *          name could not be used
  */
-export function sendEmail(email, delegationId) {
-  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
-  return fetch(`/email-connector/rest/email-box/send${query}`, {
+export function sendEmail(email, delegationId, sendMode) {
+  return fetch(`/email-connector/rest/email-box/send${sendQuery(delegationId, sendMode)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -1332,6 +1534,25 @@ export function sendEmail(email, delegationId) {
     }
     return jsonOrEmpty(resp);
   });
+}
+
+/**
+ * The query of a send: the share the mail belongs to, and the owner's name it goes out
+ * in (EXO-90583) -- neither when the mail is the user's own.
+ *
+ * @param {Number} delegationId the share, or nothing
+ * @param {String} sendMode ON_BEHALF or AS, or nothing (NONE is the user's own name)
+ * @returns {String} the query, with its '?', or ''
+ */
+function sendQuery(delegationId, sendMode) {
+  const params = [];
+  if (delegationId) {
+    params.push(`delegationId=${encodeURIComponent(delegationId)}`);
+  }
+  if (sendMode && sendMode !== 'NONE') {
+    params.push(`sendMode=${encodeURIComponent(sendMode)}`);
+  }
+  return params.length ? `?${params.join('&')}` : '';
 }
 
 /**
@@ -1366,7 +1587,32 @@ export function saveDraft(draft, push) {
       return null;
     }
     if (!resp?.ok) {
-      throw new Error('Error when saving draft');
+      // With the server's code when it sent one: a first save naming a mailbox that is
+      // not the user's is refused with its own (EXO-90595).
+      return refusal(resp, 'Error when saving draft');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * The mailbox shared with the user that one of their drafts belongs to (EXO-90595), as
+ * the server knows it: {delegationId, ownerFullName, ownerMailbox, shared}, or null for a
+ * draft of the user's own mailbox.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @returns {Promise<Object>} the mailbox, or null
+ */
+export function getDraftMailbox(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/mailbox`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (resp?.status === 204) {
+      return null;
+    }
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when reading the mailbox of a draft');
     }
     return resp.json();
   });
@@ -1385,12 +1631,16 @@ export function saveDraft(draft, push) {
  * @param {Object} draft the composed draft as the composer is showing it
  * @param {Number} delegationId the share the draft is sent from, or nothing -- a copy
  *        is then also filed in the owner's Sent (EXO-90551)
+ * @param {String} sendMode deprecated (EXO-90584): the draft's own sendMode, carried in
+ *        its body or stored, is the name it goes out in; this is read only for a draft
+ *        that records none, and refused (emailConnector.sendMode.mismatch) when it is not
+ *        the draft's. The composer passes nothing
  * @returns {Promise<Object>} resolves once the mail is out and the draft is gone, with
- *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its code says a share is gone
+ *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its
+ *          code says a share is gone, or why the owner's name could not be used
  */
-export function sendDraft(draftLocalId, draft, delegationId) {
-  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
-  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${query}`, {
+export function sendDraft(draftLocalId, draft, delegationId, sendMode) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${sendQuery(delegationId, sendMode)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
