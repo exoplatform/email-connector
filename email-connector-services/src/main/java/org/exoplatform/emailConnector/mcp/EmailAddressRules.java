@@ -50,13 +50,23 @@ final class EmailAddressRules {
   }
 
   /**
-   * An address as recipients are compared: trimmed and lower-cased.
+   * An address as recipients are compared: trimmed, and its ASCII letters
+   * lower-cased, every other character kept as written. A full lower-casing
+   * turns some non-ASCII letters into ASCII ones (the Kelvin sign into
+   * {@code k}), so an address given by an agent would compare equal to another
+   * one, the one actually sent.
    *
    * @param address the address, possibly null
-   * @return the address, trimmed and lower-cased; empty for a blank one
+   * @return the address, trimmed, its ASCII letters lower-cased; empty for a
+   *         blank one
    */
   static String normalisedAddress(String address) {
-    return StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
+    String value = StringUtils.trimToEmpty(address);
+    StringBuilder normalised = new StringBuilder(value.length());
+    for (char character : value.toCharArray()) {
+      normalised.append(character >= 'A' && character <= 'Z' ? (char) (character + ('a' - 'A')) : character);
+    }
+    return normalised.toString();
   }
 
   /**

@@ -1450,6 +1450,47 @@ class EmailMcpToolTest {
   }
 
   /**
+   * Only ASCII letters compare case-blind: an original sender whose domain holds
+   * the Kelvin sign, which a full lower-casing turns into {@code k}, is not the
+   * ASCII address it looks like. The reply naming that ASCII address is refused,
+   * the one naming the address as written goes to it.
+   */
+  @Test
+  void aNonAsciiLetterIsNotItsAsciiLookAlike() throws Exception {
+    Email original = givenAnOwnOriginal();
+    original.setSender(new EmailSender("Alice", "alice@\u212Aey.com", null, null));
+
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("alice@key.com"), null), "ASCII look-alike");
+    assertNothingSent();
+
+    emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("ALICE@\u212Aey.com"), null);
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME));
+    assertEquals("alice@\u212Aey.com", sent.getValue().getTo().get(0).getAddress());
+  }
+
+  /**
+   * A reply-all leaves out of its Cc the user's own address, and only that one: an
+   * original recipient whose domain holds the Kelvin sign is another address than
+   * the user's ASCII one, so it stays copied, and naming it is accepted.
+   */
+  @Test
+  void aReplyAllKeepsTheUsersNonAsciiLookAlikeInCc() throws Exception {
+    Email original = givenAnOwnOriginal();
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailAddress("me@key.com");
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
+    original.setTo(List.of(new EmailRecipient(null, "me@key.com", null, true), new EmailRecipient(null, "me@\u212Aey.com", null, false)));
+    original.setCc(List.of());
+
+    emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, List.of("alice@example.com"), List.of("me@\u212Aey.com"), null);
+
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME));
+    assertEquals(List.of("me@\u212Aey.com"), sent.getValue().getCc().stream().map(EmailRecipient::getAddress).toList());
+  }
+
+  /**
    * The same recipients spelt otherwise -- another case, surrounding blanks, another
    * order, twice -- are accepted, and what is sent is the list worked out from
    * the original, never the spelling given.
