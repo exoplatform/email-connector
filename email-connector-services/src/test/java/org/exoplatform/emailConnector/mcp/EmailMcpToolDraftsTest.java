@@ -56,8 +56,11 @@ import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
+
+import io.meeds.social.timezone.service.UserTimeZoneService;
 
 /**
  * The draft tools (EXO-91674): an assistant prepares mail as drafts of the user's own
@@ -93,7 +96,9 @@ class EmailMcpToolDraftsTest {
     emailMcpTool = new EmailMcpTool(emailBoxService,
                                     Mockito.mock(UserEmailSettingService.class),
                                     Mockito.mock(EmailDelegationService.class),
-                                    emailSignatureService) {
+                                    emailSignatureService,
+                                    Mockito.mock(EmailScheduledSendService.class),
+                                    Mockito.mock(UserTimeZoneService.class)) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
