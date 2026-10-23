@@ -108,6 +108,11 @@ class EmailGrantConstraintEvaluatorTest {
   @Test
   void unicodeDomainMatchesNothing() {
     assertFalse(evaluator.matches(SEND, args("to", List.of("bob@faß.de")), domain("fass.de")));
+    // the other spellings IDNA2003 folds onto mass.de: the sharp s, a soft hyphen, a zero-width joiner, fullwidth letters
+    for (String folded : List.of("a@maß.de", "a@ma\u00ADss.de", "a@ma\u200Dss.de", "a@\uFF4D\uFF41\uFF53\uFF53.de")) {
+      assertFalse(evaluator.matches(SEND, args("to", List.of(folded)), domain("mass.de")), folded);
+      assertNull(EmailAddressRules.domainOf(folded), folded);
+    }
     assertFalse(evaluator.matches(SEND, args("to", List.of("bob@ς.gr")), domain("xn--4xa.gr")));
     assertFalse(evaluator.matches(SEND, args("to", List.of("a@bücher.de")), domain("xn--bcher-kva.de")));
     assertFalse(evaluator.matches(SEND, args("to", List.of("a@xn--bcher-kva.de")), domain("bücher.de")));
