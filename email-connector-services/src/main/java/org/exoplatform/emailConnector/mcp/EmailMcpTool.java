@@ -1297,7 +1297,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * name would be shown where the address it wraps is swallowed as a tag -- the card
    * would name one person while the reply goes to another. The two lists are then
    * compared as sets of {@link #normalisedAddress normalised} addresses: order,
-   * repetition, case and surrounding blanks do not count, an address does. The
+   * repetition, the case of ASCII letters and surrounding blanks do not count, an
+   * address does. The
    * {@code tolerated} addresses -- the ones the server's own rule leaves out -- are
    * dropped from the given list before comparing. Whatever is given, the caller sends
    * the list worked out, never the one given.
