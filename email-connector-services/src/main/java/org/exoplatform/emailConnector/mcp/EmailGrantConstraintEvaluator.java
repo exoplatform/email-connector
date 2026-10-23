@@ -45,8 +45,9 @@ import io.meeds.mcp.server.plugin.McpToolGrantConstraintEvaluator;
  * ({@link EmailAddressRules#isBareAddress}) holding exactly one {@code @}; a
  * display name, a group, two addresses in one entry or a value that is not a
  * list of strings means no match.</li>
- * <li>Domains are compared lower-cased and in their IDNA ASCII form, exactly: a
- * subdomain is another domain.</li>
+ * <li>Domains count only when written in ASCII, an internationalised one as its
+ * {@code xn--} labels, and are compared lower-cased and exactly: a subdomain is
+ * another domain.</li>
  * <li>A call with no recipient at all matches nothing.</li>
  * </ul>
  * The checks read the arguments as the tool receives them and with the
