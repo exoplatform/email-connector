@@ -31,6 +31,8 @@ import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.service.EmailBoxService;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -275,6 +277,34 @@ class AiToolDefinitionsTest {
     }
     assertTrue(definitions.get("get_email_thread").path("description").asText().contains("(to) and copied to (cc)"));
     assertTrue(definitions.get("get_email_by_id").path("description").asText().contains("its to and cc recipients"));
+  }
+
+  /**
+   * The draft tools' schemas bound {@code document_ids} by the very number the mailbox
+   * service refuses a call over (EXO-91676), so a change of the service limit cannot
+   * leave a schema promising another.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void theDraftToolsBoundTheirDocumentsByTheServiceLimit() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    for (String tool : List.of("create_email_draft", "update_email_draft")) {
+      JsonNode documentIds = definitions.get(tool).path("input_schema").path("properties").path("document_ids");
+      assertEquals(EmailBoxService.MAX_DOCUMENTS_PER_CALL, documentIds.path("maxItems").asInt(-1), tool);
+    }
+  }
+
+  /**
+   * create_email_draft states the size a mail may carry as the mailbox service caps it,
+   * so a change of the cap cannot leave the description promising another.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void theDraftDescriptionStatesTheServiceAttachmentCap() throws Exception {
+    String description = readDefinitions().get("create_email_draft").path("description").asText();
+    assertTrue(description.contains(EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB + " MB"), description);
   }
 
   /**

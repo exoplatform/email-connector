@@ -42,6 +42,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.mcp.model.EmailDraftModel;
+import org.exoplatform.emailConnector.mcp.model.RefusedDocumentModel;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
+import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.RefusedDocument;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -182,7 +187,7 @@ class EmailMcpToolDraftsTest {
                                                           List.of("carol@acme.com"),
                                                           null,
                                                           null,
-                                                          null);
+                                                          null, null);
 
     Email saved = savedDraft();
     assertEquals("Hello", saved.getSubject());
@@ -202,12 +207,12 @@ class EmailMcpToolDraftsTest {
   @Test
   void createEmailDraftLeavesTheSignatureOutWhenAskedOrSwitchedOff() throws Exception {
     saveDraftEchoes();
-    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false);
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false, null);
     assertEquals("<p>Hi</p>", savedDraft().getContent().getBody());
 
     Mockito.clearInvocations(emailBoxService);
     when(emailSignatureService.getEmailSignature(USERNAME)).thenReturn(new EmailSignature(false, SIGNATURE, null, false, null));
-    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, null);
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, null, null);
     assertEquals("<p>Hi</p>", savedDraft().getContent().getBody());
   }
 
@@ -236,7 +241,7 @@ class EmailMcpToolDraftsTest {
                                                          anyBoolean(),
                                                          anyBoolean())).thenReturn(original);
 
-    emailMcpTool.createEmailDraft(null, null, "<p>Thanks</p>", null, null, 42L, false);
+    emailMcpTool.createEmailDraft(null, null, "<p>Thanks</p>", null, null, 42L, false, null);
 
     Email saved = savedDraft();
     assertEquals("<parent@acme.com>", saved.getMailHeaderId());
@@ -248,9 +253,9 @@ class EmailMcpToolDraftsTest {
   @Test
   void createEmailDraftRefusesAMailWithNoRecipientOrANamedAddress() throws Exception {
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.createEmailDraft(List.of(" "), "Hello", "<p>Hi</p>", null, null, null, null));
+                 () -> emailMcpTool.createEmailDraft(List.of(" "), "Hello", "<p>Hi</p>", null, null, null, null, null));
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.createEmailDraft(List.of("Bob <bob@acme.com>"), "Hello", "<p>Hi</p>", null, null, null, null));
+                 () -> emailMcpTool.createEmailDraft(List.of("Bob <bob@acme.com>"), "Hello", "<p>Hi</p>", null, null, null, null, null));
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
@@ -265,7 +270,7 @@ class EmailMcpToolDraftsTest {
                                "<p style=\"background:url(https://evil.example/t.gif)\">Hi</p>",
                                "<table background=\"https://evil.example/t.gif\"><tr><td>Hi</td></tr></table>")) {
       IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                      () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", body, null, null, null, null),
+                                                      () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", body, null, null, null, null, null),
                                                       body);
       assertTrue(refusal.getMessage().contains("Nothing was saved"), refusal.getMessage());
     }
@@ -281,7 +286,7 @@ class EmailMcpToolDraftsTest {
                                // kept by either parse: the head's style sheet
                                "<html><head><style>p { background: url(data:image/png;base64,AAAA) }</style></head><body><p>Hi</p></body></html>")) {
       assertThrows(IllegalArgumentException.class,
-                   () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", body, null, null, null, null),
+                   () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", body, null, null, null, null, null),
                    body);
     }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
@@ -297,10 +302,226 @@ class EmailMcpToolDraftsTest {
                                   null,
                                   null,
                                   null,
-                                  false);
+                                  false, null);
     String body = savedDraft().getContent().getBody();
     assertTrue(body.contains("<b>Hi</b>") && body.contains("href=\"https://www.exoplatform.com\""), body);
     assertFalse(body.contains("script"), body);
+  }
+
+  // --- documents attached to a draft (EXO-91676) ------------------------------
+
+  /**
+   * The draft as the service answers once documents are attached: carrying a file.
+   *
+   * @param fileName the name of the file it carries
+   * @return the draft
+   */
+  private static Email draftCarrying(String fileName) {
+    Email draft = storedDraft("Campaign", "<p>Hi</p>", "bob@acme.com");
+    draft.getContent()
+         .setAttachments(List.of(new EmailAttachment(7L, null, null, fileName, "application/pdf", null, MailFolder.DRAFTS, 55L,
+                                                     12L, null)));
+    return draft;
+  }
+
+  /**
+   * Documents named on create are attached to the draft once it is saved, and the
+   * answer names the files the draft carries and, in words, each document refused.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftAttachesTheNamedDocumentsAndNamesTheRefusedOnes() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1", "secret")))
+                                                                                             .thenReturn(new DocumentAttachments(draftCarrying("brochure.pdf"),
+                                                                                                                                 List.of(new RefusedDocument("secret",
+                                                                                                                                                             null,
+                                                                                                                                                             DocumentRefusalReason.NO_ACCESS))));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Campaign", "<p>Hi</p>", null, null, null,
+                                                          false, List.of("doc-1", "secret"));
+
+    assertEquals(List.of("brochure.pdf"), model.getAttachments());
+    assertEquals(List.of(new RefusedDocumentModel("secret", null, "The user cannot open this document.")),
+                 model.getRefusedDocuments());
+    verify(emailBoxService).addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1", "secret"));
+  }
+
+  /**
+   * A draft named with no document attaches nothing and says nothing was refused.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftWithoutDocumentsAttachesNothing() throws Exception {
+    saveDraftEchoes();
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of(" "));
+
+    verify(emailBoxService, never()).addDocumentAttachments(anyString(), anyString(), any());
+    assertEquals(null, model.getRefusedDocuments());
+  }
+
+  /**
+   * More documents than one call attaches are refused before the draft is saved, so a
+   * refused call leaves nothing behind.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftRefusesTooManyDocumentsBeforeSavingAnything() throws Exception {
+    List<String> ids = java.util.stream.IntStream.rangeClosed(1, 21).mapToObj(i -> "doc-" + i).toList();
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello",
+                                                                                        "<p>Hi</p>", null, null, null, false,
+                                                                                        ids));
+
+    assertTrue(refusal.getMessage().contains("Nothing was saved"));
+    verify(emailBoxService, never()).saveDraft(any(Email.class), anyString(), anyBoolean());
+  }
+
+  /**
+   * The limit counts documents as the service does, an id repeated with spaces once:
+   * twenty documents and a repeat of one of them are not refused.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftCountsARepeatedDocumentOnce() throws Exception {
+    saveDraftEchoes();
+    List<String> ids = new java.util.ArrayList<>(java.util.stream.IntStream.rangeClosed(1, 20).mapToObj(i -> "doc-" + i).toList());
+    ids.add(" doc-1 ");
+
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false, ids);
+
+    verify(emailBoxService).addDocumentAttachments(DRAFT_ID, USERNAME, ids);
+  }
+
+  /**
+   * A failure followed by a draft that cannot be read again is answered without a claim
+   * about its attachments: the caller is sent to the Email app, not to a list that does
+   * not say what the draft carries.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSendsTheUserToTheAppWhenTheDraftCannotBeReadAfterAFailure() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1"))).thenThrow(new IllegalStateException("down"));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenThrow(new IllegalStateException("down"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("check the draft in the Email app"));
+  }
+
+  /**
+   * A failure followed by a draft found gone on the second read is answered as gone,
+   * not as a draft to check in the Email app.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSaysTheDraftWasGoneWhenItIsGoneAfterAFailure() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1"))).thenThrow(new IllegalStateException("down"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("no longer found"));
+  }
+
+  /**
+   * A draft gone when its documents are added is answered as such, not as a failure to
+   * check the draft's attachments for.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSaysTheDraftWasGoneWhenItsDocumentsFindNoDraft() throws Exception {
+    saveDraftEchoes();
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("no longer found"));
+    verify(emailBoxService, never()).getDraft(anyString(), anyString());
+  }
+
+  /**
+   * Documents named on update are added after the change is saved, to the draft the
+   * change was saved on.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void updateEmailDraftAddsTheNamedDocumentsAfterTheChange() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1")))
+                                                                                    .thenReturn(new DocumentAttachments(draftCarrying("case.pdf"),
+                                                                                                                        List.of()));
+
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, null, null, null, 1L, List.of("doc-1"));
+
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(emailBoxService);
+    order.verify(emailBoxService).saveDraft(any(Email.class), eq(USERNAME), eq(true));
+    order.verify(emailBoxService).addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1"));
+    assertEquals(List.of("case.pdf"), model.getAttachments());
+  }
+
+  /**
+   * Once the change is saved, a draft found scheduled when its documents are added is
+   * answered as saved, every document refused in words: an error would say the change
+   * was not made.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void updateEmailDraftAnswersTheSavedChangeWhenTheDraftIsScheduledMeanwhile() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1")))
+                                                                                    .thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED));
+
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L, List.of("doc-1"));
+
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertEquals("New subject", model.getSubject());
+    assertEquals(1, model.getRefusedDocuments().size());
+    assertEquals("doc-1", model.getRefusedDocuments().get(0).getDocumentId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("scheduled"));
+  }
+
+  /**
+   * A draft created and then failing part way through its documents is still answered
+   * as created, with its draft_id -- an error would have the caller create it a second
+   * time -- and with the files it carries as read again after the failure, so a file
+   * that got there before it is not named again.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftAnswersTheCreatedDraftAsStoredWhenItsDocumentsFailPartWay() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1", "doc-1 ")))
+                                                                                             .thenThrow(new IllegalStateException("store down"));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(draftCarrying("brochure.pdf"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1", "doc-1 "));
+
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertEquals(List.of("brochure.pdf"), model.getAttachments());
+    assertEquals(1, model.getRefusedDocuments().size());
+    assertEquals("doc-1", model.getRefusedDocuments().get(0).getDocumentId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("may be on the draft anyway"));
   }
 
   // --- update_email_draft ----------------------------------------------------
@@ -313,7 +534,7 @@ class EmailMcpToolDraftsTest {
     stored.setCc(recipients("carol@acme.com"));
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
 
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L, null);
 
     Email saved = savedDraft();
     assertEquals(DRAFT_ID, saved.getDraftLocalId());
@@ -336,7 +557,7 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.saveDraft(any(Email.class), eq(USERNAME), eq(true))).thenReturn(editedInTheApp);
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 4L));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 4L, null));
     assertTrue(refusal.getMessage().contains("nothing of your change was saved"), refusal.getMessage());
     assertEquals(5L, savedDraft().getDraftRevision());
   }
@@ -349,11 +570,11 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
 
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from an older read</p>", null, null, 6L));
+                 () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from an older read</p>", null, null, 6L, null));
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
 
     saveDraftEchoes();
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from this read</p>", null, null, 7L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from this read</p>", null, null, 7L, null);
     assertEquals("<p>Built from this read</p>", savedDraft().getContent().getBody());
   }
 
@@ -366,19 +587,19 @@ class EmailMcpToolDraftsTest {
     saveDraftEchoes();
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
 
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>New words</p><br><br>" + SIGNATURE_BLOCK, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>New words</p><br><br>" + SIGNATURE_BLOCK, null, null, 1L, null);
     assertEquals("<p>New words</p><br><br>" + SIGNATURE_BLOCK, savedDraft().getContent().getBody(), "the current block, kept as it is");
 
     Mockito.clearInvocations(emailBoxService);
     String formatted = "<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\">a link</a></p>";
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, formatted, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, formatted, null, null, 1L, null);
     String kept = savedDraft().getContent().getBody();
     assertTrue(kept.startsWith("<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\"") && kept.endsWith(">a link</a></p>"),
                "text, formatting and links lose nothing: " + kept);
 
     Mockito.clearInvocations(emailBoxService);
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<img src=\"https://evil.example/t.gif\">" + SIGNATURE_BLOCK, null, null, 1L));
+                 () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<img src=\"https://evil.example/t.gif\">" + SIGNATURE_BLOCK, null, null, 1L, null));
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
@@ -405,7 +626,7 @@ class EmailMcpToolDraftsTest {
                                "<style>p { background: url(/portal/rest/banner.png) }</style><p>Hi</p>",
                                "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
       IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                      () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, body, null, null, 1L),
+                                                      () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, body, null, null, 1L, null),
                                                       body);
       assertTrue(refusal.getMessage().contains("Email app"), refusal.getMessage());
     }
@@ -426,7 +647,7 @@ class EmailMcpToolDraftsTest {
         + "<img alt=\"eXo\" height=\"48\" onerror=\"alert(1)\" src=\"/email-connector/rest/user-email-setting/signature/image?v=1700000000\" "
         + "style=\"background:url(https://evil.example/t.gif)\" /></div>";
 
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, composerSaved, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, composerSaved, null, null, 1L, null);
 
     String body = savedDraft().getContent().getBody();
     assertTrue(body.contains("<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1700000000\" alt=\"eXo\" height=\"48\" "
@@ -438,7 +659,7 @@ class EmailMcpToolDraftsTest {
     for (String other : List.of("<img src=\"/email-connector/rest/user-email-setting/signature/image/../../email-box/attachments/1\">",
                                 "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1&amp;x=2\">")) {
       assertThrows(IllegalArgumentException.class,
-                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Hi</p>" + other, null, null, 1L),
+                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Hi</p>" + other, null, null, 1L, null),
                    other);
     }
     // The logo set aside, what is left is still read whole: a body tag's own background
@@ -446,7 +667,7 @@ class EmailMcpToolDraftsTest {
     for (String other : List.of("<body style=\"background:url(data:image/png;base64,AAAA)\"><p>Hi</p>"
         + "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1\"></body>")) {
       assertThrows(IllegalArgumentException.class,
-                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, other, null, null, 1L),
+                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, other, null, null, 1L, null),
                    other);
     }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
@@ -461,12 +682,12 @@ class EmailMcpToolDraftsTest {
     String banner = "<p>Jane</p><img src=\"https://cdn.acme.com/banner.png\" alt=\"b\">";
     when(emailSignatureService.getEmailSignature(USERNAME)).thenReturn(new EmailSignature(null, banner, null, false, null));
     saveDraftEchoes();
-    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, null);
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, null, null);
     String created = savedDraft().getContent().getBody();
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", created, "bob@acme.com"));
 
     Mockito.clearInvocations(emailBoxService);
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, created.replace("Hi", "Hello again"), null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, created.replace("Hi", "Hello again"), null, null, 1L, null);
 
     assertEquals("<p>Hello again</p><br><br><div class=\"ec-signature\">" + banner + "</div>", savedDraft().getContent().getBody());
   }
@@ -484,7 +705,7 @@ class EmailMcpToolDraftsTest {
         + "<img src=https://attacker.example/p><iframe src=https://attacker.example></iframe><svg onload=alert(1)></svg>"
         + "<form action=https://attacker.example><input type=password></form>'>.</span>";
 
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, attack, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, attack, null, null, 1L, null);
 
     org.jsoup.nodes.Document stored = org.jsoup.Jsoup.parse(savedDraft().getContent().getBody());
     String html = stored.body().html();
@@ -505,9 +726,9 @@ class EmailMcpToolDraftsTest {
     saveDraftEchoes();
     String hostile = "<p>Hi</p><iframe src=\"https://evil.example\"></iframe><form action=\"https://evil.example\"><input type=\"password\"></form>"
         + "<svg onload=\"alert(1)\"></svg><a href=\"javascript:alert(1)\">x</a>";
-    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", hostile, null, null, null, false);
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", hostile, null, null, null, false, null);
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, hostile, null, null, 1L);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, hostile, null, null, 1L, null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService, Mockito.times(2)).saveDraft(captor.capture(), eq(USERNAME), eq(true));
@@ -531,7 +752,7 @@ class EmailMcpToolDraftsTest {
   @Test
   void updateEmailDraftRequiresTheRevisionItWasReadAt() throws Exception {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, null, null));
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
@@ -541,7 +762,7 @@ class EmailMcpToolDraftsTest {
     saveDraftEchoes();
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p><b>Bold</b> words</p>", "bob@acme.com"));
 
-    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L);
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L, null);
 
     assertEquals("<p><b>Bold</b> words</p>", model.getBodyHtml());
   }
@@ -552,20 +773,20 @@ class EmailMcpToolDraftsTest {
    */
   @Test
   void updateEmailDraftActsOnlyOnTheUsersOwnUnscheduledDrafts() throws Exception {
-    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.updateEmailDraft("other", null, "x", null, null, null, 1L));
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.updateEmailDraft("other", null, "x", null, null, null, 1L, null));
     verify(emailBoxService).getDraft("other", USERNAME);
 
     Email scheduled = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
     scheduled.setScheduled(true);
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(scheduled);
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L, null));
     assertTrue(refusal.getMessage().contains("scheduled"), refusal.getMessage());
 
     Email shared = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
     shared.setSendDelegationId(5L);
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(shared);
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L, null));
 
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
@@ -577,7 +798,7 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.saveDraft(any(), eq(USERNAME), eq(true))).thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, 1L, null));
     assertTrue(refusal.getMessage().contains("scheduled"), refusal.getMessage());
   }
 
@@ -635,11 +856,81 @@ class EmailMcpToolDraftsTest {
       return stored;
     });
 
-    String answer = emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("BOB@acme.com"), "Hello", null, null);
+    String answer = emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("BOB@acme.com"), "Hello", null, null, null);
 
     verify(emailBoxService).sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any());
     verify(emailBoxService, never()).sendDraft(any(), anyString(), any(), any());
     assertTrue(answer.contains("<draft-mid@example.com>") && answer.contains("thread-9"), answer);
+  }
+
+  /**
+   * A draft carrying files is sent only when the arguments name them, so the approval
+   * card shows every file that leaves (EXO-91676): left out, or one too few, nothing is
+   * sent and the refusal names the draft's files; named in any order, the draft is sent.
+   */
+  @Test
+  void sendEmailDraftSendsADraftsFilesOnlyWhenTheArgumentsNameThem() throws Exception {
+    Email stored = draftCarrying("pricing.xlsx");
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign",
+                                                                                      null, null, null));
+    assertTrue(refusal.getMessage().contains("pricing.xlsx"), refusal.getMessage());
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null,
+                                                   List.of("brochure.pdf")));
+    verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
+
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      return stored;
+    });
+    emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null, List.of(" pricing.xlsx "));
+    verify(emailBoxService).sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any());
+  }
+
+  /**
+   * Two files of one name are two files: naming the name once does not approve both.
+   */
+  @Test
+  void sendEmailDraftCountsTwoFilesOfOneNameTwice() throws Exception {
+    Email stored = draftCarrying("brochure.pdf");
+    stored.getContent()
+          .setAttachments(List.of(stored.getContent().getAttachments().get(0), stored.getContent().getAttachments().get(0)));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      return stored;
+    });
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null,
+                                                   List.of("brochure.pdf")));
+    verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
+  }
+
+  /**
+   * A file added to the draft between the check and the send -- by the Email app, or a
+   * document attached meanwhile -- is caught on the row under the draft's lock: the
+   * approved arguments never name it, so nothing is sent.
+   */
+  @Test
+  void sendEmailDraftSendsNothingWhenAFileIsAddedBeforeTheLockIsHeld() throws Exception {
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Campaign", "<p>Hi</p>", "bob@acme.com"));
+    Email withFile = draftCarrying("pricing.xlsx");
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(withFile);
+      return withFile;
+    });
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign",
+                                                                                      null, null, List.of()));
+    assertTrue(refusal.getMessage().contains("pricing.xlsx"), refusal.getMessage());
   }
 
   /**
@@ -652,12 +943,12 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
 
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("eve@evil.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("eve@evil.com"), "Hello", null, null, null));
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Other subject", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Other subject", null, null, null));
     stored.setBcc(recipients("boss@acme.com"));
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
     verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
 
     Email edited = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com", "new@acme.com");
@@ -669,7 +960,7 @@ class EmailMcpToolDraftsTest {
     });
     IllegalArgumentException refusal =
                                      assertThrows(IllegalArgumentException.class,
-                                                  () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                                                  () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
     assertTrue(refusal.getMessage().contains("new@acme.com"), refusal.getMessage());
 
     Email scheduledMeanwhile = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
@@ -680,7 +971,7 @@ class EmailMcpToolDraftsTest {
       return scheduledMeanwhile;
     });
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
   }
 
   // --- delete_email_draft ----------------------------------------------------
