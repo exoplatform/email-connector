@@ -1491,6 +1491,25 @@ class EmailMcpToolTest {
   }
 
   /**
+   * A reply-all from a shared mailbox leaves the owner out of its Cc, and only the
+   * owner: an original recipient spelt with a dotted capital I, which a case-blind
+   * comparison folds to the owner's {@code i}, is another address, so it stays
+   * copied, and naming it is accepted.
+   */
+  @Test
+  void aSharedReplyAllKeepsTheOwnersNonAsciiLookAlikeInCc() throws Exception {
+    Email original = givenASharedOriginal();
+    original.setTo(List.of(new EmailRecipient(null, OWNER_MAILBOX, null, false), new EmailRecipient(null, "al\u0130ce@acme.com", null, false)));
+    original.setCc(List.of());
+
+    emailMcpTool.replyAll(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of("al\u0130ce@acme.com"), null);
+
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME), eq(100L));
+    assertEquals(List.of("al\u0130ce@acme.com"), sent.getValue().getCc().stream().map(EmailRecipient::getAddress).toList());
+  }
+
+  /**
    * The same recipients spelt otherwise -- another case, surrounding blanks, another
    * order, twice -- are accepted, and what is sent is the list worked out from
    * the original, never the spelling given.
