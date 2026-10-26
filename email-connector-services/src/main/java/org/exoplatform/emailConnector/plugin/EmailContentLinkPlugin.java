@@ -37,18 +37,19 @@ import io.meeds.social.cms.service.ContentLinkPluginService;
 import jakarta.annotation.PostConstruct;
 
 /**
- * Makes a cached mail a content link of type {@code email}, so that a mail can
- * be the source of an AI chat and be linked from other contents.
+ * Makes a cached mail a content link of type {@code email}, inserted from the
+ * editors with the {@code /mail} command, and the source of an AI chat.
  * <p>
  * Social's content-link service resolves a mail id, the numeric keyword the AI
  * chat's source chip searches for, without calling {@link #search}: it reads the
  * title from {@link #getContentTitle} and the access from the mail's ACL plugin
- * through {@code UserACL}. A mail is private to its mailbox owner, and this
- * plugin only ever gives the title of the caller's own mails: another user's
- * mail, an unknown id or a non-numeric id resolve to nothing. A shared mailbox's
- * mail is cached as the delegate's own row while the share lasts, so that row's id
- * resolves for the delegate, as everywhere the owned lookup serves, and the owner's
- * row id does not; revoking, leaving or losing the share drops those rows.
+ * through {@code UserACL}. A text keyword searches the caller's own cached mails
+ * by subject and sender. A mail is private to its mailbox owner, and this plugin
+ * only ever resolves the caller's own mails: another user's mail, an unknown id
+ * or a non-numeric id resolve to nothing. A shared mailbox's mail is cached as
+ * the delegate's own row while the share lasts, so that row's id resolves for the
+ * delegate, as everywhere the owned lookup serves, and the owner's row id does
+ * not; revoking, leaving or losing the share drops those rows.
  */
 @Component
 public class EmailContentLinkPlugin implements ContentLinkPlugin {
@@ -59,15 +60,29 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
 
   private static final String               ICON             = "fa fa-envelope";
 
-  private static final String               COMMAND          = "email";
+  /**
+   * The word typed after the slash. It differs from the object type, as the
+   * activity's {@code /post} and the news' {@code /article} do: the menu matches
+   * the command, the search and the chip carry the type, so the {@code email:<id>}
+   * links already written keep resolving.
+   */
+  private static final String               COMMAND          = "mail";
+
+  private static final String               NO_SUBJECT       = "(no subject)";
 
   private static final int                  MAX_TITLE_LENGTH = 100;
 
+  /**
+   * A drawer extension: a click on a mail chip asks the page for the
+   * {@code content-link-email-drawer}, and the mailbox answers by opening that
+   * mail in its reader over the page, so the reader of a note or a task stays
+   * where they are. The permanent link stays the chip's {@code href}, for a
+   * new tab or a copied address.
+   */
   private static final ContentLinkExtension EXTENSION        = new ContentLinkExtension(OBJECT_TYPE,
                                                                                         TITLE_KEY,
                                                                                         ICON,
                                                                                         COMMAND,
-                                                                                        false,
                                                                                         true);
 
   @Autowired
@@ -86,11 +101,12 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
   }
 
   /**
-   * The {@code email} extension, hidden from the editors' link picker: a mail
-   * is only ever resolved by its id (the AI chat's source), a text search finds
-   * nothing, so offering "Mail" in every editor would offer an empty list.
+   * The {@code email} extension, listed in the editors' "/" menu as "Mail
+   * (/mail)" and searched in place; its chips open the mail in the mailbox
+   * drawer, over the page they are on.
    *
-   * @return the {@code email} extension: its title key, icon and command
+   * @return the {@code email} extension: its title key, icon, command and
+   *         drawer flag
    */
   @Override
   public ContentLinkExtension getExtension() {
@@ -98,26 +114,42 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
   }
 
   /**
-   * Answers nothing, whatever the keyword.
+   * Finds mails of the searching user.
    * <p>
-   * A mail id never reaches this method: Social's content-link service resolves a
-   * numeric keyword itself, through {@link #getContentTitle} and the mail's ACL
-   * plugin, and calls a plugin's search for a text keyword only. A text keyword
-   * resolves to nothing: the mailbox's text searches answer with IMAP UIDs, not with
-   * the ids a content link carries, and the one over the mailbox cache loads the
-   * user's cached mail in memory, so neither is used from a picker that fires on
-   * every keystroke.
+   * A numeric keyword is first a mail id, and resolves to that mail when the user
+   * owns it: that is how the AI chat and the chips resolve an {@code email:<id>}
+   * link. Any other keyword, or an id matching none of the user's mails, searches
+   * the user's own cached mails by subject and sender, newest first, in one
+   * bounded query ({@link EmailBoxService#searchOwnEmailsForLink}).
    *
-   * @param keyword the searched text (unused)
-   * @param identity the searching user (unused)
+   * @param keyword the searched keyword: a mail id, or text found in a subject or
+   *          a sender
+   * @param identity the searching user
    * @param locale the user locale (unused)
-   * @param offset the results offset (unused)
-   * @param limit the results limit (unused)
-   * @return an empty list
+   * @param offset the results offset
+   * @param limit the results limit
+   * @return the user's own matching mails, empty for an anonymous caller
    */
   @Override
   public List<ContentLinkSearchResult> search(String keyword, Identity identity, Locale locale, int offset, int limit) {
-    return Collections.emptyList();
+    String username = identity == null ? null : identity.getUserId();
+    String text = StringUtils.trim(keyword);
+    if (StringUtils.isBlank(username) || StringUtils.isEmpty(text) || limit <= 0) {
+      return Collections.emptyList();
+    }
+    if (offset == 0 && isId(text)) {
+      Email email = getOwnedEmail(text, username);
+      if (email != null) {
+        return Collections.singletonList(toResult(email));
+      }
+    }
+    return emailBoxService.searchOwnEmailsForLink(username, text, offset, limit)
+                          .stream()
+                          // the query selects by owner; checked again so that no change
+                          // in it can ever hand a subject to another user
+                          .filter(email -> StringUtils.equals(email.getUserId(), username))
+                          .map(this::toResult)
+                          .toList();
   }
 
   /**
@@ -176,21 +208,25 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
   }
 
   /**
-   * The label of a mail: its subject, else its sender, so that a mail without a
-   * subject still resolves (a blank title reads as "not found").
+   * The search result of a mail.
+   *
+   * @param email the user's own mail
+   * @return its {@code email} link, titled by its subject
+   */
+  private ContentLinkSearchResult toResult(Email email) {
+    return new ContentLinkSearchResult(OBJECT_TYPE, String.valueOf(email.getId()), getTitle(email), EXTENSION.getIcon());
+  }
+
+  /**
+   * The label of a mail: its subject, else "(no subject)", so that a mail
+   * without a subject still resolves (a blank title reads as "not found").
    *
    * @param email the mail
    * @return a non-blank label
    */
   private String getTitle(Email email) {
-    String title = email.getSubject();
-    if (StringUtils.isBlank(title) && email.getSender() != null) {
-      title = StringUtils.firstNonBlank(email.getSender().getName(), email.getSender().getAddress());
-    }
-    if (StringUtils.isBlank(title)) {
-      title = "#" + email.getId();
-    }
-    return StringUtils.abbreviate(title.trim(), MAX_TITLE_LENGTH);
+    String title = StringUtils.isBlank(email.getSubject()) ? NO_SUBJECT : email.getSubject().trim();
+    return StringUtils.abbreviate(title, MAX_TITLE_LENGTH);
   }
 
 }

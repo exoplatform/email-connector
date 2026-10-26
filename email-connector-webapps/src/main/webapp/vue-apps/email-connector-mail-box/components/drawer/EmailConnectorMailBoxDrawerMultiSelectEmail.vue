@@ -15,19 +15,25 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item class="full-height align-center">
-    <v-list-item-content>
-      <v-list-item-title class="text-wrap text-header-title mb-8">
-        {{ title }}
-      </v-list-item-title>
+  <!-- The selection's actions, their row held at the reading pane's vertical centre,
+       under how many mails they act on (EXO-90891), placed just above that row so the
+       count never pushes it down; the select-all row at the top of the list says it too. -->
+  <div class="d-flex flex-column align-center justify-center full-height full-width pa-4">
+    <div class="full-width" style="position: relative;">
+      <div
+        class="multi-select-count font-weight-bold text-h6 text-center full-width"
+        style="position: absolute; bottom: 100%; left: 0; padding-bottom: 24px;"
+        aria-live="polite">
+        {{ countLabel }}
+      </div>
       <email-connector-mail-box-drawer-actions
-        v-if="hasSelectedEmails"
+        class="full-width"
         select-mode
         :emails="emails"
         :top="false"
         :selected-emails="selectedEmails" />
-    </v-list-item-content>
-  </v-list-item>
+    </div>
+  </div>
 </template>
 <script>
 export default {
@@ -42,16 +48,16 @@ export default {
     },
   },
   computed: {
-    title() {
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
-        this.$t('emailConnector.mailBox.list.drawer.multiSelect.emailSelected') : 
-        this.$t('emailConnector.mailBox.list.drawer.multiSelect.emailsSelected')}`;
+    /**
+     * How many mails the actions below act on.
+     *
+     * @returns {String} "1 selected email", "N selected emails"
+     */
+    countLabel() {
+      return this.selectedEmails.length === 1
+        ? this.$t('emailConnector.mailBox.list.drawer.multiSelect.selectedOne')
+        : this.$t('emailConnector.mailBox.list.drawer.multiSelect.selectedMany', { 0: this.selectedEmails.length });
     },
   },
-  methods: {
-    hasSelectedEmails() {
-      return this.selectedEmails.length > 0;
-    },
-  }
 };
 </script>

@@ -20,6 +20,9 @@ import ScheduledEmailFailedNotificationPlugin from './components/ScheduledEmailF
 import EmailDelegationInvitationPlugin from './components/EmailDelegationInvitationPlugin.vue';
 import EmailDelegationResponseNotificationPlugin from './components/EmailDelegationResponseNotificationPlugin.vue';
 import DelegatedNewEmailsNotificationPlugin from './components/DelegatedNewEmailsNotificationPlugin.vue';
+import EmailFilterNotificationPlugin from './components/EmailFilterNotificationPlugin.vue';
+import EmailForwardingNotificationPlugin from './components/EmailForwardingNotificationPlugin.vue';
+import MailImportFinishedNotificationPlugin from './components/MailImportFinishedNotificationPlugin.vue';
 
 const components = {
   'user-notification-new-emails': NewEmailsNotificationPlugin,
@@ -27,6 +30,9 @@ const components = {
   'user-notification-email-delegation-invitation': EmailDelegationInvitationPlugin,
   'user-notification-email-delegation-response': EmailDelegationResponseNotificationPlugin,
   'user-notification-delegated-new-emails': DelegatedNewEmailsNotificationPlugin,
+  'user-notification-email-filter': EmailFilterNotificationPlugin,
+  'user-notification-email-forwarding': EmailForwardingNotificationPlugin,
+  'user-notification-mail-import-finished': MailImportFinishedNotificationPlugin,
 };
 
 for (const key in components) {

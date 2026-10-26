@@ -32,14 +32,17 @@
 function refusal(resp, fallback) {
   return resp.text().then(body => {
     let code = body || '';
+    let parsed = null;
     try {
-      const parsed = JSON.parse(body);
+      parsed = JSON.parse(body);
       code = parsed && parsed.message || '';
     } catch (e) {
       // not JSON: the body is the code itself
     }
     const error = new Error(code || fallback);
     error.messageCode = code || null;
+    // What else the refusal says, such as the counts of a 409 on the engines.
+    error.details = parsed && typeof parsed === 'object' ? parsed : null;
     throw error;
   }, () => {
     throw new Error(fallback);
@@ -496,6 +499,48 @@ export function updateSharedMailboxSentCopyEnabled(enabled) {
   });
 }
 
+/**
+ * Whether the reader shows a company sender's brand logo, administration-wide
+ * (EXO-90893).
+ *
+ * @returns {Promise<Boolean>} the switch
+ */
+export function getSenderLogosEnabled() {
+  return fetch('/email-connector/rest/connectors/sender-logos', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the sender logos switch');
+    }
+  });
+}
+
+/**
+ * Switches the senders' brand logos on or off, administration-wide (EXO-90893).
+ *
+ * @param {Boolean} enabled whether brand logos should be shown
+ * @returns {Promise} resolved once saved
+ */
+export function updateSenderLogosEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/sender-logos?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the sender logos switch');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
@@ -514,10 +559,12 @@ export function deleteEmailConnector(emailConnectorId) {
  * Reads back the provider configuration stored for a connector.
  *
  * Secret values are never in the answer: the endpoint omits them, so a secret
- * field opens empty and an unrelated save leaves the stored one untouched.
+ * field opens empty and an unrelated save leaves the stored one untouched. It
+ * says instead which secret fields have a value stored.
  *
  * @param {number} emailConnectorId technical id of the connector
- * @returns {Promise} the stored values, keyed by descriptor field
+ * @returns {Promise} {values, storedSecretKeys}: the stored non-secret values keyed
+ *          by descriptor field, and the keys of the stored secret fields
  */
 export function getProviderConfig(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}/provider-config`, {
@@ -655,5 +702,103 @@ export function clearManagedMode() {
     } else {
       throw new Error('Error when switching the mail managed mode off');
     }
+  });
+}
+
+/**
+ * Whether users of a connector may forward their mail from eXo, and to which domains
+ * (EXO-90656).
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {authoringEnabled, allowedDomains, saved, killSwitch}
+ */
+export function getConnectorForwarding(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves whether users of a connector may forward their mail from eXo, and to which
+ * domains; it applies at once.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} forwarding - {authoringEnabled, allowedDomains}
+ * @returns {Promise<object>} the settings that apply after the save
+ */
+export function saveConnectorForwarding(emailConnectorId, forwarding) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      authoringEnabled: !!forwarding?.authoringEnabled,
+      allowedDomains: forwarding?.allowedDomains || [],
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Which engines a connector's server rules and mailbox sharing go through: the ones
+ * that apply (rulesEngine, aclEngine, which a deployment property may decide), the
+ * screen's choices (rulesEngineChoice, aclEngineChoice, the default when none was
+ * made), the ones installed, and the deployment property overriding either.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {rulesEngine, aclEngine, rulesEngineChoice, aclEngineChoice,
+ *          rulesEngines, aclEngines, rulesEngineProperty, aclEngineProperty,
+ *          authProviderName, authProviderMissing}
+ */
+export function getConnectorEngines(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the connector engines');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves the engines chosen for a connector's server rules and mailbox sharing; they
+ * apply at once, unless a deployment property decides them.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} engines - {rulesEngine, aclEngine}
+ * @returns {Promise<object>} the engines after the save
+ */
+export function saveConnectorEngines(emailConnectorId, engines) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      rulesEngine: engines?.rulesEngine || null,
+      aclEngine: engines?.aclEngine || null,
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the connector engines');
+    }
+    return resp.json();
   });
 }

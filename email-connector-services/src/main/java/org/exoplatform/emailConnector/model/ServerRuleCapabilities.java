@@ -58,6 +58,13 @@ public record ServerRuleCapabilities(boolean supported,
   /** An HTML automatic reply. */
   public static final String       VACATION_HTML          = "vacationHtml";
 
+  /**
+   * The reply's interval and exclusions are eXo's to write: how many days between two
+   * replies to one sender, and the lists and automated mail it never answers. Where
+   * unsupported, the mail server applies its own.
+   */
+  public static final String       VACATION_RULES         = "vacationRules";
+
   /** Reading an existing forward. */
   public static final String       FORWARDING_READ        = "forwardingRead";
 
@@ -127,10 +134,18 @@ public record ServerRuleCapabilities(boolean supported,
   /** Rule action: set the keyword eXo's own rules pick up at sync. */
   public static final String       TAG                    = "TAG";
 
+  /**
+   * Rule action: forward a copy of the mail to a confirmed address, the mail itself kept
+   * ({@code redirect :copy}). Offered only where the administrator enabled forwarding for
+   * the connector and the server keeps a copy.
+   */
+  public static final String       FORWARD                = "FORWARD";
+
   /** Every element this record knows, in the form's order. */
   public static final List<String> ALL_ELEMENTS           = List.of(VACATION,
                                                                     VACATION_DATE_WINDOW,
                                                                     VACATION_HTML,
+                                                                    VACATION_RULES,
                                                                     FORWARDING_READ,
                                                                     FORWARDING_WRITE,
                                                                     READS_FOREIGN_VACATION,
@@ -153,7 +168,8 @@ public record ServerRuleCapabilities(boolean supported,
                                                                     STAR,
                                                                     MARK_JUNK,
                                                                     DELETE,
-                                                                    TAG);
+                                                                    TAG,
+                                                                    FORWARD);
 
   /**
    * Keeps the element map unmodifiable and in insertion order.
@@ -203,5 +219,19 @@ public record ServerRuleCapabilities(boolean supported,
    */
   public ServerRuleCapabilities withPublishConflict(boolean conflict) {
     return new ServerRuleCapabilities(supported, reasonCode, readsForeignRules, conflict, vocabularySource, elements);
+  }
+
+  /**
+   * The same capabilities with one element answered otherwise: what a deployment decides
+   * over what the server can do, such as forwarding switched off for a connector.
+   *
+   * @param element one of the element constants
+   * @param support the element's answer
+   * @return the new capabilities
+   */
+  public ServerRuleCapabilities withElement(String element, ServerRuleElementSupport support) {
+    Map<String, ServerRuleElementSupport> changed = new LinkedHashMap<>(elements);
+    changed.put(element, support);
+    return new ServerRuleCapabilities(supported, reasonCode, readsForeignRules, publishConflict, vocabularySource, changed);
   }
 }

@@ -38,6 +38,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
+    <!-- Print (EXO-90842): what the drawer has open -- the whole conversation when it is
+         one, the message otherwise. A read, so offered in every folder. -->
+    <v-btn
+      v-if="email"
+      :title="printTitle"
+      @click="printOpened()"
+      icon>
+      <v-icon size="20" class="icon-default-color">fa-print</v-icon>
+    </v-btn>
     <!-- All three write to the mail server by IMAP UID, which the backend resolves
          against the inbox — so a message opened out of a read-only folder offers
          none of them. The extension seam above stays: it is somebody else's toolbar
@@ -125,6 +134,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { printEmails, printLabels } from '../../js/EmailConnectorRawEmail.js';
+
 export default {
   props: {
     email: {
@@ -193,6 +204,16 @@ export default {
         messages,
         subject: this.thread?.subject || this.email?.subject || null,
       };
+    },
+    /**
+     * What the print button prints, said on it: the conversation or the message.
+     *
+     * @returns {String} the tooltip
+     */
+    printTitle() {
+      return this.$t(this.threadParams.isThread
+        ? 'emailConnector.mailBox.print.conversation.label'
+        : 'emailConnector.mailBox.print.label');
     },
     /**
      * Whether the opened message sits in a folder the interface may only read
@@ -296,6 +317,17 @@ export default {
     },
   },
   methods: {
+    /**
+     * Prints what the drawer has open (EXO-90842): the conversation's messages in reading
+     * order, its drafts left out as the reader assembled it, or the opened message.
+     *
+     * @returns {void}
+     */
+    printOpened() {
+      const messages = this.threadParams.isThread ? this.threadParams.messages : [this.email];
+      printEmails(messages, printLabels(this.$t.bind(this)), eXo.env.portal.language)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.print.error'), 'error'));
+    },
     /**
      * Marks the opened conversation — every message of it listed in the acting
      * folder, or the opened message alone — read or unread, and closes the reader.

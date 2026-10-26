@@ -35,7 +35,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-btn
         :title="$t('UserSettings.emailConnector.folders.create')"
         icon
-        @click="openCreate">
+        @click="openCreate(null)">
         <v-icon size="18">fas fa-plus</v-icon>
       </v-btn>
     </template>
@@ -51,46 +51,68 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div v-if="!loading && !customFolders.length" class="px-4 py-2 text-sub-title">
         {{ $t('UserSettings.emailConnector.folders.none') }}
       </div>
-      <!-- One row per folder the user made, the name as they wrote it and the path
-           under it when the folder is nested. A folder the last walk did not find says
-           so and cannot be switched on, but keeps its row until the walk after confirms
-           it is gone. Opting OUT is a real action: the mirrored copy is deleted. -->
+      <!-- One row per folder the user made, as a tree (EXO-90839): a folder inside
+           another indented under it, a folder with folders inside collapsing them. A
+           folder at the top whose parent is not listed shows its path. A folder the
+           last walk did not find says so and cannot be switched on, but keeps its row
+           until the walk after confirms it is gone. Opting OUT is a real action: the
+           mirrored copy is deleted. -->
       <v-list class="pa-0">
         <v-list-item
-          v-for="folder in customFolders"
-          :key="folder.key"
+          v-for="row in visibleRows"
+          :key="row.folder.key"
+          :style="{ paddingInlineStart: `${16 + Math.min(row.depth, 6) * 20}px` }"
           class="height-auto">
+          <v-btn
+            v-if="row.hasChildren"
+            :title="toggleLabel(row.folder)"
+            :aria-label="toggleLabel(row.folder)"
+            :aria-expanded="String(!collapsed[row.folder.key])"
+            class="ms-n2 me-1"
+            icon
+            x-small
+            @click="toggleCollapsed(row.folder.key)">
+            <v-icon size="12" class="icon-default-color">
+              {{ collapsed[row.folder.key] ? 'fa-chevron-right' : 'fa-chevron-down' }}
+            </v-icon>
+          </v-btn>
           <v-list-item-content class="py-2">
-            <v-list-item-title :class="{ 'text-sub-title': folder.missing }">
-              {{ folder.displayName }}
+            <v-list-item-title :class="{ 'text-sub-title': row.folder.missing }" :title="pathOf(row.folder)">
+              {{ row.showPath ? row.pathLabel : row.folder.displayName }}
             </v-list-item-title>
-            <v-list-item-subtitle v-if="pathOf(folder) !== folder.displayName">
-              {{ pathOf(folder) }}
-            </v-list-item-subtitle>
-            <v-list-item-subtitle v-if="folder.missing" class="error--text">
+            <v-list-item-subtitle v-if="row.folder.missing" class="error--text">
               {{ $t('UserSettings.emailConnector.folders.missing') }}
             </v-list-item-subtitle>
           </v-list-item-content>
           <v-list-item-action class="flex-row align-center">
+            <!-- A folder inside this one: the name drawer, its parent chosen. -->
+            <v-btn
+              :title="$t('UserSettings.emailConnector.folders.createInside')"
+              :aria-label="$t('UserSettings.emailConnector.folders.createInside')"
+              icon
+              :disabled="row.folder.missing || !row.folder.delimiter || savingId !== null"
+              @click="openCreate(row.folder)">
+              <v-icon size="16">fas fa-folder-plus</v-icon>
+            </v-btn>
             <v-btn
               :title="$t('UserSettings.emailConnector.folders.rename')"
               icon
               :disabled="savingId !== null"
-              @click="openRename(folder)">
+              @click="openRename(row.folder)">
               <v-icon size="16">fas fa-pen</v-icon>
             </v-btn>
             <v-btn
               :title="$t('UserSettings.emailConnector.folders.delete')"
               icon
               :disabled="savingId !== null"
-              @click="openDelete(folder)">
+              @click="openDelete(row.folder)">
               <v-icon size="16">fas fa-trash</v-icon>
             </v-btn>
             <v-switch
-              :input-value="folder.syncEnabled"
-              :loading="savingId === folder.id"
-              :disabled="folder.missing || savingId !== null"
-              @change="toggle(folder, $event)" />
+              :input-value="row.folder.syncEnabled"
+              :loading="savingId === row.folder.id"
+              :disabled="row.folder.missing || savingId !== null"
+              @change="toggle(row.folder, $event)" />
           </v-list-item-action>
         </v-list-item>
       </v-list>
@@ -133,8 +155,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { buildFolderTree, descendantKeys, folderPathLabel, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
+
+// The server's refusals of a delete the user can act on, in their own words.
+const DELETE_ERROR_KEYS = {
+  'emailConnector.folder.notEmpty': 'UserSettings.emailConnector.folders.delete.notEmpty',
+  'emailConnector.folder.subFolderNotEmpty': 'UserSettings.emailConnector.folders.delete.subFolderNotEmpty',
+  'emailConnector.folder.subFolderBuiltIn': 'UserSettings.emailConnector.folders.delete.subFolderBuiltIn',
+};
+
 export default {
   data: () => ({
+    collapsed: readCollapsedFolders(),
     drawer: false,
     folders: [],
     maxFolders: 0,
@@ -145,6 +177,9 @@ export default {
     savingId: null,
     // The folder a delete confirmation is pending on.
     deleteTarget: null,
+    // Whether the pending confirmation is the second one, asked when the server found
+    // folders inside it that this list does not show (not listed as the user's own).
+    deleteUnlistedSubFolders: false,
   }),
   computed: {
     /**
@@ -162,7 +197,31 @@ export default {
      * @returns {String} the localized message
      */
     deleteConfirmMessage() {
-      return this.$t('UserSettings.emailConnector.folders.delete.confirm.message', { 0: this.deleteTarget?.displayName || '' });
+      // A folder with folders inside says that they go too, and how many (EXO-90839).
+      if (this.deleteUnlistedSubFolders) {
+        return this.$t('UserSettings.emailConnector.folders.delete.confirm.messageWithUnlistedSubFolders',
+          { 0: this.deleteTarget?.displayName || '' });
+      }
+      return this.deleteTargetSubFolders
+        ? this.$t('UserSettings.emailConnector.folders.delete.confirm.messageWithSubFolders',
+          { 0: this.deleteTarget?.displayName || '', 1: this.deleteTargetSubFolders })
+        : this.$t('UserSettings.emailConnector.folders.delete.confirm.message', { 0: this.deleteTarget?.displayName || '' });
+    },
+    /**
+     * How many of the listed folders are inside the folder a delete is pending on.
+     *
+     * @returns {Number} the count, 0 for none
+     */
+    deleteTargetSubFolders() {
+      return this.deleteTarget ? descendantKeys(this.customFolders, this.deleteTarget).length : 0;
+    },
+    /**
+     * The user's folders as a tree, a collapsed one's folders left out.
+     *
+     * @returns {Array} the rows ({folder, depth, hasChildren, showPath})
+     */
+    visibleRows() {
+      return visibleFolderRows(buildFolderTree(this.customFolders), this.collapsed);
     },
   },
   created() {
@@ -271,22 +330,45 @@ export default {
     },
     /**
      * Opens the second-level name drawer on Create -- see
-     * EmailConnectorUserSettingFolderNameDrawer. This drawer stays open behind it.
+     * EmailConnectorUserSettingFolderNameDrawer -- at the top level, or inside a folder.
+     * This drawer stays open behind it.
      *
+     * @param {Object} parent the folder to create it in, or null for the top level
      * @returns {void}
      */
-    openCreate() {
-      this.$root.$emit('open-email-folder-name-drawer', { mode: 'create' });
+    openCreate(parent) {
+      this.$root.$emit('open-email-folder-name-drawer', { mode: 'create', parent, folders: this.customFolders });
     },
     /**
      * Opens the second-level name drawer on Rename, pre-filled with the folder's
-     * current name. This drawer stays open behind it.
+     * current name and parent -- changing the parent moves it. This drawer stays open
+     * behind it.
      *
      * @param {Object} folder the folder to rename
      * @returns {void}
      */
     openRename(folder) {
-      this.$root.$emit('open-email-folder-name-drawer', { mode: 'rename', folder });
+      this.$root.$emit('open-email-folder-name-drawer', { mode: 'rename', folder, folders: this.customFolders });
+    },
+    /**
+     * What the collapse button of a folder says: the action it takes, with the folder's name.
+     *
+     * @param {Object} folder the folder
+     * @returns {String} the label
+     */
+    toggleLabel(folder) {
+      const key = this.collapsed[folder.key] ? 'UserSettings.emailConnector.folders.expand'
+        : 'UserSettings.emailConnector.folders.collapse';
+      return this.$t(key, { 0: folder.displayName });
+    },
+    /**
+     * Collapses or expands the folders inside a folder.
+     *
+     * @param {String} key the folder's key
+     * @returns {void}
+     */
+    toggleCollapsed(key) {
+      this.collapsed = toggleCollapsedFolder(this.collapsed, key);
     },
     /**
      * Asks for the confirmation a delete needs -- the folder is named in it, and
@@ -298,6 +380,7 @@ export default {
      */
     openDelete(folder) {
       this.deleteTarget = folder;
+      this.deleteUnlistedSubFolders = false;
       this.$refs.deleteConfirmDialog.open();
     },
     /**
@@ -313,17 +396,30 @@ export default {
         return;
       }
       this.savingId = folder.id;
-      this.$emailConnectorUserSettingService.deleteMailFolder(folder.id)
+      // The folders inside it go too only when the confirmation said so.
+      const withSubFolders = this.deleteUnlistedSubFolders || this.deleteTargetSubFolders > 0;
+      let askedAgain = false;
+      this.$emailConnectorUserSettingService.deleteMailFolder(folder.id, withSubFolders)
         .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.delete.done'), 'success'))
         .catch(error => {
-          const message = error?.message === 'emailConnector.folder.notEmpty'
-            ? this.$t('UserSettings.emailConnector.folders.delete.notEmpty')
+          if (error?.message === 'emailConnector.folder.hasSubFolders' && !withSubFolders) {
+            // Folders inside it the list does not show: asked again, saying so.
+            askedAgain = true;
+            this.deleteUnlistedSubFolders = true;
+            this.$refs.deleteConfirmDialog.open();
+            return;
+          }
+          const message = DELETE_ERROR_KEYS[error?.message] ? this.$t(DELETE_ERROR_KEYS[error.message])
             : this.$t('UserSettings.emailConnector.folders.error');
           this.$root.$emit('alert-message', message, 'error');
         })
         .finally(() => {
           this.savingId = null;
+          if (askedAgain) {
+            return;
+          }
           this.deleteTarget = null;
+          this.deleteUnlistedSubFolders = false;
           this.load(false);
           this.$root.$emit('email-folders-saved');
         });
@@ -335,10 +431,7 @@ export default {
      * @returns {String} the path
      */
     pathOf(folder) {
-      if (!folder?.path) {
-        return folder?.displayName || '';
-      }
-      return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+      return folderPathLabel(folder, this.customFolders) || folder?.displayName || '';
     },
     /**
      * Closes the drawer and tells the settings row to re-read its counter, since the

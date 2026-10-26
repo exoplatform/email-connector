@@ -53,6 +53,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
@@ -126,6 +127,12 @@ public class EmailScheduledSendCrashRecoveryTest {
 
   @MockitoBean
   private UploadService                     uploadService;
+
+  @MockitoBean
+  private EmailDelegationService            emailDelegationService;
+
+  @MockitoBean
+  private SettingService                    settingService;
 
   private EmailScheduledSendService         service;
 

@@ -19,8 +19,8 @@ package org.exoplatform.emailConnector.exception;
 /**
  * The share a grantee is acting on no longer exists on the server: the owner or an
  * administrator removed the access, or the mailbox is gone. A business state and not
- * an authentication failure -- this add-on maps {@code IllegalAccessException} to 401,
- * which would be the wrong word for it -- so the REST layer answers {@code 410 Gone}
+ * a refusal -- the REST layer maps {@code IllegalAccessException} to 403, which would
+ * be the wrong word for it -- so the REST layer answers {@code 410 Gone}
  * with the code as message, and the drawer switches back to the user's own mailbox.
  */
 public class DelegationRevokedException extends RuntimeException {

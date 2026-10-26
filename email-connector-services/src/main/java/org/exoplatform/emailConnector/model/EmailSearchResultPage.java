@@ -18,7 +18,6 @@ package org.exoplatform.emailConnector.model;
 
 import java.util.List;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -30,7 +29,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class EmailSearchResultPage {
 
   // The newest matches, newest first, capped to the requested limit.
@@ -42,6 +40,25 @@ public class EmailSearchResultPage {
   // Whether this page was narrowed to the user's favorites. It travels back so the
   // results can continue the same search on the mail server without being told twice.
   private boolean                 favoritesOnly;
+
+  // For a search of the mail server narrowed to the messages with an attachment
+  // (EXO-90838): how many of the newest matches were examined for one, when there were
+  // more matches than that -- the count then covers those only; 0 when every match was.
+  private int                     scanned;
+
+  /**
+   * A page of hits, as every search builds one; the field above is set by name by
+   * the search that has it.
+   *
+   * @param results the newest matching messages
+   * @param totalMatches how many matched in total
+   * @param favoritesOnly whether the page was narrowed to favorites
+   */
+  public EmailSearchResultPage(List<EmailSearchResult> results, int totalMatches, boolean favoritesOnly) {
+    this.results = results;
+    this.totalMatches = totalMatches;
+    this.favoritesOnly = favoritesOnly;
+  }
 
   /**
    * A page that was not narrowed to favorites, which is the ordinary case.

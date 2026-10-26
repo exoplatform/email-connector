@@ -123,6 +123,9 @@ public final class FakeManageSieveServer implements AutoCloseable {
 
   private volatile String      sieveExtensions   = STALWART_SIEVE;
 
+  /** The {@code MAXREDIRECTS} value advertised, or null for none. */
+  private volatile Integer     maxRedirects;
+
   private volatile String      password          = PASSWORD;
 
   private volatile String      rawGetScriptAnswer;
@@ -227,6 +230,17 @@ public final class FakeManageSieveServer implements AutoCloseable {
    */
   public FakeManageSieveServer postTlsSasl(String mechanisms) {
     this.postTlsSasl = mechanisms;
+    return this;
+  }
+
+  /**
+   * Advertises {@code MAXREDIRECTS}, or nothing.
+   *
+   * @param value the value, null to advertise none
+   * @return this server
+   */
+  public FakeManageSieveServer maxRedirects(Integer value) {
+    this.maxRedirects = value;
     return this;
   }
 
@@ -369,6 +383,20 @@ public final class FakeManageSieveServer implements AutoCloseable {
     scripts.put(name, content);
     if (makeActive) {
       active = name;
+    }
+    return this;
+  }
+
+  /**
+   * Removes a script as another client would, active or not.
+   *
+   * @param name the name
+   * @return this server
+   */
+  public synchronized FakeManageSieveServer removeScript(String name) {
+    scripts.remove(name);
+    if (name.equals(active)) {
+      active = null;
     }
     return this;
   }
@@ -679,6 +707,9 @@ public final class FakeManageSieveServer implements AutoCloseable {
     StringBuilder lines = new StringBuilder("\"IMPLEMENTATION\" \"Fake ManageSieve\"\r\n");
     lines.append("\"SASL\" ").append(quote(secure ? postTlsSasl : "OAUTHBEARER")).append("\r\n");
     lines.append("\"SIEVE\" ").append(quote(sieveExtensions)).append("\r\n");
+    if (maxRedirects != null) {
+      lines.append("\"MAXREDIRECTS\" ").append(quote(String.valueOf(maxRedirects))).append("\r\n");
+    }
     if (!secure && offerStarttls) {
       lines.append("\"STARTTLS\"\r\n");
     }

@@ -23,10 +23,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        proposed, never subscribed on your behalf: an unexpected copy of a colleague's
        mailbox is a surprise nobody wants, and it costs a synchronisation. -->
   <div v-if="active">
-    <v-progress-linear
-      v-if="loading"
-      indeterminate
-      color="primary" />
     <div v-if="loaded && !delegations.length" class="px-4 py-4 text-sub-title text-wrap">
       {{ $t('UserSettings.emailConnector.sharedWithMe.none') }}
     </div>
@@ -53,7 +49,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :disabled="!!savingIds[delegation.id]"
           @answer="onAnswer(delegation, $event)"
           @badge="saveBadge(delegation, $event)"
-          @notify="saveNotify(delegation, $event)" />
+          @notify="saveNotify(delegation, $event)"
+          @search="saveSearch(delegation, $event)" />
       </v-list>
     </template>
     <!-- Leaving is the one answer that takes a mailbox away from the user's screens,
@@ -151,6 +148,18 @@ export default {
         ...group,
         rows: this.delegations.filter(delegation => delegation.status === group.status),
       }));
+    },
+  },
+  watch: {
+    /**
+     * Tells the drawer whether this tab reads the server, for the drawer's own bar under
+     * its title.
+     *
+     * @param {Boolean} value whether it does
+     * @returns {void}
+     */
+    loading(value) {
+      this.$emit('loading', value);
     },
   },
   methods: {
@@ -271,6 +280,25 @@ export default {
         .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => {
+          this.load(false);
+        });
+    },
+    /**
+     * Stores whether the platform's search returns this shared mailbox's mail, labelled
+     * with its owner (EXO-90554). On by default: searching is something the user asks
+     * for, not something pushed at them.
+     *
+     * @param {Object} delegation the row
+     * @param {Boolean} included whether it is searched
+     * @returns {void}
+     */
+    saveSearch(delegation, included) {
+      this.savingId = delegation.id;
+      this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {searchIncluded: !!included})
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
+        .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .finally(() => {
+          this.savingId = null;
           this.load(false);
         });
     },

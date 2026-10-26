@@ -94,7 +94,7 @@ export function answerReadReceiptAutomatically(email) {
  * <li>500 unconfirmed: the receipt may be out and is not sent again; the banner goes, and
  *   the request counts as answered by a receipt sent -- that is what the server kept, and
  *   what the next read of the message will say.</li>
- * <li>Anything else (500 sendFailed, 401, the network): nothing left; the request stays
+ * <li>Anything else (500 sendFailed, 403, the network): nothing left; the request stays
  *   pending and the banner stays, so the user can try again.</li>
  * </ul>
  *

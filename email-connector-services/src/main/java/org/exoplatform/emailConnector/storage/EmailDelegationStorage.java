@@ -31,7 +31,9 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderAccess;
 import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -49,7 +51,13 @@ import io.meeds.social.util.JsonUtils;
 @Component
 public class EmailDelegationStorage {
 
-  private static final Log LOG = ExoLogger.getLogger(EmailDelegationStorage.class);
+  private static final Log          LOG  = ExoLogger.getLogger(EmailDelegationStorage.class);
+
+  /**
+   * The statuses of a share on offer or in use: the only ones a consent to write in the
+   * owner's name may be written on or stay on (EXO-90582).
+   */
+  private static final List<String> LIVE = List.of(DelegationStatus.PENDING.name(), DelegationStatus.ACCEPTED.name());
 
   @Autowired
   private EmailDelegationDAO emailDelegationDAO;
@@ -113,6 +121,26 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * How many shares of a connector eXo made whose access may be on the server: invited,
+   * accepted, declined (a decline leaves the owner's grant in place), offered again (the
+   * owner's grant was seen again) and gone from the grantee's listing (a rename or a
+   * hidden folder leaves the grant). Only a revoke says the grant is gone; a row of no
+   * origin, which predates the column, counts as eXo's.
+   *
+   * @param connectorId the connector
+   * @return the count
+   */
+  public long countExoSharesOnServer(long connectorId) {
+    return emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(connectorId,
+                                                                    List.of(DelegationStatus.PENDING.name(),
+                                                                            DelegationStatus.ACCEPTED.name(),
+                                                                            DelegationStatus.DECLINED.name(),
+                                                                            DelegationStatus.AVAILABLE.name(),
+                                                                            DelegationStatus.GONE.name()),
+                                                                    DelegationOrigin.EXO.name());
+  }
+
+  /**
    * How many delegations a grantee has in one state.
    *
    * @param granteeId the grantee's username
@@ -170,6 +198,10 @@ public class EmailDelegationStorage {
   /**
    * Writes a row back. Through a managed entity under {@code DynamicUpdate}, so only the
    * columns that changed since the load reach the database; the update date is stamped.
+   * The owner's consent to writing in her name is never written from here, whatever the
+   * DTO holds (EXO-90582): a row read before the owner set or withdrew it must neither
+   * undo nor revive it -- {@link #updateSendMode} and {@link #clearSendModeIfEnded} are
+   * its only writers.
    *
    * @param delegation the row, id set
    * @return the row as it now stands
@@ -200,6 +232,20 @@ public class EmailDelegationStorage {
    */
   public EmailDelegation updatePreferences(String granteeId, long id, boolean badgeIncluded, boolean notifyNewMail) {
     emailDelegationDAO.updatePreferences(id, granteeId, badgeIncluded, notifyNewMail, new Date());
+    return getAsGrantee(granteeId, id);
+  }
+
+  /**
+   * The grantee's search toggle, written alone (EXO-90554), for the reason
+   * {@link #updatePreferences} is. The update date is stamped.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param searchIncluded whether the unified search returns this shared mailbox
+   * @return the row as it now stands, null when no such row of that grantee exists
+   */
+  public EmailDelegation updateSearchIncluded(String granteeId, long id, boolean searchIncluded) {
+    emailDelegationDAO.updateSearchIncluded(id, granteeId, searchIncluded, new Date());
     return getAsGrantee(granteeId, id);
   }
 
@@ -279,6 +325,94 @@ public class EmailDelegationStorage {
                                                                  List.of(DelegationStatus.REVOKED.name(),
                                                                          DelegationStatus.GONE.name()));
     return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
+   * What an owner's per-folder change wrote (EXO-90556), and only that: the role folders
+   * the share now covers, the owner's folder of each role, and the per-folder exceptions
+   * to the preset -- never the INBOX letters or the preset, which a grantee's pass may
+   * have refreshed meanwhile. Only that owner's row, and not a share that ended while the
+   * server was being asked.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param grantedRoles the role folders the share covers, as stored
+   * @param ownerRoleFolders the owner's folder per role
+   * @param folderAccess the per-folder exceptions to the preset
+   * @return the row as it now stands, null when it is not that owner's or has ended
+   */
+  public EmailDelegation updateFolderGrants(String ownerId,
+                                            long id,
+                                            String grantedRoles,
+                                            Map<FolderRole, String> ownerRoleFolders,
+                                            Map<FolderRole, FolderAccess> folderAccess) {
+    int updated = emailDelegationDAO.updateFolderGrants(id,
+                                                        ownerId,
+                                                        grantedRoles,
+                                                        roleFoldersToJson(ownerRoleFolders),
+                                                        EmailDelegation.folderAccessOf(folderAccess),
+                                                        new Date(),
+                                                        List.of(DelegationStatus.REVOKED.name(), DelegationStatus.GONE.name()));
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
+   * The owner's consent to the grantee writing mail in her name, written alone
+   * (EXO-90582): the mode and its date, with the server's last refusal cleared -- a
+   * consent set again is a fresh one. {@link SendMode#NONE} stores no mode and no date,
+   * which is the row's shape before this feature. Only that owner's row, and only a share
+   * on offer or in use.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param mode the consent, {@link SendMode#NONE} to withdraw it
+   * @return the row as it now stands, null when it is not that owner's or not live
+   */
+  public EmailDelegation updateSendMode(String ownerId, long id, SendMode mode) {
+    SendMode stored = mode == null ? SendMode.NONE : mode;
+    Date now = new Date();
+    int updated = emailDelegationDAO.updateSendMode(id,
+                                                    ownerId,
+                                                    stored.stored(),
+                                                    stored == SendMode.NONE ? null : now,
+                                                    now,
+                                                    LIVE);
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
+   * Takes the owner's consent to writing in her name off a share that has just left the
+   * states it may live in (EXO-90582). Called after the write that ended the share, never
+   * before: see {@link EmailDelegationDAO#clearSendMode}.
+   *
+   * @param id the row id
+   * @return true when a consent was taken off
+   */
+  public boolean clearSendModeIfEnded(long id) {
+    return emailDelegationDAO.clearSendMode(id, LIVE) > 0;
+  }
+
+  /**
+   * Records, on the grantee's row, that the owner's mail server refused a mail sent in
+   * the owner's name under the consent set at {@code consentDate} (EXO-90583), and the
+   * shape it was sent in (EXO-90626): see {@link EmailDelegationDAO#markSendRefused}. A
+   * consent with no date is never marked. A shape that is neither on behalf nor as the
+   * owner is recorded as on behalf, which blocks both: a refusal whose shape is unknown
+   * never leaves one usable.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param consentDate when the consent the mail was sent under was set
+   * @param mode the shape the refused mail was sent in, {@link SendMode#ON_BEHALF} or
+   *          {@link SendMode#AS}
+   * @return true when the refusal was recorded
+   */
+  public boolean markSendRefused(String granteeId, long id, Date consentDate, SendMode mode) {
+    if (consentDate == null) {
+      return false;
+    }
+    SendMode refused = mode == SendMode.AS ? SendMode.AS : SendMode.ON_BEHALF;
+    return emailDelegationDAO.markSendRefused(id, granteeId, consentDate, refused.name(), new Date(), LIVE) > 0;
   }
 
   /**
@@ -399,7 +533,8 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * DTO to entity, every column but the two stamps.
+   * DTO to entity, every column but the two stamps and the owner's consent to writing in
+   * her name, which has writers of its own (EXO-90582).
    *
    * @param delegation the source
    * @param entity the target
@@ -419,6 +554,7 @@ public class EmailDelegationStorage {
     entity.setOrigin(delegation.getOrigin() == null ? null : delegation.getOrigin().name());
     entity.setBadgeIncluded(delegation.isBadgeIncluded());
     entity.setNotifyNewMail(delegation.isNotifyNewMail());
+    entity.setSearchIncluded(delegation.isSearchIncluded());
     entity.setLastActivityDate(delegation.getLastActivityDate());
     entity.setLastRightsCheckDate(delegation.getLastRightsCheckDate());
     entity.setInvitedDate(delegation.getInvitedDate());
@@ -426,6 +562,7 @@ public class EmailDelegationStorage {
     entity.setRevokedDate(delegation.getRevokedDate());
     entity.setGrantedRoles(delegation.getGrantedRoles());
     entity.setOwnerRoleFolders(roleFoldersToJson(delegation.getOwnerRoleFolders()));
+    entity.setFolderAccess(EmailDelegation.folderAccessOf(delegation.getFolderAccess()));
     return entity;
   }
 
@@ -436,29 +573,36 @@ public class EmailDelegationStorage {
    * @return the DTO
    */
   private EmailDelegation fromEntity(EmailDelegationEntity entity) {
-    return new EmailDelegation(entity.getId(),
-                               entity.getGranteeId(),
-                               entity.getOwnerId(),
-                               entity.getOwnerMailbox(),
-                               entity.getGranteeMailbox(),
-                               entity.getConnectorId(),
-                               entity.getRemoteRoot(),
-                               entity.getPreset() == null ? null : DelegationPreset.valueOf(entity.getPreset()),
-                               entity.getRights(),
-                               entity.getNativeRights(),
-                               entity.getStatus() == null ? null : DelegationStatus.valueOf(entity.getStatus()),
-                               entity.getOrigin() == null ? null : DelegationOrigin.valueOf(entity.getOrigin()),
-                               entity.isBadgeIncluded(),
-                               entity.isNotifyNewMail(),
-                               entity.getLastActivityDate(),
-                               entity.getLastRightsCheckDate(),
-                               entity.getInvitedDate(),
-                               entity.getRespondedDate(),
-                               entity.getRevokedDate(),
-                               entity.getCreatedDate(),
-                               entity.getUpdatedDate(),
-                               entity.getGrantedRoles(),
-                               roleFoldersFromJson(entity.getOwnerRoleFolders()));
+    EmailDelegation delegation = new EmailDelegation(entity.getId(),
+                                                     entity.getGranteeId(),
+                                                     entity.getOwnerId(),
+                                                     entity.getOwnerMailbox(),
+                                                     entity.getGranteeMailbox(),
+                                                     entity.getConnectorId(),
+                                                     entity.getRemoteRoot(),
+                                                     entity.getPreset() == null ? null : DelegationPreset.valueOf(entity.getPreset()),
+                                                     entity.getRights(),
+                                                     entity.getNativeRights(),
+                                                     entity.getStatus() == null ? null : DelegationStatus.valueOf(entity.getStatus()),
+                                                     entity.getOrigin() == null ? null : DelegationOrigin.valueOf(entity.getOrigin()),
+                                                     entity.isBadgeIncluded(),
+                                                     entity.isNotifyNewMail(),
+                                                     entity.getLastActivityDate(),
+                                                     entity.getLastRightsCheckDate(),
+                                                     entity.getInvitedDate(),
+                                                     entity.getRespondedDate(),
+                                                     entity.getRevokedDate(),
+                                                     entity.getCreatedDate(),
+                                                     entity.getUpdatedDate(),
+                                                     entity.getGrantedRoles(),
+                                                     roleFoldersFromJson(entity.getOwnerRoleFolders()),
+                                                     entity.isSearchIncluded(),
+                                                     EmailDelegation.folderAccessFrom(entity.getFolderAccess()));
+    delegation.setSendMode(SendMode.fromStored(entity.getSendMode()));
+    delegation.setSendModeDate(entity.getSendModeDate());
+    delegation.setSendRefusedDate(entity.getSendRefusedDate());
+    delegation.setSendRefusedMode(SendMode.fromStored(entity.getSendRefusedMode()));
+    return delegation;
   }
 
   /**

@@ -25,14 +25,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @dragstart="onDragStart"
     @dragend="onDragEnd"
     @mouseenter="!isMobile && (isHover = true)"
-    @mouseleave="!isMobile && (isHover = false)"
-    @focusin="!isMobile && (isHover = true)"
-    @focusout="!isMobile && (isHover = false)"
-    :class="[
-      backgroundClass,
-      selectMode ? 'ps-4' : 'ps-7'
-    ]"
-    class="position-relative no-border pt-3 pb-3 pe-4">
+    @mouseleave="pointerDown = false; !isMobile && (isHover = false)"
+    @mousedown="pointerDown = true"
+    @mouseup="pointerDown = false"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
+    :class="backgroundClass"
+    class="position-relative no-border pt-3 pb-3 ps-4 pe-4">
     <div
       v-if="absolute"
       :class="[
@@ -72,19 +71,44 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         width: `${minWidth}px`,
         'min-width': `${minWidth}px`,
       }">
-      <!-- Disabled as well as unclickable for a row the server has not listed yet
+      <!-- The sender's avatar, which is also the row's checkbox (EXO-90891): the
+           checkbox takes its place while the row is hovered (in the narrow drawer, the
+           avatar itself) or holds the keyboard focus, and on every row in select mode
+           (showCheckbox). On a phone, with no hover, a tap
+           on the avatar ticks the row and enters select mode. The box keeps its size
+           whichever shows, so the row never shifts under the pointer. The checkbox is
+           disabled as well as unclickable for a row the server has not listed yet
            (refreshPending): pointer-events stops the mouse, not Tab + Space, and a
            placeholder UID must not enter the selection. -->
-      <v-checkbox
-        v-if="selectMode"
-        class="me-0 pt-0 align-self-center"
-        color="#707070"
-        background-color="transparent"
-        :input-value="selected"
-        :disabled="email.refreshPending"
-        @click.stop
-        @change="onSelectChange" />
-      <div class="flex-grow-1 no-min-width">    
+      <!-- eslint-disable-next-line vuejs-accessibility/click-events-have-key-events, vuejs-accessibility/no-static-element-interactions -->
+      <div
+        class="row-avatar d-flex align-center justify-center align-self-start flex-shrink-0 me-4"
+        style="width: 32px; height: 32px;"
+        @mouseenter="avatarHover = !isMobile"
+        @mouseleave="avatarHover = false"
+        @focusin="avatarHover = !isMobile"
+        @focusout="avatarHover = false"
+        @keydown="onAvatarKeydown"
+        @click="onAvatarClick">
+        <v-checkbox
+          v-if="showCheckbox"
+          class="ma-0 pa-0"
+          color="#707070"
+          background-color="transparent"
+          hide-details
+          :aria-label="selectLabel"
+          :input-value="selected"
+          :disabled="email.refreshPending"
+          @click.stop
+          @change="onSelectChange" />
+        <email-connector-mail-box-drawer-list-item-detail-sender-avatar
+          v-else
+          :email="email"
+          :person="avatarPerson"
+          :size="32"
+          class="ma-0" />
+      </div>
+      <div class="flex-grow-1 no-min-width">
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
         <!-- data-thread-key is how the arrow keys find the row they stand on, and
              aria-current tells a screen reader which conversation the reader shows --
@@ -120,20 +144,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                    without opening anything, which is what stops it being forgotten.
                    A plain span with no listener of its own: this list streams
                    thousands of rows, and one handler per row is a real cost. -->
-              <v-list-item-title>
-                {{ participants }}<span
+              <!-- In a list gathering several folders' mails, the folder the mail sits in
+                   follows the sender (EXO-90882): the name gives way first, the chip
+                   never wraps, and the subject line is left to the subject. -->
+              <v-list-item-title class="d-flex align-center">
+                <span class="text-truncate">{{ participants }}</span><span
                   v-if="showDraftMarker"
-                  class="error--text font-weight-regular">{{ draftMarker }}</span><span
+                  class="error--text font-weight-regular flex-shrink-0">{{ draftMarker }}</span><span
                     v-if="threadCount > 1"
-                    class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
+                    class="text-light-color ms-1 font-weight-regular flex-shrink-0">{{ threadCount }}</span>
+                <v-chip
+                  v-if="folderName"
+                  :title="folderName"
+                  style="max-width: 50%;"
+                  class="row-folder ms-2 flex-shrink-0 font-weight-regular"
+                  x-small
+                  outlined>
+                  <span class="text-truncate">{{ folderName }}</span>
+                </v-chip>
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
               <!-- Quiet favorite, next to the date (the unread dot keeps the left edge):
                    always there when set, offered on hover to set it.
                    It keeps its box at all times and only fades, exactly like the row
-                   actions below. Anything that takes the icon out of the layout -- v-if,
-                   or v-show, which sets display:none -- resizes the row as the pointer
+                   actions beside it. Anything that takes the icon out of the layout --
+                   v-if, or v-show, which sets display:none -- resizes the row as the pointer
                    arrives: the date shifts, the pointer ends up over different content,
                    the hover drops, and the row flickers as long as the cursor rests. -->
               <email-connector-mail-box-drawer-favorite-toggle
@@ -145,29 +181,95 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 :favorite="threadFavorite"
                 :can-toggle="canToggleFavorite && !selectMode"
                 :shared-owner="starSharedOwner"
-                class="me-1"
-                :size="18"
+                :size="16"
                 @toggle="toggleThreadFavorite" />
-              <v-list-item-subtitle v-text="receivedDate" />
+              <!-- The row's actions stand in the date's place while the pointer or the
+                   keyboard rests on the row, or its menu is open (EXO-91677): Archive and
+                   Delete, then the menu. Archive and Delete are what the swipe does on
+                   mobile, so not on a draft or a row the swipe offers nothing on
+                   (readOnly); none of them on mobile, which has the swipe and the long
+                   press, nor in select mode, where the selection bar acts. Laid over the
+                   date, which only fades; the slot keeps the buttons' width on every row,
+                   so nothing moves on hover. -->
+              <div
+                :style="rowActions && { minWidth: rowActionsWidth }"
+                class="position-relative d-flex justify-end">
+                <v-list-item-subtitle
+                  :style="rowActionsShown && { opacity: 0 }"
+                  v-text="receivedDate" />
+                <div
+                  v-if="rowActions"
+                  :style="{
+                    opacity: rowActionsShown ? 1 : 0,
+                    pointerEvents: rowActionsShown ? 'auto' : 'none'
+                  }"
+                  class="position-absolute t-0 b-0 r-0 d-flex align-center">
+                  <email-connector-mail-box-drawer-list-item-quick-actions
+                    v-if="showQuickActions"
+                    :can-archive="$emailConnectorMailBoxService.canArchive(email.folder)"
+                    :can-delete="$emailConnectorMailBoxService.canDelete(email.folder)"
+                    @archive="emitForRow('archive-email')"
+                    @delete="emitForRow('delete-email')" />
+                  <email-connector-mail-box-drawer-list-item-action-menu
+                    :email="email"
+                    :thread="thread"
+                    @open="menuOpen = true"
+                    @close="menuOpen = false" />
+                </div>
+              </div>
             </v-list-item-action>
           </v-list-item>
           <v-list-item
             class="px-0 height-auto">
             <v-list-item-content class="py-0">
-              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': threadUnread }]" v-text="subject" />
-              <v-list-item-subtitle v-text="excerpt" />
+              <v-list-item-subtitle :class="['mb-1 text-color d-flex align-center', { 'font-weight-bold': threadUnread }]">
+                <!-- The suggestions of an assistant waiting for the user on this mail, or on
+                     the mails of its conversation (EXO-90669), before the subject: the left
+                     edge is never under the row's hover actions. The Suggestions view's own
+                     icon and a flat number in the secondary colour (EXO-90890), so it is never
+                     taken for a count of messages. A native title, not a v-tooltip: this list
+                     streams thousands of rows. -->
+                <span
+                  v-if="waitingSuggestionCount"
+                  :title="waitingSuggestionsLabel"
+                  :aria-label="waitingSuggestionsLabel"
+                  role="img"
+                  class="row-waiting-suggestions d-inline-flex align-center text-light-color text-no-wrap me-2 flex-shrink-0 caption font-weight-regular"><v-icon
+                    size="12"
+                    class="text-light-color me-1">{{ suggestionsIcon }}</v-icon>{{ waitingSuggestionCount }}</span>
+                <span class="text-truncate">{{ subject }}</span>
+              </v-list-item-subtitle>
+              <v-list-item-subtitle
+                v-if="excerpt"
+                v-text="excerpt" />
+              <!-- The shared mailbox a draft was written in (EXO-90595), as the Scheduled
+                   view names it; nothing for the user's own. -->
+              <v-list-item-subtitle
+                v-if="draftMailboxLabel"
+                :class="email.sendMailbox.shared ? 'text-light-color' : 'warning--text'"
+                class="caption text-truncate draft-mailbox">
+                <v-icon
+                  :class="email.sendMailbox.shared ? 'icon-default-color' : 'warning--text'"
+                  size="11"
+                  class="me-1">
+                  fas fa-user-friends
+                </v-icon>
+                {{ draftMailboxLabel }}
+              </v-list-item-subtitle>
             </v-list-item-content>
-            <email-connector-mail-box-drawer-list-item-action-menu
-              v-if="!selectMode && !isMobile"
-              :style="{
-                opacity: isHover || menuOpen ? 1 : 0,
-                pointerEvents: isHover || menuOpen ? 'auto' : 'none'
-              }"
-              ref="menu"
-              :email="email"
-              :thread="thread"
-              @open="menuOpen = true"
-              @close="menuOpen = false" />
+            <!-- What a list of search hits says of a hit outside the local copy
+                 (EXO-90871): a cloud, fetched when opened. A native title, as the count
+                 above: this list streams thousands of rows. -->
+            <v-list-item-action
+              v-if="notCached"
+              class="my-0 ms-2 flex-row align-center flex-shrink-0">
+              <v-icon
+                :title="$t('emailConnector.mailBox.search.notCached')"
+                size="14"
+                class="text-light-color row-not-cached">
+                fa-cloud-download-alt
+              </v-icon>
+            </v-list-item-action>
           </v-list-item>
         </div>
         <email-connector-mail-box-drawer-list-item-attachments
@@ -180,13 +282,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { waitingSuggestionCount } from '../../js/EmailConnectorMailFilters.js';
+import { SUGGESTIONS_VIEW, folderIcon } from '../../js/EmailConnectorMailBoxService.js';
 import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
+
+// The icon the folder column gives the Suggestions view, read once for every row: the
+// waiting suggestions of a row show under it (EXO-90890).
+const SUGGESTIONS_ICON = folderIcon({ key: SUGGESTIONS_VIEW, type: 'BUILT_IN' });
 
 export default {
   data() {
     return {
       menuOpen: false,
       isHover: false,
+      // Whether the keyboard focus is inside the row: kept apart from the pointer's
+      // hover, so the pointer leaving never takes the focused checkbox away (EXO-90891).
+      isFocused: false,
+      // Whether a press of the pointer is what brings the focus in, not the keyboard.
+      pointerDown: false,
+      // Whether the pointer is over the avatar itself: what turns it into the checkbox in
+      // the narrow drawer, where the row's hover alone left a row looking avatar-less.
+      avatarHover: false,
       absolute: false,
       left: 0,
       startEvent: null,
@@ -224,8 +340,9 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The UID the list last opened (set-opened), as the server numbers it.
     openedEmailId: {
-      type: String,
+      type: [Number, String],
       default: null,
     },
     // The message the full-screen reader shows beside the list; none in the narrow
@@ -242,6 +359,31 @@ export default {
     dragSource: {
       type: Object,
       default: null,
+    },
+    // The key the list walks and lights the row by (data-thread-key), when it is not
+    // the conversation's own (EXO-90871): a list of hits -- a search's, the Suggestions
+    // view's -- keys each by folder and UID, a UID numbering a message within its folder
+    // only. Null for a row of a folder's list, keyed by its conversation.
+    rowKey: {
+      type: String,
+      default: null,
+    },
+    // The key of the row the reader shows, as rowKey keys it: a row keyed by rowKey is
+    // lit by that key, never by its UID alone, which another folder's hit may share.
+    openedKey: {
+      type: String,
+      default: null,
+    },
+    // Whether to name the folder the row sits in: a list gathering several folders' mails.
+    showFolder: {
+      type: Boolean,
+      default: false,
+    },
+    // The mailbox's folders as the drawer lists them, to name the row's by (showFolder):
+    // a prop, so the name follows the list as it loads.
+    folders: {
+      type: Array,
+      default: () => [],
     },
   },
   computed: {
@@ -265,6 +407,34 @@ export default {
       return !!drag && drag.folder === (this.email.folder || 'INBOX')
         && this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread).some(id => drag.ids.includes(id));
     },
+    /**
+     * How many suggestions of an assistant wait for the user on the row's mail, or on the
+     * mails of its conversation that the list holds, as the list last read them.
+     *
+     * @returns {number} the count, 0 when none
+     */
+    waitingSuggestionCount() {
+      return waitingSuggestionCount(this.thread?.emails || [this.email]);
+    },
+    /**
+     * What the count before the subject says, for the tooltip and screen readers.
+     *
+     * @returns {string} the label
+     */
+    waitingSuggestionsLabel() {
+      return this.waitingSuggestionCount === 1
+        ? this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsOne')
+        : this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsCount', { 0: this.waitingSuggestionCount });
+    },
+    /**
+     * The icon the waiting suggestions show under: the Suggestions view's own, as the
+     * folder column draws it.
+     *
+     * @returns {string} the icon class
+     */
+    suggestionsIcon() {
+      return SUGGESTIONS_ICON;
+    },
     gapSize() {
       return Math.abs(this.left);
     },
@@ -285,8 +455,44 @@ export default {
       }
       return this.email.content?.attachments || [];
     },
+    /**
+     * The line under the subject: the opening words of the message's body, or that the
+     * body is empty. A hit of a search or a mail of the Suggestions view in the local
+     * copy carries them as a listed row does (EXO-90882); a hit outside the copy has no
+     * body to quote, which is not the same as an empty body: the line is left out.
+     *
+     * @returns {String} the line, or an empty string for none
+     */
     excerpt() {
-      return this.email.content?.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
+      if (this.email.content) {
+        return this.email.content.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
+      }
+      return '';
+    },
+    /**
+     * Whether the row is a search hit outside the local copy, pulled in when opened: a
+     * hit says so itself; a listed row, always in the copy, says nothing.
+     *
+     * @returns {Boolean} true for a hit not yet in the copy
+     */
+    notCached() {
+      return this.email.cached === false;
+    },
+    /**
+     * The folder the row sits in, named as the folder column names it, when the list
+     * asked for it (showFolder): read off the folders the drawer lists (folders), the
+     * key itself while the folder is unknown to it -- a list of hits may draw its rows
+     * before the mailbox's folders have landed, and the name then follows them.
+     *
+     * @returns {String} the folder's name, or an empty string when not asked for
+     */
+    folderName() {
+      if (!this.showFolder) {
+        return '';
+      }
+      const key = this.email.folder || 'INBOX';
+      const folder = this.folders.find(candidate => candidate.key === key);
+      return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
     subject() {
       return this.email.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
@@ -301,10 +507,17 @@ export default {
      * @returns {String} the key
      */
     threadKey() {
-      return String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
+      return this.rowKey || String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
+    /**
+     * How many messages the row's conversation holds: the grouped thread's count in a
+     * folder's list, the count a hit or a Suggestions mail carries (EXO-90882) -- the
+     * folder list's own --, a lone mail otherwise.
+     *
+     * @returns {Number} the count, 1 at least
+     */
     threadCount() {
-      return this.thread ? this.thread.count : 1;
+      return this.thread ? this.thread.count : this.email.threadCount || 1;
     },
     // Whether this row IS a draft, as opposed to a message whose conversation holds
     // one. The two are different rows on different screens and are labelled by
@@ -312,6 +525,15 @@ export default {
     // context menu already key on, rather than which folder happens to be listed.
     isDraft() {
       return !!this.email.draftLocalId;
+    },
+    /**
+     * The line naming the shared mailbox this draft was written in (EXO-90595), when the
+     * Drafts listing named one.
+     *
+     * @returns {String} the line, or an empty string
+     */
+    draftMailboxLabel() {
+      return this.isDraft ? this.$emailConnectorMailBoxService.draftMailboxLabel(this.email.sendMailbox, this, this.email.sendMode) : '';
     },
     // Who the row names, which is not the same question for a draft as for a message.
     //
@@ -335,7 +557,48 @@ export default {
     // rather than to how a draft's is. The server leaves the owner out; nothing here
     // has to know their address.
     participants() {
-      return this.isDraft ? this.threadParticipants.join(', ') : this.email.sender.name;
+      return this.isDraft ? this.threadParticipants.join(', ') : this.senderName;
+    },
+    /**
+     * Who sent the message: by name, by address for a sender with none, nothing for a
+     * row that names none -- a hit is read with what the search or the server gave of
+     * it (EXO-90871).
+     *
+     * @returns {String} the sender's name
+     */
+    senderName() {
+      return this.email.sender?.name || this.email.sender?.address || '';
+    },
+    /**
+     * Who the row's avatar draws, by the rule its first line names people by
+     * (participants): a message's sender -- in Sent, the user themselves, as the line
+     * reads --, a draft's first other participant, known by name only, so drawn with
+     * initials. Null for the message's sender.
+     *
+     * @returns {Object} {name}, or null for the sender
+     */
+    avatarPerson() {
+      return this.isDraft && this.threadParticipants.length ? { name: this.threadParticipants[0] } : null;
+    },
+    /**
+     * Whether the avatar shows as the row's checkbox: in select mode, while the row
+     * holds the keyboard focus, and under the pointer -- anywhere on the row in full
+     * screen, on the avatar itself in the narrow drawer, where a row hovered for
+     * reading would otherwise lose its avatar. Neither pointer nor focus counts on a
+     * phone.
+     *
+     * @returns {Boolean} true when the checkbox shows
+     */
+    showCheckbox() {
+      return this.selectMode || this.isFocused || (this.expanded ? this.isHover : this.avatarHover);
+    },
+    /**
+     * What the row's checkbox is called, for screen readers.
+     *
+     * @returns {String} the label
+     */
+    selectLabel() {
+      return this.$t('emailConnector.mailBox.list.drawer.selectRow', { 0: this.participants || this.draftMarker, 1: this.subject });
     },
     // Server-stamped, read off the thread the grouping built or off the lone row,
     // exactly like the draft flag beside it.
@@ -434,6 +697,45 @@ export default {
         && !this.$emailConnectorMailBoxService.canArchive(this.email.folder);
     },
     /**
+     * Whether the row offers Archive and Delete as buttons on hover (EXO-91677): on the
+     * rows the swipe would act on (neither a draft nor readOnly), off mobile, which has
+     * the swipe, and out of select mode.
+     *
+     * @returns {Boolean} true when the buttons belong on the row
+     */
+    showQuickActions() {
+      return !this.isMobile && !this.selectMode && !this.isDraft && !this.readOnly;
+    },
+    /**
+     * Whether the row has actions to show in the date's place (EXO-91677): at least its
+     * menu, everywhere but on mobile and in select mode.
+     *
+     * @returns {Boolean} true when the row has actions
+     */
+    rowActions() {
+      return !this.isMobile && !this.selectMode;
+    },
+    /**
+     * The width the date's slot keeps so the actions laid over it fit: 26px per button,
+     * the star's box at its 16px (the favorite toggle's icon size + 10), the menu's and,
+     * where offered, Archive's and Delete's.
+     *
+     * @returns {String} the CSS width
+     */
+    rowActionsWidth() {
+      return this.showQuickActions ? '78px' : '26px';
+    },
+    /**
+     * Whether the actions stand in the date's place right now: while the row is hovered,
+     * or holds the keyboard's focus -- which the pointer leaving does not take away
+     * (isFocused) --, or its menu is open.
+     *
+     * @returns {Boolean} true when the actions show instead of the date
+     */
+    rowActionsShown() {
+      return this.rowActions && (this.isHover || this.isFocused || this.menuOpen);
+    },
+    /**
      * The row's inline style: faded while its message is on its way into the mirror or
      * being dragged.
      *
@@ -476,7 +778,17 @@ export default {
     selectionKeys() {
       return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).map(selectionKey);
     },
+    /**
+     * Whether the reader opened on this row, to light it: by the list's key when the row
+     * is keyed by one (rowKey) -- a hit of another folder may share the UID --, by the
+     * UID the list last opened otherwise.
+     *
+     * @returns {Boolean} true when it did
+     */
     opened() {
+      if (this.rowKey) {
+        return this.openedKey === this.rowKey;
+      }
       return this.openedEmailId === this.email.mailRemoteId;
     },
     /**
@@ -485,6 +797,9 @@ export default {
      * @returns {Boolean} true when it does
      */
     inReader() {
+      if (this.rowKey) {
+        return this.opened;
+      }
       return this.readerEmailId != null && this.threadIds.includes(this.readerEmailId);
     },
     backgroundClass() {
@@ -506,7 +821,7 @@ export default {
       if (this.isDraft) {
         return `Open unsent draft about ${this.subject}`;
       }
-      return `Open email from ${this.email.sender.name} about ${this.email.subject}`;
+      return `Open email from ${this.senderName} about ${this.email.subject}`;
     },
   },
   methods: {
@@ -544,9 +859,21 @@ export default {
       this.$root.$emit('update-email-favorite-status', !this.threadFavorite,
         this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
     },
+    /**
+     * Opens the row: ticks it in select mode; else hands the opening to the list when it
+     * listens for it (EXO-90871) -- a search opens a hit its own way, pulling one outside
+     * the local copy in first, the Suggestions view as a mail picked outside the list --;
+     * else opens the draft, or the message in the reader beside the list or in the mail
+     * drawer.
+     *
+     * @returns {void}
+     */
     openDetail() {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
+      }
+      else if (this.$listeners.open) {
+        this.$emit('open');
       }
       else if (this.isDraft) {
         this.openDraft();
@@ -674,8 +1001,64 @@ export default {
       this.left = deltaX;
       this.movingLeft = this.left < 0;
     },
+    /**
+     * The focus entered the row: lit, and its avatar shows as the checkbox -- kept there
+     * while the pointer is away only when the keyboard brought the focus.
+     *
+     * @returns {void}
+     */
+    onFocusIn() {
+      if (!this.isMobile) {
+        this.isHover = true;
+        // A click focuses the row too; only the keyboard's focus keeps the checkbox
+        // once the pointer has gone, or the row open in the reader would keep one.
+        this.isFocused = !this.pointerDown;
+      }
+      this.pointerDown = false;
+    },
+    /**
+     * The keyboard focus moved: the row is unlit, and its checkbox gives way to the
+     * avatar again, only once the focus has left the row -- not when it moves from the
+     * row to its own checkbox, which the swap would otherwise destroy under it.
+     *
+     * @param {FocusEvent} event the focusout event
+     * @returns {void}
+     */
+    onFocusOut(event) {
+      if (this.isMobile || (event?.relatedTarget && this.$el.contains(event.relatedTarget))) {
+        return;
+      }
+      this.isHover = false;
+      this.isFocused = false;
+    },
     onSelectChange(value) {
       this.emitSelect(value);
+    },
+    /**
+     * A tap on the avatar while it shows as the sender's picture -- a phone, with no
+     * hover to turn it into the checkbox: ticks the row, or unticks it, and enters
+     * select mode. A click on the checkbox itself never reaches here (its click.stop).
+     *
+     * @returns {void}
+     */
+    onAvatarClick() {
+      if (!this.email.refreshPending) {
+        this.emitSelect(!this.selected);
+      }
+    },
+    /**
+     * The avatar's keyboard counterpart of its tap: Enter or Space pressed on the avatar
+     * box itself ticks or unticks the row, as a tap does. A key pressed in the checkbox
+     * inside is the checkbox's own, and is left to it.
+     *
+     * @param {KeyboardEvent} event the keydown event
+     * @returns {void}
+     */
+    onAvatarKeydown(event) {
+      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        this.onAvatarClick();
+      }
     },
     /**
      * Starts dragging the row -- or the selection it belongs to (dragPayloadOfRow) --
@@ -709,6 +1092,7 @@ export default {
      */
     onDragEnd() {
       this.isHover = false;
+      this.pointerDown = false;
       this.$root.$emit('email-drag-end');
     },
   }

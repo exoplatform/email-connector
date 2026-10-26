@@ -24,10 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     allow-expand
     :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
-    :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || scheduledLoading || (loadingEmail && readerPartial)"
-    :use-filter="canSearch"
-    :filter-placeholder="$t('emailConnector.mailBox.search.placeholder')"
-    @filter-updated="onFilterUpdated"
+    :loading="loading || syncInProgress || (searchActive && (searchServerRunning || searchLocalRunning)) || readerLoading || scheduledLoading || suggestionsLoading || (loadingEmail && readerPartial)"
     :confirm-close="activeDownload"
     :go-back-button="canGoBack"
     :confirm-close-labels="{
@@ -53,9 +50,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :own-address="ownAddress"
           :own-unread-count="ownInboxUnread"
           @switch="onSwitchMailbox" />
-        <span v-else class="text-body">
-          {{ title }}
-        </span>
+        <!-- In selection mode the count is the select-all row's alone, above the list:
+             the header keeps its room for the back arrow and the actions. -->
+        <span v-else></span>
       </div>
       <div v-else>
         <span></span>
@@ -89,17 +86,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :own-address="ownAddress"
           :own-unread-count="ownInboxUnread"
           @switch="onSwitchMailbox" />
-        <span v-else class="text-body">
-          {{ title }}
-        </span>
+        <span v-else></span>
         <email-connector-mail-box-drawer-actions
-          :emails="emails"
+          :emails="listedEmails"
           class="d-flex align-center"
           :webmail-url="webmailUrl"
           :selected-emails="selectedEmails"
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
+          :namespace-folders="namespaceFolders"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress"
@@ -119,14 +115,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-mail-box-drawer-actions
         v-else-if="!syncBlocked"
         class="d-flex align-center"
-        :emails="emails"
+        :emails="listedEmails"
         :webmail-url="webmailUrl"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
+        :namespace-folders="namespaceFolders"
         :categories="emailCategories"
         :category-view-id="categoryViewId"
+        :folder-counts="folderCounts"
+        :category-unread-counts="categoryUnreadCounts"
         :sync-in-progress="syncInProgress" />
     </template>
     <!-- The left pane in full screen: the folder column, then the list, each scrolling
@@ -142,6 +141,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
           :folders="availableFolders"
+          :namespace-folders="namespaceFolders"
           :current-folder="currentFolder"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
@@ -166,11 +166,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           ref="expandedListPane"
           class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
           style="min-width: 0;">
-          <!-- Whose mailbox this is, before anything else in the list (plan 7.6). -->
-          <email-connector-shared-mailbox-band
+          <!-- Whose mailbox this is, before anything else in the list (plan 7.6), and
+               under it the owner's absence dates when she is away (EXO-90651): one
+               pinned block, so the two bands do not pin over each other. -->
+          <div
             v-if="currentSharedMailbox"
-            :entry="currentSharedMailbox"
-            sticky />
+            class="white"
+            style="position: sticky; top: 0; z-index: 3;">
+            <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
+            <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
+          </div>
+          <!-- The user's own automatic reply (EXO-90642) and forward (EXO-90656), on their
+               own mailbox only: one pinned block, so the two bands do not pin over each
+               other. -->
+          <div
+            v-else
+            class="white"
+            style="position: sticky; top: 0; z-index: 3;">
+            <email-connector-absence-band />
+            <email-connector-forwarding-band />
+          </div>
+          <!-- The search row (EXO-90838): the chips, or the search field, and the
+               search and advanced search buttons; the Scheduled view has none. -->
+          <email-connector-mail-box-search-bar
+            v-if="!scheduledView"
+            v-bind="searchBarProps"
+            :row-style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
+            row-class="full-width border-box-sizing application-border application-border-radius px-3"
+            class="full-width"
+            v-on="searchBarListeners" />
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
@@ -179,25 +203,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :total-matches="searchTotalMatches"
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
-            draggable-hits
-            @open-result="openSearchResult" />
+            :shared-mailbox="!!currentSharedMailbox"
+            :offer-server-search="offerServerSearch"
+            :local-searching="searchLocalRunning"
+            :scanned="searchScanned"
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
+            :drag-source="emailDrag"
+            :folders="folders"
+            expanded
+            @open-result="openSearchResult"
+            @search-server="searchWholeMailbox" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
           <email-connector-mail-box-scheduled-list
             v-else-if="scheduledView"
             :signal="scheduledViewSignal"
             compact
             @loading="scheduledLoading = $event" />
+          <!-- The Suggestions view (EXO-90851): its own list, narrowed by the Favorites
+               and Unread chips as a folder's (EXO-90892). Its row of the mail the reader
+               shows is lit, and the arrow keys walk it, as the search results (EXO-90875). -->
+          <email-connector-mail-box-suggestions-list
+            v-else-if="suggestionsView"
+            ref="expandedSuggestionsList"
+            :emails="suggestionMails"
+            :reader-key="openedSearchKey"
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
+            :drag-source="emailDrag"
+            :folders="folders"
+            :filtered="hasActiveFilters"
+            compact
+            @loading="suggestionsLoading = $event"
+            @clear-filters="clearFilters" />
           <template v-else>
-            <email-connector-mail-box-drawer-filter-chips
-              :important-category="importantCategory"
-              :category-view-id="categoryViewId"
-              :favorite-only="favoriteOnly"
-              :unread-only="unreadOnly"
-              :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
-              class="full-width border-box-sizing application-border application-border-radius px-3"
-              @toggle-important="toggleImportantView"
-              @toggle-favorite="onToggleFavoriteFilter"
-              @toggle-unread="toggleUnreadFilter" />
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
               ref="expandedListContent"
@@ -208,7 +247,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               :drag-source="emailDrag"
               expanded
-              @update:selected-emails="selectedEmails = $event" />
+              @update:selected-emails="setSelectedEmails" />
             <!-- Not before the list has answered: expanding before the first load
                  must not flash "No email in Inbox". -->
             <email-connector-mail-box-drawer-no-email
@@ -238,11 +277,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Opened on a shared mailbox, the band says whose it is while its list is still
          on its way (plan 7.6: the deep link shows it before the list loads). -->
     <template v-if="emailBoxDrawer && (!loading || (currentSharedMailbox && !expanded))" #content>
-      <email-connector-shared-mailbox-band
+      <div
         v-if="currentSharedMailbox && !expanded"
-        :entry="currentSharedMailbox"
-        sticky />
+        class="white"
+        style="position: sticky; top: 0; z-index: 3;">
+        <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
+        <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
+      </div>
+      <div
+        v-else-if="!currentSharedMailbox && !expanded"
+        class="white"
+        style="position: sticky; top: 0; z-index: 3;">
+        <email-connector-absence-band />
+        <email-connector-forwarding-band />
+      </div>
       <template v-if="!loading">
+        <!-- The search row (EXO-90838): one row for the list and for the search results,
+             so the field keeps the focus when the first character turns the list into
+             results. -->
+        <email-connector-mail-box-search-bar
+          v-if="!syncBlocked && !expanded && !scheduledView"
+          v-bind="searchBarProps"
+          row-class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+          class="full-width"
+          v-on="searchBarListeners" />
         <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>
             <v-icon
@@ -262,21 +320,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
-        <email-connector-mail-box-drawer-search-results
-          v-else-if="searchActive && !expanded"
-          ref="searchResults"
-          :results="mergedSearchResults"
-          :total-matches="searchTotalMatches"
-          :server-searching="searchServerRunning"
-          :server-error="searchServerError"
-          @open-result="openSearchResult" />
+        <template v-else-if="searchActive && !expanded">
+          <email-connector-mail-box-drawer-search-results
+            ref="searchResults"
+            :results="mergedSearchResults"
+            :total-matches="searchTotalMatches"
+            :server-searching="searchServerRunning"
+            :server-error="searchServerError"
+            :shared-mailbox="!!currentSharedMailbox"
+            :offer-server-search="offerServerSearch"
+            :local-searching="searchLocalRunning"
+            :scanned="searchScanned"
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
+            :folders="folders"
+            @open-result="openSearchResult"
+            @search-server="searchWholeMailbox" />
+        </template>
         <!-- Full screen: the reader. With nothing open it shows the "select an email"
              placeholder while the list beside it holds something to select, and nothing
              over an empty list, which says so itself (EXO-90415). -->
         <template v-else-if="expanded">
           <email-connector-mail-box-drawer-multi-select-email
             v-if="selectMode"
-            :emails="emails"
+            :emails="listedEmails"
             :selected-emails="selectedEmails" />
           <template v-else-if="selectEmailPlaceHolder">
             <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
@@ -288,7 +355,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-drawer-thread-content
             v-else
             :email="email"
-            :emails="emails"
+            :emails="readerEmails"
             expanded-drawer
             :defer-thread-read="autoOpenReadPending"
             @thread-context="threadContext = $event"
@@ -299,16 +366,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-else-if="scheduledView"
           :signal="scheduledViewSignal"
           @loading="scheduledLoading = $event" />
+        <email-connector-mail-box-suggestions-list
+          v-else-if="suggestionsView"
+          ref="suggestionsList"
+          :emails="suggestionMails"
+          :select-mode="selectMode"
+          :selected-emails="selectedEmails"
+          :folders="folders"
+          :filtered="hasActiveFilters"
+          @loading="suggestionsLoading = $event"
+          @clear-filters="clearFilters" />
         <template v-else>
-          <email-connector-mail-box-drawer-filter-chips
-            :important-category="importantCategory"
-            :category-view-id="categoryViewId"
-            :favorite-only="favoriteOnly"
-            :unread-only="unreadOnly"
-            class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-            @toggle-important="toggleImportantView"
-            @toggle-favorite="onToggleFavoriteFilter"
-            @toggle-unread="toggleUnreadFilter" />
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
               ref="listContent"
@@ -318,7 +386,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               :sync-in-progress="syncInProgress"
               :webmail-url="webmailUrl"
-              @update:selected-emails="selectedEmails = $event" />
+              @update:selected-emails="setSelectedEmails" />
             <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
                  so rather than letting an older message look lost. -->
             <div
@@ -336,11 +404,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
-  loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState } from '../../js/EmailConnectorMailBoxService.js';
+import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SUGGESTIONS_VIEW, isSuggestionsView, isMailboxView, withSuggestionsView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
+  loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState, CATEGORY_COUNTS_NEEDED_EVENT } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
+import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
+import { listedRowMatches } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
+import { refreshWaitingSuggestions, waitingSuggestionMails, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
+import { SENDER_LOGO_FOUND_EVENT, SENDER_ROWS_VERIFIED_EVENT, markSenderRowsVerified, refreshSenderDomain } from '../../js/EmailConnectorSenderAvatars.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -362,11 +434,12 @@ const NAVIGATION_RAIL_BELOW_WIDTH_PX = 1440;
 // server's \Seen alone, at the next load.
 const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
 
-const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW];
+const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW, SUGGESTIONS_VIEW];
 
 // The folders the mailbox may be opened on from outside it: the built-ins, the Scheduled
-// view among them -- the scheduled-mail failure notification opens it (EXO-90434).
-const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW];
+// view among them -- the scheduled-mail failure notification opens it (EXO-90434) --, and
+// the Suggestions view, which the waiting-suggestions notification opens (EXO-90851).
+const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW, SUGGESTIONS_VIEW];
 // The key of a favorite toggled here: a UID names a message within one folder only.
 const favoriteKey = (folder, mailRemoteId) => `${folder || 'INBOX'}/${mailRemoteId}`;
 
@@ -399,6 +472,45 @@ const NAVIGATION_BACKGROUND = 'var(--allPagesGreyColorLighten1Opacity2, rgba(112
 
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
+
+/**
+ * A folder of a shared mailbox as the folder lists read it: its key, role and name, its
+ * place in the owner's tree -- the owner's full name and delimiter -- and whether the
+ * user may read it (EXO-90839).
+ *
+ * @param {Object} folder the folder as the switcher entry lists it
+ * @returns {Object} the folder descriptor
+ */
+function sharedFolderView(folder) {
+  return {
+    key: folder.key,
+    type: SHARED_FOLDER_TYPE,
+    role: folder.role,
+    displayName: folder.displayName,
+    path: folder.path,
+    delimiter: folder.delimiter,
+    // False for a folder the share lets the user see but not read: a label only.
+    readable: folder.readable !== false,
+    syncEnabled: true,
+  };
+}
+
+/**
+ * Whether a folder of a shared mailbox holds, at any depth, a folder the user may read --
+ * what keeps a folder the user may only see in the lists, as the label its folders nest
+ * under.
+ *
+ * @param {Object} folder the folder as the switcher entry lists it
+ * @param {Array} folders the shared mailbox's folders
+ * @returns {Boolean} true when a readable folder is inside it
+ */
+function holdsReadableFolder(folder, folders) {
+  if (!folder?.path || !folder.delimiter) {
+    return false;
+  }
+  const prefix = `${folder.path}${folder.delimiter}`;
+  return folders.some(candidate => candidate.readable && candidate.path?.startsWith(prefix));
+}
 
 /**
  * Whether the folder column starts as a rail: the user's last choice in this browser,
@@ -473,7 +585,7 @@ const SEARCH_PAGE_SIZE = 20;
 const SEARCH_FETCH_RETRY_MS = 3000;
 
 export default {
-  mixins: [listNavigationMixin, emailDragMixin, columnWidthsMixin],
+  mixins: [listNavigationMixin, emailDragMixin, columnWidthsMixin, advancedSearchMixin],
   data() {
     return {
       emailBoxDrawer: false,
@@ -522,6 +634,8 @@ export default {
       // The Scheduled view's list is waiting on the server (EXO-90434): relayed to this
       // drawer's header bar, the only loading bar there is (EXO-90412).
       scheduledLoading: false,
+      // The same for the Suggestions view's list (EXO-90851).
+      suggestionsLoading: false,
       // A mail opened from outside the mailbox (the global Favorites drawer) is
       // pinned open: it is legitimately absent from the listed window, and a list
       // reload must not take the reader back from the user. Cleared as soon as they
@@ -687,6 +801,9 @@ export default {
     this.onDelegationsUpdated = () => this.refreshSharedMailboxes();
     this.$root.$on('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$on('open-category-view', this.openCategoryView);
+    // The narrow 3-dots menu opened on its categories: their counts need the
+    // subcategories, as the column's do (EXO-90881).
+    this.$root.$on(CATEGORY_COUNTS_NEEDED_EVENT, this.ensureCategorySubtrees);
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
     this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
@@ -840,6 +957,14 @@ export default {
     };
     this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$on('scheduled-email-updated', this.onScheduledEmailUpdated);
+    // A row of the Suggestions view (EXO-90851): a mail of any folder, opened as a mail
+    // picked outside the list is.
+    this.onOpenSuggestedEmail = opening => {
+      if (this.emailBoxDrawer) {
+        this.openSuggestedEmail(opening);
+      }
+    };
+    this.$root.$on('open-suggested-email', this.onOpenSuggestedEmail);
     // The mail drawer's expand button: the one full-screen layout is this drawer's, so
     // expanding a mail opened over the list hands the mail over and expands HERE, with
     // that mail open -- the mail drawer then closes itself (EXO-90415).
@@ -851,6 +976,10 @@ export default {
     // The unread badge moved on the server -- new mail synchronized, above all: the one
     // push that reaches an open mailbox, whatever its layout (EXO-90628).
     document.addEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
+    // A sender's brand logo found, or rows found to pass DMARC, after the page drew
+    // them (EXO-90909): pushed on the same channel, the avatars switch in place.
+    document.addEventListener(SENDER_LOGO_FOUND_EVENT, this.onSenderLogoFound);
+    document.addEventListener(SENDER_ROWS_VERIFIED_EVENT, this.onSenderRowsVerified);
     // The push travels on app-center's badge channel, which only a mounted App Center
     // badge subscribes a page to -- none on the detached tab, none on a site page whose
     // topbar carries no badge: subscribed here, on every page. Social's WebSocket.js
@@ -869,6 +998,14 @@ export default {
       // that way, so an object is what marks the richer form: passing one where a
       // flag is expected would read as truthy and wrongly show the drawer as
       // synchronizing.
+      if (options.mailRemoteId && options.mailbox) {
+        // A message of a mailbox shared with the user, from the platform's search
+        // (EXO-90554): the drawer opens on that mailbox first, as the switcher would, so
+        // the message reads with its band and its controls -- and not at all when the
+        // share is gone meanwhile, which the opening says.
+        await this.openSharedMailFromOutside(options);
+        return;
+      }
       if (options.mailRemoteId) {
         // One message asked for by name -- from the platform's search, or from the
         // Favorites drawer -- opens the reader on its own. Opening the mailbox behind
@@ -878,9 +1015,8 @@ export default {
         return;
       }
       await this.open(options.loading, options.folder, options.mailbox);
-      if (options.searchTerm) {
-        this.openSearchFromOutside(options.searchTerm);
-      }
+      // A search from the platform's search, or from the page address (EXO-90838).
+      this.applyOpeningSearch(options);
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -905,7 +1041,7 @@ export default {
         }
       }
       else {
-        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
+        this.setSelectedEmails(this.selectedEmails.filter(selected => selected !== key));
       }
     });
     this.$root.$on('synchronize-in-progress', () => {
@@ -937,14 +1073,18 @@ export default {
     this.$root.$off('switch-folder', this.onSwitchFolder);
     this.$root.$off('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$off('open-category-view', this.openCategoryView);
+    this.$root.$off(CATEGORY_COUNTS_NEEDED_EVENT, this.ensureCategorySubtrees);
     this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
+    this.$root.$off('open-suggested-email', this.onOpenSuggestedEmail);
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
     document.removeEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
+    document.removeEventListener(SENDER_LOGO_FOUND_EVENT, this.onSenderLogoFound);
+    document.removeEventListener(SENDER_ROWS_VERIFIED_EVENT, this.onSenderRowsVerified);
   },
   computed: {
     hasEmails() {
@@ -956,7 +1096,9 @@ export default {
      * Gmail offers it rather than appearing only once something was filtered -- plus every
      * custom folder with its opt-in. Data, not a hard-coded array: the server's
      * MailFolder.isBrowsable is the one spelling of what may be listed, and this is its
-     * answer, so the menu can never offer a folder the backend refuses.
+     * answer, so the menu can never offer a folder the backend refuses. In the user's own
+     * mailbox the Suggestions view is the one entry added here, right after the Scheduled
+     * view, while a suggestion waits (withSuggestionsView, EXO-90851).
      *
      * @returns {Array} the folder descriptors ({key, type, displayName, path, syncEnabled, missing, count})
      */
@@ -966,24 +1108,34 @@ export default {
       // rest, roles first as the server orders them (EXO-90548). That is the whole column,
       // the whole menu and the whole move-to list: no folder of the user's to file into.
       // A folder listed without the right to read it is left out rather than offered
-      // empty.
+      // empty -- unless a folder the user may read is inside it: then it stays, as the
+      // label its folders nest under, never listed (EXO-90839).
       if (this.currentSharedMailbox) {
+        const shared = this.currentSharedMailbox.folders || [];
         return [{
           key: this.currentSharedMailbox.folderKey,
           type: SHARED_INBOX_TYPE,
           syncEnabled: true,
           unreadCount: this.currentSharedMailbox.unreadCount || 0,
-        }].concat((this.currentSharedMailbox.folders || [])
-          .filter(folder => folder.readable)
-          .map(folder => ({
-            key: folder.key,
-            type: SHARED_FOLDER_TYPE,
-            role: folder.role,
-            displayName: folder.displayName,
-            syncEnabled: true,
-          })));
+        }].concat(shared
+          .filter(folder => folder.readable || holdsReadableFolder(folder, shared))
+          .map(sharedFolderView));
       }
-      return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
+      return withSuggestionsView(this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }],
+        waitingSuggestionTotal(), isSuggestionsView(this.currentFolder));
+    },
+    /**
+     * Every folder of the mailbox listed, offered or not: the user's own, or in a shared
+     * mailbox all of its owner's -- what decides whether INBOX is the namespace they live
+     * under, so a path reads the same on every screen (EXO-90839).
+     *
+     * @returns {Array} the folder descriptors
+     */
+    namespaceFolders() {
+      if (this.currentSharedMailbox) {
+        return (this.currentSharedMailbox.folders || []).map(sharedFolderView);
+      }
+      return this.folders;
     },
     /**
      * The shared mailbox the drawer is in, or null in the user's own (plan 7.3).
@@ -1024,13 +1176,8 @@ export default {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
     },
     title() {
-      if (!this.selectMode) {
-        const title = this.$t('emailConnector.mailBox.list.drawer.title');
-        return this.titleSuffix ? `${title} · ${this.titleSuffix}` : title;
-      }
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
-        this.$t('emailConnector.mailBox.list.drawer.emailSelected') :
-        this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
+      const title = this.$t('emailConnector.mailBox.list.drawer.title');
+      return this.titleSuffix ? `${title} · ${this.titleSuffix}` : title;
     },
     indeterminate() {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
@@ -1165,12 +1312,16 @@ export default {
     hasActiveFilters() {
       return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
-    // The header filter is the platform's own (exo-drawer); it hides the go-back
-    // button, so it steps aside while select mode needs that button.
+    /**
+     * Whether the search row offers its search and advanced search buttons (EXO-90838).
+     * Off in select mode, which owns the row's place, and where there is nothing to
+     * search (isFolderSearchable). In a shared mailbox it searches that mailbox's copy
+     * of the folder shown (EXO-90590).
+     *
+     * @returns {Boolean} true when the search box is offered
+     */
     canSearch() {
-      // Not in a shared mailbox in phase 1: the search reaches the user's OWN mailbox on
-      // the server, and its hits would be offered under somebody else's name.
-      return !this.syncBlocked && !this.selectMode && !this.scheduledView && !this.currentSharedMailbox;
+      return !this.syncBlocked && !this.selectMode && this.isFolderSearchable(this.currentFolder);
     },
     /**
      * Whether the Scheduled view is listed (EXO-90434): its own list replaces the
@@ -1180,6 +1331,17 @@ export default {
      */
     scheduledView() {
       return isScheduledView(this.currentFolder);
+    },
+    /**
+     * Whether the Suggestions view is listed (EXO-90851): its own list replaces the
+     * folder's, as the Scheduled view's does, narrowed by the Favorites and Unread chips
+     * as a folder's list is (EXO-90892); its rows are the folder list's, selected and
+     * dragged as they are there (EXO-90871).
+     *
+     * @returns {Boolean} true on the Suggestions view
+     */
+    suggestionsView() {
+      return isSuggestionsView(this.currentFolder);
     },
     /**
      * What the Scheduled view's list watches to re-read itself: the view's count and
@@ -1192,21 +1354,32 @@ export default {
       const view = this.folders.find(folder => isScheduledView(folder.key));
       return view ? `${view.count || 0}|${!!view.attention}` : '0|false';
     },
+    /**
+     * Whether a search is shown in place of the folder's list: the search box's text, or
+     * the advanced search's criteria (EXO-90838).
+     *
+     * @returns {Boolean} true while a search is shown
+     */
     searchActive() {
-      return !!this.searchTerm;
+      return !!this.searchTerm || this.advancedSearchActive;
     },
-    // Instant matches from the emails the app already holds (the whole cached
-    // window of the current folder), on the same fields the server searches —
-    // subject and sender — so the instant list and the final one agree.
+    /**
+     * Instant matches from the emails the app already holds (the whole cached window of
+     * the current folder), drawn before any answer: the search box's text over the
+     * subject and the sender, as the server searches it, and the advanced criteria as
+     * listedRowMatches can tell them from a listed row (EXO-90838) -- never more than
+     * the copy's own search finds. None for another folder than the one listed, nor
+     * under a range of days.
+     *
+     * @returns {Array} the instant hits
+     */
     localSearchMatches() {
       const term = this.searchTerm.toLowerCase();
-      if (!term) {
+      if (!this.searchActive || this.searchFolder !== this.currentFolder) {
         return [];
       }
       return (this.emailBox?.emails || [])
-        .filter(e => (e.subject || '').toLowerCase().includes(term)
-          || (e.sender?.name || '').toLowerCase().includes(term)
-          || (e.sender?.address || '').toLowerCase().includes(term))
+        .filter(e => listedRowMatches(e, term, this.searchCriteria) === true)
         .map(e => ({
           mailRemoteId: e.mailRemoteId,
           folder: e.folder || this.currentFolder,
@@ -1221,15 +1394,29 @@ export default {
           // Kept because the rows double as the reader's list, whose category
           // filter dereferences categoryIds on every row.
           categoryIds: e.categoryIds || [],
+          // What the row shows beside the envelope, as the answers' hits carry it
+          // (EXO-90882): the excerpt and attachments, the conversation's size and draft.
+          content: e.content,
+          threadCount: e.threadCount,
+          threadHasDraft: e.threadHasDraft,
         }));
     },
-    // Local matches shown instantly, server hits MERGED in when they land — never
-    // replacing: the server returns only the newest matches, so with many hits a
-    // result the user is already reading could vanish under a replacement. Keyed
-    // on (folder, uid), server fields winning.
+    /**
+     * Local matches shown instantly, the copy's and the server's hits MERGED in when they
+     * land -- never replacing: the server returns only the newest matches, so with many
+     * hits a result the user is already reading could vanish under a replacement. Keyed
+     * on (folder, uid), the copy's fields over the listed row's (EXO-90838), the server's
+     * over both.
+     *
+     * @returns {Array} the search's hits, newest first
+     */
     mergedSearchResults() {
       const merged = new Map();
       this.localSearchMatches.forEach(result => merged.set(`${result.folder}:${result.mailRemoteId}`, result));
+      this.searchLocalResults.forEach(result => {
+        const key = `${result.folder}:${result.mailRemoteId}`;
+        merged.set(key, { categoryIds: [], ...merged.get(key), ...result });
+      });
       this.searchServerResults.forEach(result => {
         const key = `${result.folder}:${result.mailRemoteId}`;
         // Server hits carry no categoryIds; default them for the reader's list.
@@ -1245,12 +1432,59 @@ export default {
     },
     /**
      * The listed messages, for the arrow keys and for the reader moving on after an
-     * action (listNavigationMixin).
+     * action (listNavigationMixin): the search's hits, the Suggestions view's mails
+     * (EXO-90875), the folder's rows otherwise -- the list on screen. A mail of the
+     * Suggestions view is opened pinned (openMailFromOutside), so the reader does not
+     * move on after an action there: it shows the placeholder.
      *
      * @returns {Array} the listed messages
      */
     navigationEmails() {
-      return this.searchActive ? this.mergedSearchResults : this.emails;
+      return this.listedEmails;
+    },
+    /**
+     * The rows the reader looks the opened mail's conversation up in: the Suggestions
+     * view's mails while it is listed (EXO-90875), the folder's rows otherwise. A mail of
+     * the Suggestions view is then read as its conversation, by the thread id its row
+     * carries, as a row of the folder's list is -- not by the opened copy's own, which
+     * can be out of date: the browser may answer the copy from its cache (a 304 on an
+     * eTag that does not follow the row), with the thread id and the row id of a row
+     * since replaced.
+     *
+     * @returns {Array} the rows
+     */
+    readerEmails() {
+      return this.suggestionsView ? this.suggestionMails : this.emails;
+    },
+    /**
+     * The rows the list on screen holds, for the bulk actions bar and the selection's
+     * placeholder, which read a selected row's folder and kind off them (EXO-90871): a
+     * search's hits, the Suggestions view's mails, the folder's rows otherwise -- the
+     * three lists select their rows alike, by folder and UID.
+     *
+     * @returns {Array} the listed rows
+     */
+    listedEmails() {
+      if (this.searchActive) {
+        return this.mergedSearchResults;
+      }
+      return this.suggestionsView ? this.suggestionMails : this.emails;
+    },
+    /**
+     * The Suggestions view's mails (EXO-90851), as last read, less the ones an action
+     * here took out of their folder before the server says so (isOptimisticallyRemoved)
+     * -- as the folder's list and the search's hits leave theirs out (EXO-90871) --, and
+     * narrowed by the Favorites and Unread chips as a folder's list is (matchesListChips,
+     * EXO-90892). On the client: the view's read answers every mail it lists at once,
+     * bounded by the mailbox's pending cap, so no page is left out of what it narrows.
+     * A mail the Favorites chip takes out of the view while the reader shows it stays in
+     * the reader, as a search hit does: it was opened pinned (openSuggestedEmail), and
+     * leaveUnlistedEmail spares a pinned mail.
+     *
+     * @returns {Array} the mails, newest first
+     */
+    suggestionMails() {
+      return waitingSuggestionMails().filter(mail => !this.isOptimisticallyRemoved(mail) && this.matchesListChips(mail));
     },
     /**
      * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
@@ -1291,13 +1525,14 @@ export default {
     },
     /**
      * Everything a pending first-mail opening waits on, in one value to watch: the
-     * list's rows, the search's, and whether either is still loading.
+     * list's rows, the search's, the Suggestions view's (EXO-90875), and whether any of
+     * them is still loading.
      *
      * @returns {String} a value that changes whenever one of them does
      */
     autoSelectSignal() {
-      return [this.emails.length, this.mergedSearchResults.length, this.loading,
-        this.syncInProgress, this.searchServerRunning].join('|');
+      return [this.emails.length, this.mergedSearchResults.length, this.suggestionsView && this.suggestionMails.length,
+        this.loading, this.syncInProgress, this.searchServerRunning, this.suggestionsLoading].join('|');
     },
     emails() {
       let emails = this.emailBox?.emails || [];
@@ -1309,25 +1544,7 @@ export default {
       // category VIEW is single selection (categoryViewId), so at most one
       // category ever narrows the list; Favorites and Unread apply on top of
       // whichever view is open.
-      // The favorite view: the server already answered with the favorite subset;
-      // filtering again here makes a just-unfavorited message leave the list at
-      // once instead of waiting for the next reload.
-      if (this.favoriteOnly) {
-        emails = emails.filter(e => e.starred);
-      }
-      if (this.unreadOnly) {
-        // The one message being read stays listed even once marked read:
-        // opening a mail under the Unread filter must not yank the reader
-        // out from under the user for the select-an-email placeholder.
-        // Folder as well as UID: a UID is only unique within its folder, and the open
-        // reader can now hold a message from another one (openMailFromOutside,
-        // openSearchResult), so comparing the number alone would spare an unrelated
-        // read message that happens to share it.
-        emails = emails.filter(e => !e.read
-          || (this.email
-            && e.mailRemoteId === this.email.mailRemoteId
-            && (e.folder || this.currentFolder) === (this.email.folder || this.currentFolder)));
-      }
+      emails = emails.filter(e => this.matchesListChips(e));
       if (this.selectedCategoryIds.length > 0) {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
       }
@@ -1335,14 +1552,22 @@ export default {
     }
   },
   watch: {
-    // The category view changed (opened, replaced or left — from the ⋮ menu or
-    // the Important shortcut chip): expand it to its subcategories, which is
-    // what rows are matched against. The token drops an expansion that
-    // finishes after a newer change already superseded it.
+    /**
+     * The category view changed (opened, replaced or left -- from the folder column,
+     * the 3-dots menu or the Important shortcut chip): expands it to its subcategories,
+     * which is what rows are matched against, or to the category alone when the
+     * expansion fails. The token drops an expansion that finishes after a newer change
+     * already superseded it.
+     *
+     * @param {Number} id the category id, null when the view is left
+     * @returns {Promise<void>} resolved once expanded
+     */
     async categoryViewId(id) {
       this.cancelSelectMode();
       const token = ++this.categoryExpansionToken;
-      const expanded = id ? await this.$emailConnectorMailBoxService.getSubcategoryIds(id) : [];
+      // An expansion that fails narrows to the category itself, as the column's counts
+      // do (readCategorySubtrees): the view then lists, and opens its first mail.
+      const expanded = id ? await Promise.resolve(this.$emailConnectorMailBoxService.getSubcategoryIds(id)).catch(() => [id]) : [];
       if (token === this.categoryExpansionToken) {
         this.selectedCategoryIds = expanded;
         // In full screen a view is navigated to like a folder: when the mail on screen
@@ -1354,16 +1579,13 @@ export default {
         }
       }
     },
+    /**
+     * The list changed: the reader leaves a mail it no longer lists.
+     *
+     * @returns {void}
+     */
     emails() {
-      // A search hit, or a mail opened from the Favorites drawer, is often outside
-      // the listed folder view; a background refresh must not knock it out for the
-      // placeholder.
-      if (this.searchActive || this.pinnedEmail) {
-        return;
-      }
-      if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
-        this.selectEmailPlaceHolder = true;
-      }
+      this.leaveUnlistedEmail();
     },
     /**
      * Opens the first mail a pending full-screen opening was waiting for, as soon as
@@ -1610,6 +1832,24 @@ export default {
       }
     },
     /**
+     * The exo-drawer INSIDE the pinneable-drawer wrapper the emailBoxDrawer ref points
+     * at: the one that holds the expand state (expand). The wrapper (EXO-89874) forwards
+     * only open, close, startLoading, endLoading and toogleExpand, so reading or
+     * setting any of those on the ref itself reaches nothing (EXO-90578: the search
+     * from outside never filled the field, the field was never emptied, and a
+     * hand-over collapsed a mailbox already expanded).
+     * <p>
+     * Falls back to the ref itself where it is a plain exo-drawer. Depends on the
+     * `ref="drawer"` social's PinneableDrawer.vue puts on its exo-drawer: renamed, the
+     * fallback would silently bring the bug back.
+     *
+     * @returns {Object} the exo-drawer, or undefined before the drawer is rendered
+     */
+    innerMailDrawer() {
+      const drawer = this.$refs.emailBoxDrawer;
+      return drawer?.$refs?.drawer || drawer;
+    },
+    /**
      * Opens the mailbox on a search someone started elsewhere — today, in the
      * platform's unified search, which only looks at the locally held mail.
      *
@@ -1621,12 +1861,27 @@ export default {
      * @returns {void}
      */
     openSearchFromOutside(term) {
-      const drawer = this.$refs.emailBoxDrawer;
-      if (drawer) {
-        drawer.showFilter = true;
-        drawer.filterText = term;
-      }
+      this.searchFieldOpen = true;
+      this.searchFieldText = term;
       this.runSearch(term);
+    },
+    /**
+     * Opens one message of a mailbox shared with the user picked outside the mailbox --
+     * a hit of the platform's unified search (EXO-90554). The drawer is opened on that
+     * mailbox first (the mailbox= opening of open), which reads the switcher's entries,
+     * so the reader finds the share's rights for the message's folder; a share left,
+     * declined or revoked since leaves the user in their own mailbox with the reason,
+     * and no message is opened.
+     *
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached, mailbox}
+     * @returns {Promise} resolved once the message is on screen, or the share found gone
+     */
+    async openSharedMailFromOutside(opening) {
+      await this.open(false, null, opening.mailbox);
+      if (String(sharedMailboxState().current?.delegationId) !== String(opening.mailbox)) {
+        return;
+      }
+      await this.openMailFromOutside(opening);
     },
     /**
      * Opens one message picked outside the mailbox — from the platform's unified
@@ -1643,10 +1898,14 @@ export default {
      * nothing, it assumed the inbox -- and every hit that was not a cached inbox
      * message opened as an empty reader titled "(no subject)".
      *
-     * @param {Object} opening what to open: {mailRemoteId, folder, cached}
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached}, and the rows
+     *   of the list it was picked in (emails), which the mail drawer is handed in its
+     *   place -- the Suggestions view's (EXO-90875)
+     * @param {Object} options {automatic}: whether the user did not ask for this mail,
+     *   which is then not counted as opened (see listNavigationMixin)
      * @returns {Promise} resolved once the message is on screen
      */
-    async openMailFromOutside(opening) {
+    async openMailFromOutside(opening, options = {}) {
       // No folder means the inbox, and anything that does not say otherwise is
       // already cached: that is the Favorites drawer, whose mails are cached rows of
       // any folder, sent with their folder.
@@ -1673,7 +1932,9 @@ export default {
           }
         }
         if (this.expanded && this.emailBoxDrawer) {
-          const opened = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
+          const opened = options.automatic
+            ? await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder, { broadcast: false })
+            : await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
           if (request !== this.emailRequest) {
             return;
           }
@@ -1681,27 +1942,53 @@ export default {
           this.selectEmailPlaceHolder = false;
           this.$root.$emit('set-opened', hit.mailRemoteId);
         } else {
-          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
+          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, opening.emails || [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
         }
       } catch (error) {
         // An opening superseded meanwhile is not the user's any more: no toast for it.
-        if (request !== this.emailRequest) {
-          return;
+        if (request === this.emailRequest) {
+          this.alertOutsideOpeningFailed(error);
         }
-        // A mailbox held by a running synchronization is a "one moment", not a
-        // failure.
-        const syncing = error?.status === 409;
-        const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
-          || 'emailConnector.mailBox.search.openError';
-        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-          alertType: syncing && 'warning' || 'error',
-          alertMessage: this.$t(messageKey),
-        }}));
       } finally {
         if (request === this.emailRequest) {
           this.releaseEmailRequest();
         }
       }
+    },
+    /**
+     * Says why a message picked outside the mailbox could not be opened
+     * (openMailFromOutside): a mailbox held by a running synchronization is a "one
+     * moment", not a failure.
+     *
+     * @param {Object} error the failure, its status 409 for a running synchronization
+     * @returns {void}
+     */
+    alertOutsideOpeningFailed(error) {
+      const syncing = error?.status === 409;
+      const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
+        || 'emailConnector.mailBox.search.openError';
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: syncing && 'warning' || 'error',
+        alertMessage: this.$t(messageKey),
+      }}));
+    },
+    /**
+     * Opens a mail of the Suggestions view (EXO-90851) as a mail picked outside the list
+     * is (openMailFromOutside), handing the reader the view's rows (EXO-90875): the
+     * mail drawer reads its conversation by the thread id its row carries, as the
+     * full-screen reader does (readerEmails).
+     *
+     * @param {Object} mail the view's row, or {mailRemoteId, folder} of one
+     * @param {Object} options {automatic}: whether the user did not ask for this mail
+     * @returns {Promise} resolved once the message is on screen
+     */
+    openSuggestedEmail(mail, options = {}) {
+      return this.openMailFromOutside({
+        mailRemoteId: mail.mailRemoteId,
+        folder: mail.folder,
+        cached: true,
+        emails: this.suggestionMails,
+      }, options);
     },
     /**
      * Expands this drawer on the mail the mail drawer was showing -- the mail drawer's
@@ -1730,7 +2017,7 @@ export default {
       if (handover?.email) {
         this.showHandedOverEmail(handover.email, handover.folder);
       }
-      const drawer = this.$refs.emailBoxDrawer;
+      const drawer = this.innerMailDrawer();
       if (drawer && !drawer.expand) {
         drawer.toogleExpand();
       }
@@ -1815,39 +2102,96 @@ export default {
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
-    // The drawer's header filter field emitted a new value: instant local matches
-    // apply as soon as the debounce elapses, and the server search runs alongside.
-    // Clearing the field returns to the normal folder view at once.
+    /**
+     * The search row's field has a new value: instant local matches apply
+     * as soon as the debounce elapses, and the server search runs alongside. Clearing the
+     * field returns to the normal folder view at once -- unless advanced criteria still
+     * make a search (EXO-90838), which then runs without the text.
+     *
+     * @param {String} text the field's text
+     * @returns {void}
+     */
     onFilterUpdated(text) {
       window.clearTimeout(this.searchDebounceTimer);
       const term = (text || '').trim();
-      if (!term) {
+      if (!term && !this.advancedSearchActive) {
         this.clearSearch();
         return;
       }
       this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), SEARCH_DEBOUNCE_MS);
     },
+    /**
+     * Runs the search for a text, with the advanced criteria that stand, and writes it
+     * into the page address (EXO-90838).
+     *
+     * @param {String} term the search box's text, may be empty under advanced criteria
+     * @returns {void}
+     */
     runSearch(term) {
       this.searchTerm = term;
       this.cancelSelectMode();
-      this.runServerSearch();
+      this.runSearchArms();
+      this.syncSearchUrl();
     },
-    // The whole-mailbox search (IMAP SEARCH on the server). The request id guards
-    // against out-of-order answers: only the latest term's response may land.
-    runServerSearch() {
-      const requestId = ++this.searchRequestId;
+    /**
+     * Whether a folder has a search: not a view -- Scheduled (EXO-90434), Suggestions
+     * (EXO-90851) --, and not the
+     * owner's Trash or Spam in a shared mailbox (EXO-90590) -- the server searches
+     * neither, as the platform's search leaves them out. Any other folder of a shared
+     * mailbox is searched in the copy of it kept here; the user's own folders are
+     * searched as before.
+     *
+     * @param {String} folder a folder key
+     * @returns {Boolean} true when the search box searches it
+     */
+    isFolderSearchable(folder) {
+      if (isMailboxView(folder)) {
+        return false;
+      }
+      const role = this.$emailConnectorMailBoxService.sharedFolderRole(folder);
+      return role !== 'TRASH' && role !== 'JUNK';
+    },
+    /**
+     * Closes and empties the search row's field (EXO-90838).
+     *
+     * @returns {void}
+     */
+    resetSearchField() {
+      this.searchFieldOpen = false;
+      this.searchFieldText = '';
+    },
+    /**
+     * The search of the folder shown, beside the instant local matches: an IMAP SEARCH
+     * on the server in the user's own mailbox, the copy kept here of the folder in a
+     * shared one (EXO-90590). The request id guards against out-of-order answers: only
+     * the latest term's response may land. The server arm of an advanced search
+     * (EXO-90838) runs under the local arm's id, so neither drops the other's answer.
+     *
+     * @param {Number} requestId the search's request id; a new one by default
+     * @returns {void}
+     */
+    runServerSearch(requestId = ++this.searchRequestId) {
+      const sharedMailbox = this.currentSharedMailbox;
       this.searchServerRunning = true;
       this.searchServerError = false;
-      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly)
+      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.searchFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly, this.searchCriteria)
         .then(page => {
           if (requestId !== this.searchRequestId) {
             return;
           }
           this.searchServerResults = this.withLocalFavorites(page?.results || [], requestId);
           this.searchTotalMatches = page?.totalMatches || 0;
+          this.searchScanned = page?.scanned || 0;
         })
-        .catch(() => {
+        .catch(async () => {
           if (requestId !== this.searchRequestId) {
+            return;
+          }
+          // In a shared mailbox, a failure may be the share withdrawn: asked before it is
+          // shown, and re-checked after, since a later search or a switch may have taken
+          // over while the answer was on its way.
+          if (sharedMailbox && (await this.leftSharedMailboxAfterFailure(sharedMailbox)
+              || requestId !== this.searchRequestId)) {
             return;
           }
           // The instant local matches stay listed; only flag that the whole-mailbox
@@ -1891,28 +2235,67 @@ export default {
         return override ? { ...result, starred: override.favorite } : result;
       });
     },
-    // The chips narrow the search the same way they narrow the list. A lit Favorites
-    // chip that stopped filtering the moment the user typed was the defect here: the
-    // search read the mailbox directly and never went through the emails() computed
-    // that applies them.
-    // Favorites and Unread also travel to the server, since both are IMAP flags that
-    // /search takes, so they hold for hits the cache has never seen. A category is
-    // assigned locally after a message is cached, so an uncached hit carries none —
-    // it is left alone rather than silently dropped for lacking what it cannot have.
+    /**
+     * Whether a listed mail passes the Favorites and Unread chips, which narrow the
+     * folder's list and the Suggestions view's alike (EXO-90892); the filters combine,
+     * each narrowing what the other left.
+     * <p>
+     * Favorites: in a folder the server already answered with the favorite subset;
+     * filtering again here makes a just-unfavorited message leave the list at once
+     * instead of waiting for the next reload, and on the Suggestions view, whose mails
+     * are its own read's, it is the whole of the filter.
+     * <p>
+     * Unread: the one message being read stays listed even once marked read: opening a
+     * mail under the Unread filter must not yank the reader out from under the user for
+     * the select-an-email placeholder. Folder as well as UID: a UID is only unique within
+     * its folder, and the open reader can now hold a message from another one
+     * (openMailFromOutside, openSearchResult), so comparing the number alone would spare
+     * an unrelated read message that happens to share it.
+     *
+     * @param {Object} email the listed mail
+     * @returns {Boolean} true when it is shown
+     */
+    matchesListChips(email) {
+      if (this.favoriteOnly && !email.starred) {
+        return false;
+      }
+      return !this.unreadOnly || !email.read
+        || !!this.email
+          && email.mailRemoteId === this.email.mailRemoteId
+          && (email.folder || this.currentFolder) === (this.email.folder || this.currentFolder);
+    },
+    /**
+     * Whether a search hit passes the row's Unread and Favorites chips, which narrow the
+     * search as they narrow the list -- they also travel to both searches, so they hold
+     * for hits the list has never seen. A category view does not narrow a search
+     * (EXO-90838): its chip is not on the search row, and the hits of eXo's copy and of
+     * the mail server carry no categories to be matched against -- filtering them by
+     * the view the list was opened on (the Inbox's Important) hid every one of them
+     * under a count that still said they matched.
+     *
+     * @param {Object} result the hit
+     * @returns {Boolean} true when it is shown
+     */
     searchResultMatchesFilters(result) {
       if (this.favoriteOnly && !result.starred) {
         return false;
       }
-      if (this.unreadOnly && result.read) {
-        return false;
-      }
-      if (this.selectedCategoryIds.length > 0 && result.cached) {
-        return this.selectedCategoryIds.some(id => (result.categoryIds || []).includes(id));
-      }
-      return true;
+      return !this.unreadOnly || !result.read;
     },
+    /**
+     * Ends the search: its text, its results, any answer still on its way, and its
+     * advanced criteria and page address (EXO-90838).
+     *
+     * @returns {void}
+     */
     clearSearch() {
       window.clearTimeout(this.searchDebounceTimer);
+      // A selection made among the hits does not carry over to the folder's list, as
+      // one made in the list does not carry into a search (runSearch): the two do not
+      // hold the same rows (EXO-90871).
+      if (this.searchActive) {
+        this.cancelSelectMode();
+      }
       // Invalidate any in-flight server answer.
       this.searchRequestId++;
       this.searchTerm = '';
@@ -1920,6 +2303,7 @@ export default {
       this.searchTotalMatches = 0;
       this.searchServerRunning = false;
       this.searchServerError = false;
+      this.resetAdvancedSearch();
     },
     /**
      * Opens one search hit: a cached one goes straight to the existing reader; an
@@ -2028,7 +2412,9 @@ export default {
         .find(row => row.mailRemoteId === result.mailRemoteId && row.folder === result.folder);
       if (serverRow) {
         this.$set(serverRow, 'cached', true);
-        if (read) {
+        // Not in a shared mailbox without the right to keep read state (EXO-90590): the
+        // hit keeps its state, as its row in the list does.
+        if (read && canMarkReadIn(result.folder)) {
           this.$set(serverRow, 'read', true);
         }
       }
@@ -2046,14 +2432,15 @@ export default {
       }
     },
     /**
-     * The rows the list shows, for listNavigationMixin: one per hit in a search, the
+     * The rows the list shows, for listNavigationMixin: one per hit in a search, one per
+     * mail in the Suggestions view, keyed alike by folder and UID (EXO-90875), the
      * folder's conversations otherwise.
      *
      * @param {Array} rows the listed messages
      * @returns {Array} the rows
      */
     navigationEntriesOf(rows) {
-      return this.searchActive ? searchRows(rows) : threadRows(rows);
+      return this.searchActive || this.suggestionsView ? searchRows(rows) : threadRows(rows);
     },
     /**
      * Whether an action here took a message out of the listing before the server says
@@ -2103,8 +2490,8 @@ export default {
       // Nothing prunes an override until a server answer lands, so a user who toggles
       // stars and never searches again would keep the entries for the page's lifetime.
       this.favoriteOverrides.clear();
-      // Also empty the drawer's own header filter field for the next open.
-      this.$refs.emailBoxDrawer?.resetFilter?.();
+      // Also empty the search row's field for the next open.
+      this.resetSearchField();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
@@ -2233,11 +2620,33 @@ export default {
           });
       this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
-        this.searchServerResults
-          .filter(result => unlisted.includes(result.mailRemoteId) && (result.folder || 'INBOX') === folder)
-          .forEach(result => this.$set(result, 'read', read));
+        this.hitsIn(folder, new Set(unlisted)).forEach(result => this.$set(result, 'read', read));
         pushReadStatus(unlisted, folder);
       }
+    },
+    /**
+     * The rows of the lists of hits among the given messages of one folder: the search's
+     * hits as the server and eXo's copy answered them (EXO-90838), and the Suggestions
+     * view's mails as last read (EXO-90851) -- the rows a star or a read status set on a
+     * hit is stamped on, so the hit shows it before the next answer (EXO-90871). The
+     * instant matches are not among them: they are read off the listed rows, stamped on
+     * their own.
+     *
+     * @param {String} folder the folder the UIDs are numbered in
+     * @param {Set<Number>} ids the UIDs
+     * @returns {Array} the hits
+     */
+    hitsIn(folder, ids) {
+      return this.allHits().filter(result => (result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId));
+    },
+    /**
+     * Every row of the lists of hits the drawer holds: the search's, as the server and
+     * eXo's copy answered them, and the Suggestions view's mails as last read.
+     *
+     * @returns {Array} the hits
+     */
+    allHits() {
+      return [...this.searchServerResults, ...this.searchLocalResults, ...waitingSuggestionMails()];
     },
     /**
      * Moves a folder's unread count by one message read or unread here, until the next
@@ -2252,8 +2661,9 @@ export default {
     },
     /**
      * Reads the categories' subcategories the first time the drawer goes full screen,
-     * where the column's unread counts need them -- never for a drawer that stays
-     * narrow -- and keeps them for the page's lifetime.
+     * where the column's unread counts need them, or the narrow 3-dots menu first opens
+     * on its categories, which show the same counts (EXO-90881) -- never for a narrow
+     * drawer whose menu stays shut -- and keeps them for the page's lifetime.
      *
      * @returns {Promise<void>} resolved once they are read
      */
@@ -2390,8 +2800,7 @@ export default {
       if (typeof knownRead === 'boolean') {
         return knownRead;
       }
-      const result = (this.searchServerResults || [])
-        .find(row => row.mailRemoteId === mailRemoteId && (row.folder || 'INBOX') === folder);
+      const result = this.hitOf(mailRemoteId, folder);
       if (result && typeof result.read === 'boolean') {
         return result.read;
       }
@@ -2419,8 +2828,22 @@ export default {
     rowOfEmail(mailRemoteId, folder = null) {
       const inFolder = (row, fallback) => !folder || (row.folder || fallback) === folder;
       return (this.emails || []).find(email => email.mailRemoteId === mailRemoteId && inFolder(email, 'INBOX'))
-        || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId && inFolder(result, 'INBOX'))
+        || this.hitOf(mailRemoteId, folder)
         || (this.email?.mailRemoteId === mailRemoteId && inFolder(this.email, 'INBOX') ? this.email : null);
+    },
+    /**
+     * One message among the lists of hits (see hitsIn): the search's, the Suggestions
+     * view's -- what the drawer knows of a row the folder's list does not hold, for a
+     * move's Undo (its Message-ID, which a Suggestions mail carries) and for the read
+     * state a toggle starts from (EXO-90871).
+     *
+     * @param {Number} mailRemoteId the UID
+     * @param {String} folder the folder it is numbered in; any when null
+     * @returns {Object} the hit, or undefined
+     */
+    hitOf(mailRemoteId, folder = null) {
+      return this.allHits()
+        .find(result => result.mailRemoteId === mailRemoteId && (!folder || (result.folder || 'INBOX') === folder));
     },
     /**
      * Groups message ids by the folder each one is listed in, so one request goes out
@@ -2445,12 +2868,21 @@ export default {
       });
       return Array.from(groups.entries());
     },
-    // Toggle the favorite-only view from the chip row, reloading the listed
-    // folder (the favorite subset is answered server-side).
+    /**
+     * Toggles the favorite-only view from the chip row, reloading the listed folder (the
+     * favorite subset is answered server-side). Not on the Suggestions view, whose mails
+     * are its own read's, narrowed here (suggestionMails, EXO-90892): no listing serves
+     * it a favorite subset.
+     *
+     * @returns {void}
+     */
     onToggleFavoriteFilter() {
       this.filtersTouched = true;
       this.favoriteOnly = !this.favoriteOnly;
       this.cancelSelectMode();
+      if (this.suggestionsView) {
+        return;
+      }
       this.loading = true;
       this.loadEmailBox().finally(() => this.loading = false);
     },
@@ -2469,17 +2901,60 @@ export default {
         this.openCategoryView(this.importantCategory.id);
       }
     },
-    // Switch the list to one category — from the ⋮ menu or the Important
-    // shortcut chip — a view like Sent or Archive, not a checkbox: single
-    // selection, replacing whatever category view was active. Picking the
-    // active category again leaves the view, as does selecting any folder.
-    // The Favorites and Unread chips survive the switch and combine with the
-    // view (their chips stay on screen inside it, so nothing narrows the list
-    // invisibly): Favorites' server-answered subset stays loaded and the
-    // category narrows it client-side — no reload needed either way.
+    /**
+     * Switches the list to one category -- from the folder column, the 3-dots menu or
+     * the Important shortcut chip --, a view like Sent or Archive, not a checkbox:
+     * single selection, replacing whatever category view was active. Picking the
+     * active category again leaves the view, as does selecting any folder.
+     * The Favorites and Unread chips survive the switch and combine with the
+     * view (their chips stay on screen inside it, so nothing narrows the list
+     * invisibly): Favorites' server-answered subset stays loaded and the
+     * category narrows it client-side -- no reload needed either way.
+     * <p>
+     * A category narrows a folder's list. The Scheduled and Suggestions views have
+     * lists of their own, which it does not narrow, so from either the category opens
+     * on the inbox, as it does when picked there (EXO-90885). Nor does it narrow a
+     * search's hits, which do not all say their categories: a search ends with the
+     * pick, so the list shown is the category's -- opened, even when it was the one lit.
+     *
+     * @param {Number} categoryId the category id
+     * @returns {void}
+     */
     openCategoryView(categoryId) {
       this.filtersTouched = true;
-      this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
+      if (isMailboxView(this.currentFolder)) {
+        this.onSwitchFolder('INBOX');
+      }
+      // A pick that ends a search opens the category, the one lit included: the
+      // search's hits were on screen, not that category's list.
+      const endedSearch = this.searchActive;
+      if (endedSearch) {
+        this.clearSearch();
+        this.resetSearchField();
+        // The category lit already: neither its watcher nor the list's fires, so the
+        // reader leaves the hit and the category's first mail opens from here.
+        if (this.categoryViewId === categoryId) {
+          this.leaveUnlistedEmail();
+          this.openFirstAfterNavigation();
+          return;
+        }
+      }
+      this.categoryViewId = !endedSearch && this.categoryViewId === categoryId ? null : categoryId;
+    },
+    /**
+     * Shows the placeholder in place of a mail the list no longer holds. A search hit,
+     * or a mail opened from the Favorites drawer, is often outside the listed folder
+     * view; a background refresh must not knock it out for the placeholder.
+     *
+     * @returns {void}
+     */
+    leaveUnlistedEmail() {
+      if (this.searchActive || this.pinnedEmail) {
+        return;
+      }
+      if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+        this.selectEmailPlaceHolder = true;
+      }
     },
     /**
      * Clears every filter narrowing the list -- the category view, the Unread and
@@ -2498,8 +2973,9 @@ export default {
       // One navigation, whichever filters were on: the list is re-listed -- reloaded
       // when Favorites narrowed it, since that subset is the server's -- and then its
       // first mail opens once, as after a folder switch; the folder-switch flag keeps
-      // the category view's own opening from firing on the list still narrowed.
-      const reload = this.favoriteOnly;
+      // the category view's own opening from firing on the list still narrowed. The
+      // Suggestions view's mails are its own read's, narrowed here: nothing to reload.
+      const reload = this.favoriteOnly && !this.suggestionsView;
       const load = ++this.folderLoads;
       this.folderLoading = true;
       this.categoryViewId = null;
@@ -2519,13 +2995,61 @@ export default {
         }
       });
     },
-    // "Select several" from the ⋮ menu: enter the same multi-select mode a row
-    // checkbox starts, with nothing selected yet.
+    /**
+     * "Select several" from the ⋮ menu: enters the multi-select mode a row's checkbox
+     * starts, with one row already ticked (EXO-90891) -- the row of the mail the reader
+     * shows, else the first row of the list on screen. Nothing over a list with no row
+     * to tick: a select mode with nothing selected is one it would end at once.
+     *
+     * @returns {void}
+     */
     onEnterSelectMode() {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
-      this.selectMode = true;
+      const keys = this.selectModeStartKeys();
+      if (keys.length) {
+        this.selectedEmails = keys;
+        this.selectMode = true;
+      }
+    },
+    /**
+     * The selection keys of the row the menu's "Select several" ticks: as that row's
+     * checkbox would tick it -- a conversation of the folder's list by its messages in
+     * the row's folder, a search hit or a Suggestions mail alone. The reader's row in
+     * full screen, else the first row listed that the server has listed already.
+     *
+     * @returns {Array<String>} the keys, empty when no row can be ticked
+     */
+    selectModeStartKeys() {
+      const readerEmail = this.expanded && !this.selectEmailPlaceHolder ? this.email : null;
+      const sameMail = (row, mail) => !!mail && row.mailRemoteId === mail.mailRemoteId
+        && (row.folder || 'INBOX') === (mail.folder || 'INBOX');
+      let rows;
+      if (this.searchActive || this.suggestionsView) {
+        const hits = this.listedEmails.filter(hit => !hit.refreshPending);
+        const hit = hits.find(candidate => sameMail(candidate, readerEmail)) || hits[0];
+        rows = hit ? [hit] : [];
+      } else {
+        const threads = this.$emailConnectorMailBoxService.groupEmailsByThread(this.emails)
+          .filter(thread => !thread.latest.refreshPending);
+        const thread = threads.find(candidate => candidate.emails.some(message => sameMail(message, readerEmail))) || threads[0];
+        rows = thread ? this.$emailConnectorMailBoxService.threadRowsInFolder(thread.latest, thread) : [];
+      }
+      return rows.map(selectionKey);
+    },
+    /**
+     * Sets what is selected, and ends the select mode once nothing is (EXO-90891): the
+     * last row unticked, or the select-all row cleared, give the rows their avatars back.
+     *
+     * @param {Array<String>} keys the selection keys
+     * @returns {void}
+     */
+    setSelectedEmails(keys) {
+      this.selectedEmails = keys;
+      if (!keys.length) {
+        this.selectMode = false;
+      }
     },
     /**
      * Patches the favorite flag on every copy this drawer holds: the cached folder
@@ -2554,12 +3078,10 @@ export default {
       });
       // A server hit is a snapshot of the FLAGS as they were when the search ran, so
       // the toggled rows still have to be stamped even though hits now carry the
-      // flag. That folder's hits only: UIDs are per-folder.
-      this.searchServerResults.forEach(result => {
-        if ((result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId)) {
-          this.$set(result, 'starred', favorite);
-        }
-      });
+      // flag -- and so are a hit of eXo's copy (EXO-90838) and a mail of the Suggestions
+      // view, whose star the row offers too (EXO-90871). That folder's hits only: UIDs
+      // are per-folder.
+      this.hitsIn(folder, ids).forEach(result => this.$set(result, 'starred', favorite));
       // And remember it, so a search answer still in flight — which left before the
       // push and therefore reports the old flag — cannot undo the stamp when it lands.
       // While the push is unacknowledged the entry is immune from pruning whatever
@@ -2720,7 +3242,21 @@ export default {
               this.forgetRefreshPendingRows(filed[index]);
             }
             this.alertOnActionFailures(failures, action);
+            this.rereadSuggestionsIfListed();
           }));
+    },
+    /**
+     * Reads the Suggestions view's mails again once an action moved a mail out of its
+     * folder, while the view is listed (EXO-90871): the row an action hid comes back
+     * under its new folder and UID when its suggestion still waits, and leaves the count
+     * when it does not -- as the folder's list is re-read after its own actions.
+     *
+     * @returns {void}
+     */
+    rereadSuggestionsIfListed() {
+      if (this.suggestionsView) {
+        refreshWaitingSuggestions(true);
+      }
     },
     /**
      * Puts trashed messages back where they came from — the user's own to Sent, the
@@ -2879,7 +3415,8 @@ export default {
       groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
           .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
-          .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
+          .catch(() => this.alertOnActionFailures(ids.length, 'archive'))
+          .finally(() => this.rereadSuggestionsIfListed()));
     },
     /**
      * Moves messages into one of the user's own folders, one request per folder they
@@ -2945,6 +3482,7 @@ export default {
             return failures;
           }));
       return Promise.all(requests).then(failures => {
+        this.rereadSuggestionsIfListed();
         if (failures.every(count => count === 0)) {
           this.offerUndoMove(undoGroups, target, emailIdsToMove.length);
         }
@@ -3240,12 +3778,42 @@ export default {
       }
     },
     /**
+     * After a search of a shared mailbox failed (EXO-90590), asks the switcher's entries
+     * whether that mailbox is still shared with the user, as a failed listing does: gone
+     * from them while the user is still in one of its folders, the user is taken back to
+     * their own mailbox and told why -- whatever search has started since, since the
+     * re-read already took the mailbox out of the switcher's state; still there, or left
+     * by the user meanwhile, the failure is the caller's to show or to drop.
+     *
+     * @param {Object} sharedMailbox the switcher entry the search ran in
+     * @returns {Promise<Boolean>} true when the user was taken out of that mailbox
+     */
+    async leftSharedMailboxAfterFailure(sharedMailbox) {
+      if (sharedMailbox.delegationId !== this.currentSharedMailbox?.delegationId) {
+        return false;
+      }
+      await loadSharedMailboxes();
+      const stillIn = this.currentFolder === sharedMailbox.folderKey
+        || (sharedMailbox.folders || []).some(folder => folder.key === this.currentFolder);
+      if (sharedMailboxById(sharedMailbox.delegationId) || !stillIn) {
+        return false;
+      }
+      await this.leaveUnavailableSharedMailbox();
+      return true;
+    },
+    /**
      * Leaves a shared mailbox that is no longer among the switcher's entries, for the
      * user's own, and says so.
      *
      * @returns {Promise<void>} resolved once the user's own inbox is listed
      */
     leaveUnavailableSharedMailbox() {
+      // A search running in that mailbox ends with it (EXO-90590): its hits are of a
+      // mailbox no longer shared, and would be listed in the user's own.
+      if (this.searchActive) {
+        this.clearSearch();
+        this.resetSearchField();
+      }
       setCurrentSharedMailbox(null);
       this.alertSharedMailboxGone();
       this.currentFolder = 'INBOX';
@@ -3341,15 +3909,16 @@ export default {
       const wasSyncing = this.syncInProgress;
       const folder = this.currentFolder;
       const favoriteOnly = this.favoriteOnly;
-      // The Scheduled view is no folder the listing serves (EXO-90434): its mails come
-      // from their own endpoint, read by its list. What the listing carries besides the
-      // rows -- the folders, the sync status, the webmail -- is still wanted, and read
-      // with the Drafts, whose rows are then left out.
-      const scheduled = isScheduledView(folder);
+      // The Scheduled view is no folder the listing serves (EXO-90434), nor the
+      // Suggestions view (EXO-90851): their mails come from their own endpoints, read by
+      // their lists. What the listing carries besides the rows -- the folders, the sync
+      // status, the webmail -- is still wanted, and read with the Drafts, whose rows are
+      // then left out.
+      const mailboxView = isMailboxView(folder);
       const sharedMailbox = this.currentSharedMailbox;
       let emailBox;
       try {
-        emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
+        emailBox = await this.$emailConnectorMailBoxService.getEmailBox(mailboxView ? 'DRAFTS' : folder, !mailboxView && favoriteOnly);
       } catch (e) {
         if (await this.leftUnavailableSharedMailbox(sharedMailbox)) {
           return;
@@ -3359,7 +3928,13 @@ export default {
       if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
         return;
       }
-      this.emailBox = scheduled ? { ...emailBox, emails: [] } : emailBox;
+      this.emailBox = mailboxView ? { ...emailBox, emails: [] } : emailBox;
+      // Which of the user's own mails have a suggestion waiting: the Suggestions view's
+      // entry and count in the column (EXO-90851), read at most once a minute. Not in a
+      // mailbox somebody shared with the user, where no rule of theirs runs.
+      if (!sharedMailbox) {
+        refreshWaitingSuggestions();
+      }
       this.countMailboxUnread(sharedMailbox, favoriteOnly);
       // The folder list's unread counts are the server's again, the reads made here
       // included.
@@ -3379,6 +3954,9 @@ export default {
       // does not cover, a folder opted in from the settings while a selection is held
       // open, resolves at the next click.
       this.$root.mailFolders = this.folders;
+      // And every folder of the mailbox, readable or not, which decides how the picker
+      // spells a path (the INBOX rule, EXO-90839).
+      this.$root.mailNamespaceFolders = this.namespaceFolders;
       // `emails` is a computed off `emailBox`, so it follows the line above on its own.
       // Assigning to it did nothing except log "computed property was assigned to but it
       // has no setter" on every load, and once per poll while a watch was running.
@@ -3515,11 +4093,14 @@ export default {
       }
       this.currentFolder = folder;
       this.cancelSelectMode();
-      // The Scheduled view has no search (EXO-90434): a running one ends with the switch,
-      // its field too, or its results would stand in for the view's list.
-      if (isScheduledView(folder) && this.searchActive) {
+      // The search follows the folder chosen, the advanced search's own included.
+      this.followFolderSwitch();
+      // A folder with no search -- the Scheduled view (EXO-90434), a shared mailbox's
+      // Trash or Spam (EXO-90590) -- ends a running one with the switch, its field too,
+      // or its results would stand in for that folder's list.
+      if (!this.isFolderSearchable(folder) && this.searchActive) {
         this.clearSearch();
-        this.$refs.emailBoxDrawer?.resetFilter?.();
+        this.resetSearchField();
       }
       if (this.expanded) {
         this.pinnedEmail = false;
@@ -3539,7 +4120,7 @@ export default {
         // A running search follows the folder: local matches recompute from the
         // new list, and the server search re-runs scoped to the new folder.
         if (this.searchActive) {
-          this.runServerSearch();
+          this.runSearchArms();
         }
         this.openFirstAfterNavigation();
       });
@@ -3563,7 +4144,12 @@ export default {
       // the user just left. The folder switch calls this again once the new list is in.
       // Only that load: a chip's reload, or a mail opening, keeps the folder listed, and
       // nothing would call this again after them.
-      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading) {
+      // Nor while a category view opened is not expanded yet: the list is not narrowed
+      // to it, and its first mail may not be the category's. The expansion calls this
+      // again once it lands -- after the folder's load, a category picked on a view
+      // switching to the inbox (EXO-90885).
+      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading
+          || (this.categoryViewId && !this.selectedCategoryIds.includes(this.categoryViewId))) {
         return;
       }
       const showingEmail = this.email && !this.selectEmailPlaceHolder;
@@ -3576,6 +4162,27 @@ export default {
       if (focused) {
         this.revealThreadRow(focused.threadId);
       }
+    },
+    /**
+     * Shows a sender's brand logo the server just found (EXO-90909) on every row and
+     * in the reader, in place: the addresses of that domain answered none are asked
+     * again, each page for its own URL.
+     *
+     * @param {CustomEvent} event the push, {detail: {message: {domain}}}
+     * @returns {void}
+     */
+    onSenderLogoFound(event) {
+      refreshSenderDomain(event?.detail?.message?.domain);
+    },
+    /**
+     * Shows the brand logos of rows the server found to pass DMARC after they were
+     * listed (EXO-90909): their verdict was filled in from the mail server's header.
+     *
+     * @param {CustomEvent} event the push, {detail: {message: {ids, addresses}}}
+     * @returns {void}
+     */
+    onSenderRowsVerified(event) {
+      markSenderRowsVerified(event?.detail?.message?.ids, event?.detail?.message?.addresses);
     },
     /**
      * The unread badge moved on the server (EXO-90628): the synchronization brought new
@@ -3702,8 +4309,10 @@ export default {
       } catch (e) {
         listed = false;
       }
+      // A folder now kept only as a label (no right to read it) is gone as well: it can
+      // no longer be listed.
       if (this.currentFolder !== 'INBOX'
-          && (listed ? !this.availableFolders.some(folder => folder.key === this.currentFolder) : inboxOnFailure)) {
+          && (listed ? !this.availableFolders.some(folder => folder.key === this.currentFolder && folder.readable !== false) : inboxOnFailure)) {
         this.onSwitchFolder('INBOX');
       }
     },
@@ -3869,6 +4478,10 @@ export default {
         emails = this.mergedSearchResults;
       } else if (scheduled) {
         emails = [email];
+      } else if (this.suggestionsView) {
+        // The view's rows, which the mail drawer reads the conversation's thread id
+        // off, as the full-screen reader did (EXO-90875).
+        emails = this.suggestionMails;
       }
       const threadKey = !this.searchActive && !scheduled && this.openedEmailRowKey();
       this.rowToRefocus = threadKey
@@ -3894,7 +4507,8 @@ export default {
     /**
      * Opens the first mail of the list on screen in the full-screen reader, when the
      * reader has nothing to show: the folder's first conversation (with its filters and
-     * view applied, as listed), or the first search hit while a search is running.
+     * view applied, as listed), the first search hit while a search is running, or the
+     * Suggestions view's first mail while it is listed (EXO-90875).
      * <p>
      * A mail already open stays open, and so does a multi-selection. A list still on
      * its way -- the drawer's own load, a synchronization filling an empty mailbox, a
@@ -3922,6 +4536,17 @@ export default {
         }
         return;
       }
+      // The Suggestions view's first mail, as a folder's first conversation
+      // (EXO-90875): waited for while the view reads what waits.
+      if (this.suggestionsView) {
+        const firstMail = firstOpenableThread(searchRows(this.suggestionMails));
+        if (firstMail) {
+          this.openAutomatically(firstMail.latest);
+        } else {
+          this.autoSelectPending = this.loading || this.suggestionsLoading;
+        }
+        return;
+      }
       const firstThread = firstOpenableThread(threadRows(this.emails));
       if (firstThread) {
         this.openAutomatically(firstThread.latest);
@@ -3930,8 +4555,9 @@ export default {
       }
     },
     /**
-     * Opens a listed message -- a search hit while a search runs -- in the full-screen
-     * reader and lights its row, as a click on the row does (see the list item's
+     * Opens a listed message -- a search hit while a search runs, a mail of the
+     * Suggestions view while it is listed -- in the full-screen reader and lights its
+     * row, as a click on the row does (see the list item's
      * openDetail). An automatic opening (options.automatic) leaves its read to
      * listNavigationMixin.
      *
@@ -3942,6 +4568,10 @@ export default {
     openListedEmail(row, options = {}) {
       if (this.searchActive) {
         return this.openSearchResult(row, options);
+      }
+      // A mail of the Suggestions view, as a click on its row opens it (EXO-90875).
+      if (this.suggestionsView) {
+        return this.openSuggestedEmail(row, options);
       }
       this.$root.$emit('set-opened', row.mailRemoteId);
       return Promise.resolve(this.openEmailDetailContent(row.mailRemoteId, row.folder || 'INBOX', options)).catch(() => null);
@@ -3954,6 +4584,9 @@ export default {
     navigationList() {
       if (this.searchActive) {
         return (this.expanded ? this.$refs.expandedSearchResults : this.$refs.searchResults) || null;
+      }
+      if (this.suggestionsView) {
+        return (this.expanded ? this.$refs.expandedSuggestionsList : this.$refs.suggestionsList) || null;
       }
       return (this.expanded ? this.$refs.expandedListContent : this.$refs.listContent) || null;
     },

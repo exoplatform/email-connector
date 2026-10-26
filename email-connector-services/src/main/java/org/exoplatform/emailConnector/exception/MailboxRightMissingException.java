@@ -22,8 +22,8 @@ package org.exoplatform.emailConnector.exception;
  * <p>
  * It is an {@link IllegalAccessException} on purpose, so that it travels the refusal
  * path this add-on already has -- every write entry point declares it, and the REST
- * layer maps it to <b>401</b> (the add-on's own convention, not the platform's 403;
- * see the domain doc). What this subclass adds is the one thing a bare refusal loses:
+ * layer maps it to <b>403</b>, the platform's status for a refusal (EXO-90627). What
+ * this subclass adds is the one thing a bare refusal loses:
  * <b>which letter was missing</b>, as a message code the interface translates, so the
  * user reads "you may read this mailbox but not delete from it" rather than a blank
  * denial, and so a client whose chrome went stale (the share was narrowed while the

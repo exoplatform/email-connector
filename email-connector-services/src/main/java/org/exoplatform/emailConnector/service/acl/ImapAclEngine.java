@@ -19,10 +19,13 @@ package org.exoplatform.emailConnector.service.acl;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import javax.mail.Folder;
 import javax.mail.FolderClosedException;
@@ -47,6 +50,8 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.service.EmailFolderService;
 import org.exoplatform.services.log.ExoLogger;
@@ -109,14 +114,24 @@ public class ImapAclEngine implements MailboxAclEngine {
   /** The engine name a preset selects. */
   public static final String NAME                 = "imap";
 
-  /** How many folders "Remove access" asks for the grantee's entry, at most (plan, A-4). */
-  static final int           MAX_FOLDERS_ASKED    = 200;
-
   /** The RFC 4314 capability -- a fast positive in {@link #probe}, never the gate. */
   static final String        ACL_CAPABILITY       = "ACL";
 
   /** The RFC 2342 capability -- a hint in {@link #probe}, never the gate. */
   static final String        NAMESPACE_CAPABILITY = "NAMESPACE";
+
+  /**
+   * How long, in seconds, "Remove access" may spend asking the owner's folders for the
+   * grantee's entry ({@link #foldersHolding}), LIST included. Read from this JVM property
+   * on each sweep, {@value #DEFAULT_SWEEP_SECONDS} by default.
+   */
+  public static final String SWEEP_SECONDS_PROPERTY = "exo.email.delegation.revokeSweepSeconds";
+
+  /** The default of {@link #SWEEP_SECONDS_PROPERTY}. */
+  public static final int    DEFAULT_SWEEP_SECONDS  = 60;
+
+  /** The clock the sweep's deadline is read on, in nanoseconds. */
+  LongSupplier               clock                = System::nanoTime;
 
   /**
    * @return {@value #NAME}
@@ -133,7 +148,9 @@ public class ImapAclEngine implements MailboxAclEngine {
    * {@code BAD}/{@code NO} is unsupported with the reason; a closed or dropped
    * connection is unreachable, kept apart so the interface never tells a user their
    * server cannot share when it is merely down. NAMESPACE is read as a hint only:
-   * discovery works without it.
+   * discovery works without it. A supported answer carries the shapes of writing in the
+   * owner's name the administrator declared for the connector (EXO-90582), and says the
+   * consent is never written on the server.
    *
    * @param session the caller's session
    * @return the capabilities
@@ -159,16 +176,30 @@ public class ImapAclEngine implements MailboxAclEngine {
       return MailboxAclCapabilities.unsupported(MailboxAclException.UNREACHABLE);
     }
     if (aclAdvertised) {
-      return MailboxAclCapabilities.imap(true, namespaceAdvertised);
+      return MailboxAclCapabilities.imap(true, namespaceAdvertised, declaredSendModes(session));
     }
     try {
       folder(store, MailFolder.INBOX).myRights();
-      return MailboxAclCapabilities.imap(false, namespaceAdvertised);
+      return MailboxAclCapabilities.imap(false, namespaceAdvertised, declaredSendModes(session));
     } catch (MessagingException e) {
       String code = isConnectionFailure(e) ? MailboxAclException.UNREACHABLE : MailboxAclException.UNSUPPORTED;
       LOG.debug("MYRIGHTS INBOX did not answer on a server advertising no ACL ({}): {}", code, e.getMessage());
       return MailboxAclCapabilities.unsupported(code);
     }
+  }
+
+  /**
+   * The shapes of writing in the owner's name the administrator declared for the
+   * session's connector (EXO-90582): an IMAP server has nothing to answer about it --
+   * RFC 4314 has no send right, and a submission server's sender check cannot be asked
+   * without sending -- so the declaration is the engine's answer, and eXo alone holds
+   * the consent.
+   *
+   * @param session the caller's session
+   * @return the declared shapes, empty when none or the feature is switched off
+   */
+  private static Set<SendMode> declaredSendModes(MailboxAclSession session) {
+    return SendMode.declaredFor(session.connector() == null ? null : session.connector().getId());
   }
 
   /**
@@ -252,7 +283,8 @@ public class ImapAclEngine implements MailboxAclEngine {
    * @param identifier the grantee as the server names them
    * @param preset READER or EDITOR
    * @param ownerRights the owner's own MYRIGHTS on the folder
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the entry as written: the letters, the letters again as native form, and
    *         the preset they read as -- READER when an Editor was capped to {@code lrs}
    * @throws MailboxAclException when nothing is left to grant or the server refuses
@@ -285,7 +317,8 @@ public class ImapAclEngine implements MailboxAclEngine {
    * would be permanent deletion (EXO-90548, PO decision Q-1).
    *
    * @param preset READER or EDITOR
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the letters, before the owner's cap
    */
   @Override
@@ -311,10 +344,64 @@ public class ImapAclEngine implements MailboxAclEngine {
    */
   @Override
   public Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
+    return rolesAmong(ownFolders(session));
+  }
+
+  /**
+   * The owner's own folders, each with its role (EXO-90556): one {@code LIST "*"}, read
+   * as {@link #findRoleFolders} reads it, so the role a folder is shared with is the role
+   * the grant loop gives it -- and every folder carrying {@code \Drafts} as Drafts, not
+   * only the first. The folder's separator as listed, "/" when none.
+   *
+   * @param session the owner's session
+   * @return the folders in listing order, INBOX included, never null
+   * @throws MailboxAclException when the server refuses
+   */
+  @Override
+  public List<OwnFolder> listOwnFolders(MailboxAclSession session) {
+    List<IMAPFolder> folders = ownFolders(session);
+    Map<String, FolderRole> roleByName = new HashMap<>();
+    rolesAmong(folders).forEach((role, name) -> roleByName.put(name, role));
+    List<OwnFolder> own = new ArrayList<>();
+    try {
+      for (IMAPFolder folder : folders) {
+        // Read off the listing: a folder listed carries its separator, no round trip.
+        char separator = folder.getSeparator();
+        FolderRole role = roleByName.get(folder.getFullName());
+        if (role == null && roleOfAttributes(folder) == FolderRole.DRAFTS) {
+          // Every folder the server calls Drafts is Drafts here, not only the one the
+          // role goes to: none is ever shared (PO decision Q-2).
+          role = FolderRole.DRAFTS;
+        }
+        own.add(new OwnFolder(folder.getFullName(), folder.getName(), separator == 0 ? "/" : String.valueOf(separator), role));
+      }
+    } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
+      throw refused("LIST", "*", e);
+    }
+    return own;
+  }
+
+  /**
+   * The role of each folder among the owner's own: the special-use attribute first, then,
+   * for a role no attribute names, a top-level folder (or one directly under INBOX) whose
+   * name is one of that role's usual names. The first folder found for a role keeps it.
+   *
+   * @param folders the owner's own folders
+   * @return the folder full name of each role found, never null
+   */
+  private Map<FolderRole, String> rolesAmong(List<IMAPFolder> folders) {
     Map<FolderRole, String> byAttribute = new EnumMap<>(FolderRole.class);
     Map<FolderRole, String> byTopName = new EnumMap<>(FolderRole.class);
     Map<FolderRole, String> byInboxChildName = new EnumMap<>(FolderRole.class);
-    for (IMAPFolder folder : ownFolders(session)) {
+    for (IMAPFolder folder : folders) {
+      if (MailFolder.INBOX.equalsIgnoreCase(folder.getFullName())) {
+        // INBOX is the share itself, never a role folder: a grant or a removal written
+        // for a role must never land on it, whatever attribute a server lists on it.
+        continue;
+      }
       FolderRole attributeRole = roleOfAttributes(folder);
       if (attributeRole != null) {
         byAttribute.putIfAbsent(attributeRole, folder.getFullName());
@@ -341,16 +428,22 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
-   * The owner's folders whose GETACL names the identifier, INBOX included. At most
-   * {@link #MAX_FOLDERS_ASKED} folders are asked -- "Remove access" on a mailbox of
-   * hundreds of folders stops there and says so in the log (plan, assumption A-4). A
-   * folder whose ACL cannot be read is skipped: its entry, if any, is the owner's to
+   * The owner's folders whose GETACL names the identifier, INBOX included. Every folder
+   * of the owner's own LIST is asked, whatever its position: "Folders and access" can
+   * write an entry on any of them over a share's life, and only the server's ACL records
+   * it, so a folder left unasked keeps the grantee's access after "Remove access". The
+   * sweep is one GETACL per folder, on the caller's request, within the budget of
+   * {@link #SWEEP_SECONDS_PROPERTY} counted from before the LIST. A sweep that cannot ask
+   * every folder -- the connection lost, or the time spent -- answers {@code UNREACHABLE}
+   * rather than a partial list, so the caller never takes it for the whole. A folder
+   * whose ACL the server refuses to read is skipped: its entry, if any, is the owner's to
    * remove in the mail server's own interface.
    *
    * @param session the owner's session
    * @param identifier the grantee as the server names them
    * @return the folder full names, never null
-   * @throws MailboxAclException when the server cannot list folders
+   * @throws MailboxAclException {@code UNREACHABLE} when not every folder could be asked,
+   *           {@code SERVER_REFUSED} when the server refuses the LIST
    */
   @Override
   public List<String> foldersHolding(MailboxAclSession session, String identifier) {
@@ -358,11 +451,19 @@ public class ImapAclEngine implements MailboxAclEngine {
     if (StringUtils.isBlank(identifier)) {
       return holding;
     }
+    int budget = getSweepSeconds();
+    long deadline = clock.getAsLong() + TimeUnit.SECONDS.toNanos(budget);
     List<IMAPFolder> folders = ownFolders(session);
-    if (folders.size() > MAX_FOLDERS_ASKED) {
-      LOG.warn("Removing an access asks only the first {} of {} folders; an entry beyond them stays", MAX_FOLDERS_ASKED, folders.size());
-    }
-    for (IMAPFolder folder : folders.subList(0, Math.min(folders.size(), MAX_FOLDERS_ASKED))) {
+    for (int index = 0; index < folders.size(); index++) {
+      if (clock.getAsLong() - deadline >= 0) {
+        LOG.warn("Removing an access took longer than {} s: {} of {} folders were not asked, the access stays as it is; raise {} for a mailbox this large",
+                 budget,
+                 folders.size() - index,
+                 folders.size(),
+                 SWEEP_SECONDS_PROPERTY);
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, "sweep deadline exceeded");
+      }
+      IMAPFolder folder = folders.get(index);
       try {
         for (ACL acl : folder.getACL()) {
           if (acl != null && identifier.equalsIgnoreCase(acl.getName())) {
@@ -371,10 +472,35 @@ public class ImapAclEngine implements MailboxAclEngine {
           }
         }
       } catch (MessagingException e) {
+        if (isConnectionFailure(e)) {
+          LOG.warn("The connection was lost while removing an access: {} of {} folders were not asked, the access stays as it is",
+                   folders.size() - index,
+                   folders.size());
+          throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+        }
         LOG.debug("GETACL on '{}' could not be read while removing an access: {}", folder.getFullName(), e.getMessage());
       }
     }
     return holding;
+  }
+
+  /**
+   * The time budget of {@link #foldersHolding} -- see {@link #SWEEP_SECONDS_PROPERTY}. A
+   * misconfigured value falls back to the default.
+   *
+   * @return the budget in seconds, at least one
+   */
+  int getSweepSeconds() {
+    String value = System.getProperty(SWEEP_SECONDS_PROPERTY);
+    if (StringUtils.isBlank(value)) {
+      return DEFAULT_SWEEP_SECONDS;
+    }
+    try {
+      int parsed = Integer.parseInt(value.trim());
+      return parsed > 0 ? parsed : DEFAULT_SWEEP_SECONDS;
+    } catch (NumberFormatException e) {
+      return DEFAULT_SWEEP_SECONDS;
+    }
   }
 
   /**
@@ -462,6 +588,9 @@ public class ImapAclEngine implements MailboxAclEngine {
       }
       return own;
     } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
       throw refused("LIST", "*", e);
     }
   }
@@ -598,7 +727,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   private static boolean impliedByCoupling(char letter, String granted) {
     return switch (letter) {
     case 'e', 'd' -> granted.indexOf('t') >= 0;
-    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl.
+    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl. A w really
+    // given beside s elsewhere reads as a Reader too; the letters cannot tell them apart.
     case 'w' -> granted.indexOf('s') >= 0;
     case 'c' -> granted.indexOf('k') >= 0;
     default -> false;
@@ -624,13 +754,18 @@ public class ImapAclEngine implements MailboxAclEngine {
    * @param session the owner's session
    * @param mailbox the mailbox's full name
    * @param identifier the grantee as the server names them
-   * @throws MailboxAclException when the server refuses
+   * @throws MailboxAclException {@code UNREACHABLE} when the connection failed,
+   *           {@code SERVER_REFUSED} when the server refuses
    */
   @Override
   public void revoke(MailboxAclSession session, String mailbox, String identifier) {
     try {
       folder(session.store(), mailbox).removeACL(identifier);
     } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        LOG.debug("DELETEACL on '{}' could not be sent, the connection failed: {}", mailbox, e.getMessage());
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
       throw refused("DELETEACL", mailbox, e);
     }
   }

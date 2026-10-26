@@ -60,8 +60,10 @@ const BLOCKQUOTE_STYLE = 'margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-l
  * Tags whose presence means a stored body is markup rather than the plain text it
  * arrived as. The two genuinely occur: a message is cached exactly as it was
  * received, and a multipart with no text/html part is stored as its text/plain one
- * (see EmailConnectorUtils#getHtmlFromMimeMultipart), with no `html` flag surviving
- * to this side to tell us which we are holding.
+ * (see EmailConnectorUtils#getHtmlFromMimeMultipart). The reply quote tells them
+ * apart from the markup alone; the forward takes the server's `html` flag, as the
+ * reader does, and only when the flag is missing guesses from the markup (see
+ * forwardedOriginalBody), where the reader assumes HTML.
  *
  * A named list rather than "anything between angle brackets", because the one thing
  * plain-text mail is full of is angle brackets around addresses — `<bob@acme.com>`
@@ -139,6 +141,36 @@ export function quotedOriginalBody(body) {
       return escaped ? `&gt; ${escaped}` : '&gt;';
     })
     .join('<br>');
+}
+
+/**
+ * The original message, ready to sit under a forward's header block.
+ *
+ * The same two kinds of body as {@link quotedOriginalBody}, treated the same way but
+ * for the prefixes: a forward carries the message as it was, not as a quote, so its
+ * lines get no `> `. HTML passes through untouched; plain text is escaped and its
+ * line breaks turned into `<br>`, without which the HTML editor the forward is
+ * written in would show the whole message as one paragraph and send it that way.
+ *
+ * Which kind it is comes from the server (`html` is what the message's own
+ * Content-Type recorded, always set on a message the server built), and from the
+ * markup when the caller has no server answer to pass.
+ *
+ * @param {string} body - the original message body, as it was received
+ * @param {boolean} [html] - whether the server recorded the body as HTML; always
+ *          present on a message the server built, undefined only when the caller
+ *          has no server answer
+ * @returns {string} the markup to place under the forwarded header, or an empty string
+ */
+export function forwardedOriginalBody(body, html) {
+  const original = (body || '').trim();
+  if (!original) {
+    return '';
+  }
+  if (html === true || (html !== false && isHtmlBody(original))) {
+    return original;
+  }
+  return original.split(/\r\n|\r|\n/).map(escapeHtml).join('<br>');
 }
 
 /**

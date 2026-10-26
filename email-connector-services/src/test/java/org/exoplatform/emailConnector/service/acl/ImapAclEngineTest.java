@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -35,6 +36,10 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import javax.mail.Folder;
 import javax.mail.FolderNotFoundException;
@@ -63,6 +68,8 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -184,6 +191,27 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90582 -- a supported answer carries the shapes of writing in the owner's name the
+   * administrator declared for the session's connector, and says eXo alone holds the
+   * consent; an unsupported one carries none.
+   */
+  @Test
+  void probeCarriesTheConnectorsDeclaredSendModes() throws MessagingException {
+    when(store.hasCapability("ACL")).thenReturn(true);
+    when(store.hasCapability("NAMESPACE")).thenReturn(true);
+    try {
+      assertEquals(Set.of(SendMode.ON_BEHALF), engine.probe(session()).sendModes(), "on behalf by default");
+      System.setProperty(SendMode.MODES_PROPERTY_PREFIX + 7L, "as");
+      MailboxAclCapabilities capabilities = engine.probe(session());
+      assertEquals(Set.of(SendMode.ON_BEHALF, SendMode.AS), capabilities.sendModes());
+      assertFalse(capabilities.sendModeOnServer(), "an ACL letter cannot say send: eXo holds it");
+      assertTrue(engine.probe(session(mock(Store.class))).sendModes().isEmpty(), "nothing where sharing is unsupported");
+    } finally {
+      System.clearProperty(SendMode.MODES_PROPERTY_PREFIX + 7L);
+    }
+  }
+
+  /**
    * A store that is not IMAP has no ACL command to run.
    */
   @Test
@@ -280,6 +308,7 @@ class ImapAclEngineTest {
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
     // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
     // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrsw")), "Stalwart's Reader");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }
@@ -711,6 +740,74 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90556 -- the owner's own folders for the per-folder list, from the one listing
+   * the roles are read from: each with its separator and the role {@code findRoleFolders}
+   * gives it -- the attribute, else the usual name at the top -- a nested folder named
+   * like a role with none; never a folder under another user's namespace or one that
+   * cannot hold mail.
+   */
+  @Test
+  void theOwnersOwnFoldersAreListedWithTheRolesTheGrantGivesThem() throws MessagingException {
+    Folder otherUsers = mock(Folder.class);
+    when(otherUsers.getFullName()).thenReturn("shared/");
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[] { otherUsers });
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX"), listed("Corbeille", "Corbeille", "\\Trash"), listed("Spam", "Spam"),
+        listed("Deleted", "Clients/Deleted"), listed("Clients", "Clients"), listed("Trash", "shared/alice@dovecot.local/Trash", "\\Trash"),
+        folder("Junk", "Junk", '/') };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(new OwnFolder("INBOX", "INBOX", "/", null),
+                         new OwnFolder("Corbeille", "Corbeille", "/", FolderRole.TRASH),
+                         new OwnFolder("Spam", "Spam", "/", FolderRole.JUNK),
+                         new OwnFolder("Clients/Deleted", "Deleted", "/", null),
+                         new OwnFolder("Clients", "Clients", "/", null)),
+                 own);
+    verify(root, times(1)).list("*");
+  }
+
+  /**
+   * EXO-90556 -- INBOX is never a role folder, whatever attribute a server lists on it:
+   * a role's grant or removal never lands on the share itself.
+   */
+  @Test
+  void inboxIsNeverTakenForARoleFolder() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX", "\\Trash"), listed("Deleted Items", "Deleted Items") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.TRASH, "Deleted Items"), engine.findRoleFolders(session()));
+  }
+
+  /**
+   * EXO-90556 -- every folder the server calls Drafts is Drafts in the owner's list, not
+   * only the one the role goes to, so none is ever offered to share.
+   */
+  @Test
+  void everyDraftsFolderIsDraftsNotOnlyTheFirst() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    Folder[] listing = new Folder[] { listed("Drafts", "Drafts", "\\Drafts"), listed("Brouillons", "Old/Brouillons", "\\Drafts"),
+        listed("Drafts", "Clients/Drafts") };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(FolderRole.DRAFTS, FolderRole.DRAFTS), own.stream().limit(2).map(OwnFolder::role).toList());
+    assertNull(own.get(2).role(), "a folder named so, nested, is the owner's own");
+  }
+
+  /**
    * "Remove access" finds every folder of the owner whose ACL names the grantee, however
    * the identifier is cased, and skips a folder whose ACL cannot be read.
    */
@@ -732,6 +829,193 @@ class ImapAclEngineTest {
     when(locked.getACL()).thenThrow(new MessagingException("NO"));
 
     assertEquals(List.of("INBOX", "Projects"), engine.foldersHolding(session(), IDENTIFIER));
+  }
+
+  /**
+   * EXO-90554 -- "Folders and access" can share any of the owner's folders, and only the
+   * server's ACL records it: "Remove access" asks every folder of a mailbox of more than
+   * two hundred, so an entry on a folder listed after the two hundredth is found.
+   */
+  @Test
+  void foldersHoldingAsksEveryFolderBeyondTheFirstTwoHundred() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    Folder[] listing = new Folder[250];
+    for (int index = 0; index < listing.length; index++) {
+      String name = String.format("F%03d", index);
+      listing[index] = listed(name, name);
+      when(((IMAPFolder) listing[index]).getACL()).thenReturn(new ACL[0]);
+    }
+    when(((IMAPFolder) listing[10]).getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(((IMAPFolder) listing[230]).getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(List.of("F010", "F230"), engine.foldersHolding(session(), IDENTIFIER));
+    verify((IMAPFolder) listing[249]).getACL();
+  }
+
+  /**
+   * EXO-90554 -- "Remove access" goes past a folder that refuses GETACL, but a lost
+   * connection answers UNREACHABLE rather than the folders found before it: no later
+   * folder is asked, and the caller never takes a part for the whole.
+   */
+  @Test
+  void foldersHoldingAnswersUnreachableAtALostConnectionButSkipsARefusal() throws MessagingException {
+    IMAPFolder sent = (IMAPFolder) listed("Sent", "Sent");
+    IMAPFolder locked = (IMAPFolder) listed("Locked", "Locked");
+    IMAPFolder projects = (IMAPFolder) listed("Projects", "Projects");
+    IMAPFolder dropped = (IMAPFolder) listed("Dropped", "Dropped");
+    IMAPFolder archive = (IMAPFolder) listed("Archive", "Archive");
+    ownListing(sent, locked, projects, dropped, archive);
+    when(sent.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(locked.getACL()).thenThrow(new MessagingException("NO"));
+    when(projects.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(dropped.getACL()).thenThrow(new StoreClosedException(store, "BYE"));
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(projects).getACL();
+    verify(archive, never()).getACL();
+  }
+
+  /**
+   * EXO-90554 -- a LIST cut by a lost connection answers UNREACHABLE, so "Remove access"
+   * stops before anything is written; a LIST the server refuses still answers
+   * SERVER_REFUSED, and the caller falls back to the folders the grant recorded.
+   */
+  @Test
+  void foldersHoldingTellsALostConnectionOnTheListingFromARefusal() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenThrow(new StoreClosedException(store, "BYE"));
+
+    MailboxAclException lost = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+    assertEquals(MailboxAclException.UNREACHABLE, lost.getCode());
+
+    reset(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenThrow(new MessagingException("NO LIST refused"));
+
+    MailboxAclException refused = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+    assertEquals(MailboxAclException.SERVER_REFUSED, refused.getCode());
+  }
+
+  /**
+   * EXO-90554 -- the sweep has a time budget counted from before the LIST: once it is
+   * spent, no further folder is asked and the answer is UNREACHABLE. The budget is
+   * reached at equality, here on the second folder's turn.
+   */
+  @Test
+  void foldersHoldingAnswersUnreachableOnceTheSweepBudgetIsSpent() throws MessagingException {
+    IMAPFolder first = (IMAPFolder) listed("First", "First");
+    IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+    ownListing(first, second);
+    lenient().when(first.getACL()).thenReturn(new ACL[0]);
+    lenient().when(second.getACL()).thenReturn(new ACL[0]);
+    engine.clock = steppedClock(0L, TimeUnit.SECONDS.toNanos(ImapAclEngine.DEFAULT_SWEEP_SECONDS / 2));
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(first).getACL();
+    verify(second, never()).getACL();
+  }
+
+  /**
+   * A sweep that ends within its budget answers every folder found, on a clock whose
+   * deadline lies past {@link Long#MAX_VALUE}: the comparison holds across the overflow.
+   */
+  @Test
+  void foldersHoldingAnswersTheWholeSweepWithinItsBudgetAcrossTheClocksOverflow() throws MessagingException {
+    IMAPFolder first = (IMAPFolder) listed("First", "First");
+    IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+    ownListing(first, second);
+    when(first.getACL()).thenReturn(new ACL[0]);
+    when(second.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    engine.clock = steppedClock(Long.MAX_VALUE - TimeUnit.SECONDS.toNanos(1), TimeUnit.SECONDS.toNanos(1));
+
+    assertEquals(List.of("Second"), engine.foldersHolding(session(), IDENTIFIER));
+  }
+
+  /**
+   * The sweep's budget is read from {@value ImapAclEngine#SWEEP_SECONDS_PROPERTY}, the
+   * default when it is blank, not a number, or not positive.
+   */
+  @Test
+  void theSweepBudgetIsReadFromItsPropertyWithTheDefaultWhenMisconfigured() throws MessagingException {
+    try {
+      System.clearProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY);
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, " 120 ");
+      assertEquals(120, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "0");
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "soon");
+      assertEquals(ImapAclEngine.DEFAULT_SWEEP_SECONDS, engine.getSweepSeconds());
+
+      // A budget of 120 s outlasts two steps of 40 s; the default would not.
+      System.setProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY, "120");
+      IMAPFolder first = (IMAPFolder) listed("First", "First");
+      IMAPFolder second = (IMAPFolder) listed("Second", "Second");
+      ownListing(first, second);
+      when(first.getACL()).thenReturn(new ACL[0]);
+      when(second.getACL()).thenReturn(new ACL[0]);
+      engine.clock = steppedClock(0L, TimeUnit.SECONDS.toNanos(40));
+
+      assertEquals(List.of(), engine.foldersHolding(session(), IDENTIFIER));
+      verify(second).getACL();
+    } finally {
+      System.clearProperty(ImapAclEngine.SWEEP_SECONDS_PROPERTY);
+    }
+  }
+
+  /**
+   * DELETEACL on a lost connection is UNREACHABLE, kept apart from the server's NO, so
+   * "Remove access" can tell a folder that refuses from a server it can no longer ask.
+   */
+  @Test
+  void revokeTellsALostConnectionFromARefusal() throws MessagingException {
+    doThrow(new StoreClosedException(store, "BYE")).when(inbox).removeACL(IDENTIFIER);
+    assertEquals(MailboxAclException.UNREACHABLE,
+                 assertThrows(MailboxAclException.class, () -> engine.revoke(session(), "INBOX", IDENTIFIER)).getCode());
+
+    doThrow(new MessagingException("NO")).when(inbox).removeACL(IDENTIFIER);
+    assertEquals(MailboxAclException.SERVER_REFUSED,
+                 assertThrows(MailboxAclException.class, () -> engine.revoke(session(), "INBOX", IDENTIFIER)).getCode());
+  }
+
+  /**
+   * The owner's own LIST answers these folders, with no other namespace.
+   *
+   * @param folders the folders, in listing order
+   * @throws MessagingException never
+   */
+  private void ownListing(Folder... folders) throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenReturn(folders);
+  }
+
+  /**
+   * A clock that answers its start, then one step more on each reading.
+   *
+   * @param start the first reading
+   * @param step what each later reading adds
+   * @return the clock
+   */
+  private static LongSupplier steppedClock(long start, long step) {
+    AtomicLong now = new AtomicLong(start - step);
+    return () -> now.addAndGet(step);
   }
 
   /**

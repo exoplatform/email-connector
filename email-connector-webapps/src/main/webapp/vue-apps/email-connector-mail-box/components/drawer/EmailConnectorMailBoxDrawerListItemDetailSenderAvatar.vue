@@ -15,19 +15,32 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The sender's picture, or their initial when there is none to show: a message
-       whose full copy could not be read is shown from its list row, which carries no
-       avatar, and an empty 40 px image left a gap the header's layout collapsed into. -->
+  <!-- The sender's picture, or the coloured initials the server draws for a sender with
+       none (EmailConnectorUtils#getSenderDefaultAvatar), drawn here when the message
+       carries no picture: a list row never does, nor a message whose full copy could not
+       be read and is shown from its list row. Such a sender's picture is asked for from
+       the page's avatar cache (EmailConnectorSenderAvatars, EXO-90891) once the avatar
+       is in view. A company sender's brand logo (EXO-90893) comes after a person's photo
+       and before the initials, and falls back to them when it does not load. A plain
+       img: the list draws one per row, and its error event is what the fallback needs. -->
   <v-list-item-avatar
-    :color="avatarUrl ? null : 'primary'"
-    size="40">
-    <v-img v-if="avatarUrl" :src="avatarUrl" />
-    <span v-else class="white--text text-h6">{{ initial }}</span>
+    :color="avatarUrl ? null : initialsColor"
+    :size="size">
+    <img
+      v-if="avatarUrl"
+      :src="avatarUrl"
+      alt=""
+      @error="onImageError">
+    <span
+      v-else
+      :class="size < 40 ? 'caption' : 'text-h6'"
+      class="white--text">{{ initials }}</span>
   </v-list-item-avatar>
 </template>
 
 <script>
-import { personLabel } from '../../js/EmailRecipientDisplay.js';
+import { avatarColor, personLabel, senderAvatarInitials } from '../../js/EmailRecipientDisplay.js';
+import { isSenderLogoUrl, isSenderRowVerified, rememberSenderAvatar, requestPendingSenderLogo, senderAvatarUrl, unwatchSenderAvatar, watchSenderAvatar } from '../../js/EmailConnectorSenderAvatars.js';
 
 export default {
   props: {
@@ -35,25 +48,224 @@ export default {
       type: Object,
       default: () => null,
     },
+    // Who to draw instead of the message's sender: a draft row names the people of
+    // its conversation, not its owner ({name, address}, the address optional).
+    person: {
+      type: Object,
+      default: null,
+    },
+    size: {
+      type: Number,
+      default: 40,
+    },
   },
+  data: () => ({
+    logoFailed: false,
+  }),
   computed: {
     /**
-     * The sender's picture, when the message carries one.
+     * Who the avatar draws: the person asked for, else the message's sender.
+     *
+     * @returns {Object} {name, address}, or null
+     */
+    shown() {
+      return this.person || this.email?.sender || null;
+    },
+    /**
+     * The address whose picture the page's cache is asked for, when the message
+     * carries none of its own.
+     *
+     * @returns {String} the address, or null
+     */
+    lookupAddress() {
+      return this.shown?.avatarUrl ? null : this.shown?.address || null;
+    },
+    /**
+     * The picture the page's cache holds for the address, when the message carries
+     * none of its own: a person's photo, or the address's brand logo.
+     *
+     * @returns {String} the URL, or null
+     */
+    cachedUrl() {
+      return (this.lookupAddress && senderAvatarUrl(this.lookupAddress)) || null;
+    },
+    /**
+     * A person's photo: the message's own (never the server's generated initials, a
+     * data: URL), else the one the page's cache holds.
+     *
+     * @returns {String} the URL, or null
+     */
+    photoUrl() {
+      const own = this.shown?.avatarUrl;
+      if (own && !own.startsWith('data:')) {
+        return own;
+      }
+      return this.cachedUrl && !isSenderLogoUrl(this.cachedUrl) ? this.cachedUrl : null;
+    },
+    /**
+     * The sender's brand logo (EXO-90893), unless it failed to load: the one the
+     * reader's server offered for this message, else the one the page's cache holds for
+     * the address, shown on a row the server vouched for only -- listed so, or said so
+     * since (EXO-90909) -- so a spoofed mail from the same address keeps its initials.
+     * A message the reader's server would have offered the logo for, had it been
+     * resolved ({@code logoPending}), shows the one the cache gets once the server says
+     * it was found (EXO-90909). Never for a draft row's people.
+     *
+     * @returns {String} the URL, or null
+     */
+    logoUrl() {
+      if (this.logoFailed || this.person) {
+        return null;
+      }
+      const sender = this.email?.sender;
+      if (sender?.logoUrl) {
+        return sender.logoUrl;
+      }
+      if (sender?.logoPending) {
+        const learnt = senderAvatarUrl(sender.address);
+        return isSenderLogoUrl(learnt) ? learnt : null;
+      }
+      const verified = sender?.domainVerified || isSenderRowVerified(this.email?.id);
+      return verified && isSenderLogoUrl(this.cachedUrl) ? this.cachedUrl : null;
+    },
+    /**
+     * What the avatar draws: a person's photo, else the brand logo, else the server's
+     * generated initials, else nothing (the initials are drawn here).
      *
      * @returns {String} the URL, or null
      */
     avatarUrl() {
-      return this.email?.sender?.avatarUrl || null;
+      return this.photoUrl || this.logoUrl || this.shown?.avatarUrl || null;
     },
     /**
-     * The first letter of the sender's name, or of their address when they have none.
+     * What the reader teaches the page about its sender: the logo the server offered,
+     * else the picture it gave.
      *
-     * @returns {String} the initial, upper-cased
+     * @returns {String} the URL, or null
      */
-    initial() {
-      // personLabel: the name, else the address -- never the word null.
-      const label = (personLabel(this.email?.sender) || '').trim() || '?';
-      return (label.charAt(0) || '?').toUpperCase();
+    learntUrl() {
+      return (!this.person && this.email?.sender?.logoUrl) || this.shown?.avatarUrl || null;
+    },
+    /**
+     * The address of a sender whose brand logo the reader's server was still looking up
+     * (EXO-90909), asked for once the reader shows it.
+     *
+     * @returns {String} the address, or null
+     */
+    pendingLogoAddress() {
+      return (!this.person && this.email?.sender?.logoPending && this.email.sender.address) || null;
+    },
+    /**
+     * The name the initials and their colour are read off: the name, else the address
+     * -- the label the server draws its own initials from.
+     *
+     * @returns {String} the label
+     */
+    label() {
+      return personLabel(this.shown);
+    },
+    /**
+     * The initials, as the server draws them.
+     *
+     * @returns {String} up to two upper-cased initials, ? for nobody
+     */
+    initials() {
+      return senderAvatarInitials(this.label);
+    },
+    /**
+     * The colour behind the initials, by the server's formula.
+     *
+     * @returns {String} the colour
+     */
+    initialsColor() {
+      return avatarColor(this.label);
+    },
+  },
+  watch: {
+    /**
+     * Asks for the picture of a sender the row now shows instead.
+     *
+     * @returns {void}
+     */
+    lookupAddress() {
+      this.watchAvatar();
+    },
+    /**
+     * Records the picture a whole message carries for its sender, for the list.
+     *
+     * @returns {void}
+     */
+    learntUrl: {
+      immediate: true,
+      handler(url) {
+        if (url) {
+          rememberSenderAvatar(this.shown.address, url);
+        }
+      },
+    },
+    /**
+     * Asks once for the logo of a sender the reader's server was still looking up: the
+     * word that it was found may have come before this reader did (EXO-90909). After
+     * learntUrl, which records the reader's own answer first.
+     *
+     * @returns {void}
+     */
+    pendingLogoAddress: {
+      immediate: true,
+      handler(address) {
+        if (address) {
+          requestPendingSenderLogo(address);
+        }
+      },
+    },
+    /**
+     * Gives the logo of another message its chance.
+     *
+     * @returns {void}
+     */
+    'email.sender.logoUrl'() {
+      this.logoFailed = false;
+    },
+  },
+  /**
+   * Asks for the sender's picture once the avatar is in view.
+   *
+   * @returns {void}
+   */
+  mounted() {
+    this.watchAvatar();
+  },
+  /**
+   * Stops watching the avatar for coming into view.
+   *
+   * @returns {void}
+   */
+  beforeDestroy() {
+    unwatchSenderAvatar(this.$el);
+  },
+  methods: {
+    /**
+     * Falls back on the sender's other picture when the brand logo cannot be loaded:
+     * the server restarted since it offered it, or logos were switched off.
+     *
+     * @returns {void}
+     */
+    onImageError() {
+      if (!this.logoFailed && this.avatarUrl === this.logoUrl) {
+        this.logoFailed = true;
+      }
+    },
+    /**
+     * Has the page's cache ask for the sender's picture once the avatar is in view.
+     *
+     * @returns {void}
+     */
+    watchAvatar() {
+      if (this.lookupAddress) {
+        watchSenderAvatar(this.$el, this.lookupAddress);
+      } else {
+        unwatchSenderAvatar(this.$el);
+      }
     },
   },
 };
