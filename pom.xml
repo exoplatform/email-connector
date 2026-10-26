@@ -9,7 +9,7 @@
   </parent>
   <groupId>org.exoplatform.addons.email-connector</groupId>
   <artifactId>email-connector-parent</artifactId>
-  <version>7.3.x-ai-contribution-SNAPSHOT</version>
+  <version>7.3.x-rtd-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>eXo Email Connector - Parent POM</name>
   <description>eXo Email Connector Addon</description>
@@ -26,9 +26,9 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
-    <io.meeds.mcp-server.version>7.3.x-ai-contribution-SNAPSHOT</io.meeds.mcp-server.version>
-    <org.exoplatform.documents.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.documents.version>
+    <org.exoplatform.commons-exo.version>7.3.x-rtd-SNAPSHOT</org.exoplatform.commons-exo.version>
+    <io.meeds.mcp-server.version>7.3.x-rtd-SNAPSHOT</io.meeds.mcp-server.version>
+    <org.exoplatform.documents.version>7.3.x-rtd-SNAPSHOT</org.exoplatform.documents.version>
     <!-- vCard parsing for the CardDAV address book sync -->
     <ez-vcard.version>0.12.1</ez-vcard.version>
     <!-- iCalendar parsing of the invitations a mail carries: the version the agenda
