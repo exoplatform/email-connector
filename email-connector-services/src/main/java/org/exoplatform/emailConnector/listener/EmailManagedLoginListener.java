@@ -40,10 +40,10 @@ import jakarta.annotation.PostConstruct;
  * at login, and again each time the platform registers the session anew: the
  * registry keeps its states in caches that expire an hour after the registration
  * ({@code exo.cache.portal.ConversationRegistry.TimeToLive}, 3600 by default), and
- * the next request of a still-active session registers it again. A user who
- * disconnects their mailbox is therefore attached again within the hour, or at their
- * next login - the same rule either way; a user the server refuses is retried at the
- * same pace. Never per request. Nothing
+ * the next request of a still-active session registers it again. A governed user not
+ * yet connected, refused before, or on another connector is therefore attached or
+ * switched within the hour, or at their next login - the same rule either way. Never
+ * per request. Nothing
  * here needs to be cheap beyond "queue and return": the enrolment itself runs on the
  * service's own executor, and this listener is deliberately <b>not</b> {@code @Asynchronous} - the kernel's
  * asynchronous listener pool is one thread shared by every asynchronous listener of
