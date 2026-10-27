@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.senderlogo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,14 +44,19 @@ import org.junit.jupiter.api.Test;
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.utils.SenderLogoUtils;
 
+import io.meeds.commons.http.SafeFetchPolicy;
+import io.meeds.commons.http.SafeFetchPolicyBuilder;
+import io.meeds.commons.http.SenderLogoTestPolicies;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 /**
  * The sender logo fetch (EXO-90893) against a stub server on loopback, standing for
  * the public internet: BIMI under an enforced DMARC policy, the icon fallback, and every
- * guard -- internal addresses at connect time and after a redirect, the redirect
- * count, the size limit, the declared and the real type, the timeout, https only.
+ * guard the platform's fetcher applies under this policy -- internal addresses at
+ * connect time and after a redirect, the redirect count, the size limit, the declared
+ * and the real type, the timeout, https only.
  */
 class SenderLogoFetcherTest {
 
@@ -121,16 +127,7 @@ class SenderLogoFetcherTest {
     hosts.put("loopback.example", new InetAddress[] { stub });
     hosts.put("internal.example", new InetAddress[] { InetAddress.getByAddress(new byte[] { 10, 0, 0, 5 }) });
     hosts.put("metadata.example", new InetAddress[] { InetAddress.getByAddress(new byte[] { (byte) 169, (byte) 254, (byte) 169, (byte) 254 }) });
-    SenderLogoAddressGuard guard = new SenderLogoAddressGuard(Set.of("http"), Set.of(port), this::resolve, PUBLIC_HOSTS);
-    fetcher = new SenderLogoFetcher(guard,
-                                    this::lookup,
-                                    1024,
-                                    PAGE_LIMIT,
-                                    Duration.ofSeconds(2),
-                                    Duration.ofMillis(500),
-                                    Duration.ofSeconds(2),
-                                    2,
-                                    "http://%s:" + port + "/favicon.ico");
+    fetcher = fetcher(this::lookup);
   }
 
   /**
@@ -372,6 +369,48 @@ class SenderLogoFetcherTest {
   }
 
   /**
+   * A logo may declare the image types a mail reader shows and the three names of a
+   * Windows icon, in any case and with parameters ({@code SenderLogoUtils.DECLARED_TYPES});
+   * any other declared type is refused, bytes that are a real image included.
+   */
+  @Test
+  void aLogoMayDeclareTheImageTypesOnly() {
+    String[] accepted = { "image/svg+xml", "IMAGE/PNG", "image/jpeg", "image/webp; charset=binary", "image/x-icon",
+        "image/vnd.microsoft.icon", "image/ico" };
+    String[] refused = { "application/octet-stream", "image/gif", "image/bmp", "text/xml", "application/javascript",
+        "text/html", "text/plain" };
+    for (int i = 0; i < accepted.length; i++) {
+      answers.put("/accepted/" + i, ok(accepted[i], PNG));
+      assertNotNull(fetcher.fetch(url("brand.example", "/accepted/" + i), Set.of(SenderLogoUtils.PNG)), accepted[i]);
+    }
+    for (int i = 0; i < refused.length; i++) {
+      answers.put("/refused/" + i, ok(refused[i], PNG));
+      assertNull(fetcher.fetch(url("brand.example", "/refused/" + i), Set.of(SenderLogoUtils.PNG)), refused[i]);
+    }
+  }
+
+  /**
+   * A home page is read for its declared icon when it declares HTML or XHTML, in any
+   * case and with parameters ({@code SenderLogoUtils.PAGE_TYPES}), and is not parsed
+   * when it declares anything else.
+   */
+  @Test
+  void aHomePageMustDeclareHtmlOrXhtml() {
+    byte[] html = "<link rel=\"icon\" href=\"/declared.png\">".getBytes(StandardCharsets.UTF_8);
+    answers.put("/declared.png", ok("image/png", PNG));
+    for (String declared : new String[] { "text/html; charset=utf-8", "TEXT/HTML", "Application/XHTML+XML" }) {
+      answers.put("/", ok(declared, html));
+      assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource(), declared);
+    }
+    for (String declared : new String[] { "text/xml", "application/xml", "text/plain", "image/png" }) {
+      hits.clear();
+      answers.put("/", ok(declared, html));
+      assertFalse(fetcher.resolve("brand.example").isPresent(), declared);
+      assertEquals(List.of("/favicon.ico", "/"), hits, declared);
+    }
+  }
+
+  /**
    * A server that does not answer in time gives nothing.
    */
   @Test
@@ -381,13 +420,29 @@ class SenderLogoFetcherTest {
   }
 
   /**
-   * The production fetcher reads https only: a plain http URL is refused before any
-   * connection, and so is the logo of a BIMI record pointing at one.
+   * The production fetcher reads https on port 443 only, public addresses only,
+   * nothing exempted, two redirects at most, within its own timeouts and under its
+   * own User-Agent rather than the shared fetcher's defaults: pinned on its policy,
+   * since a plain http URL refused by its shape and a name the real DNS cannot
+   * resolve both give "no logo". And indeed a plain http URL is refused before any
+   * connection, the logo of a BIMI record pointing at one included.
    */
   @Test
   void productionReadsHttpsOnly() {
     SenderLogoFetcher production = new SenderLogoFetcher(this::lookup);
     try {
+      assertEquals(Set.of("https"), production.policy().getAllowedSchemes());
+      assertEquals(Set.of(443), production.policy().getAllowedPorts());
+      assertFalse(production.policy().isAnyPortAllowed());
+      assertFalse(production.policy().isInternalAddressesAllowed());
+      assertTrue(production.policy().getExemptHosts().isEmpty());
+      assertTrue(production.policy().getExemptAddresses().isEmpty());
+      assertEquals(SenderLogoFetcher.MAX_REDIRECTS, production.policy().getMaxRedirects());
+      assertEquals(SenderLogoFetcher.PAGE_MAX_BYTES, production.policy().getMaxBytes(), "the ceiling of every read, the page's");
+      assertEquals(SenderLogoFetcher.CONNECT_TIMEOUT, production.policy().getConnectTimeout());
+      assertEquals(SenderLogoFetcher.READ_TIMEOUT, production.policy().getReadTimeout());
+      assertEquals(SenderLogoFetcher.TOTAL_TIMEOUT, production.policy().getTotalTimeout());
+      assertEquals("eXo-Email-Connector-Sender-Logo/1.0", production.policy().getUserAgent());
       answers.put("/favicon.ico", ok("image/png", PNG));
       assertNull(production.fetch(url("brand.example", "/favicon.ico"), Set.of(SenderLogoUtils.PNG)));
       assertNull(production.fetch("http://brand.example/favicon.ico", Set.of(SenderLogoUtils.PNG)));
@@ -519,22 +574,26 @@ class SenderLogoFetcherTest {
   }
 
   /**
-   * A fetcher over the test names with another DNS.
+   * A fetcher over the test names: plain http at the stub's port, the public names
+   * exempted, 1 KB per logo, {@link #PAGE_LIMIT} per page, short timeouts, two
+   * redirects.
    *
    * @param dns the DNS
    * @return the fetcher
    */
   private SenderLogoFetcher fetcher(DnsTxtLookup dns) {
-    SenderLogoAddressGuard guard = new SenderLogoAddressGuard(Set.of("http"), Set.of(port), this::resolve, PUBLIC_HOSTS);
-    return new SenderLogoFetcher(guard,
-                                 dns,
-                                 1024,
-                                 PAGE_LIMIT,
-                                 Duration.ofSeconds(2),
-                                 Duration.ofMillis(500),
-                                 Duration.ofSeconds(2),
-                                 2,
-                                 "http://%s:" + port + "/favicon.ico");
+    SafeFetchPolicyBuilder builder = SafeFetchPolicy.builder()
+                                                    .allowedSchemes(Set.of("http"))
+                                                    .allowedPorts(Set.of(port))
+                                                    .resolver(this::resolve);
+    SafeFetchPolicy policy = SenderLogoTestPolicies.exemptHosts(builder, PUBLIC_HOSTS)
+                                                   .maxBytes(PAGE_LIMIT)
+                                                   .maxRedirects(2)
+                                                   .connectTimeout(Duration.ofSeconds(2))
+                                                   .readTimeout(Duration.ofMillis(500))
+                                                   .totalTimeout(Duration.ofSeconds(2))
+                                                   .build();
+    return new SenderLogoFetcher(policy, dns, 1024, PAGE_LIMIT, "http://%s:" + port + "/favicon.ico");
   }
 
   /**
