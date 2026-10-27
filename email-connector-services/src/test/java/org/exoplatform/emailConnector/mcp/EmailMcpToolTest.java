@@ -80,9 +80,12 @@ import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
+
+import io.meeds.social.timezone.service.UserTimeZoneService;
 
 class EmailMcpToolTest {
 
@@ -109,7 +112,13 @@ class EmailMcpToolTest {
     emailDelegationService = Mockito.mock(EmailDelegationService.class);
     readReceiptService = Mockito.mock(ReadReceiptService.class);
     when(readReceiptService.getSettings(USERNAME)).thenReturn(new ReadReceiptSettings());
-    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService, readReceiptService, Mockito.mock(EmailSignatureService.class)) {
+    emailMcpTool = new EmailMcpTool(emailBoxService,
+                                    userEmailSettingService,
+                                    emailDelegationService,
+                                    readReceiptService,
+                                    Mockito.mock(EmailSignatureService.class),
+                                    Mockito.mock(EmailScheduledSendService.class),
+                                    Mockito.mock(UserTimeZoneService.class)) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;

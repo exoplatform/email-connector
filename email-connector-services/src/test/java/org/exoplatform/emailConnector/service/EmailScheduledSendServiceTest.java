@@ -33,6 +33,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -48,6 +49,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.AfterEach;
@@ -55,6 +57,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -1184,6 +1187,190 @@ public class EmailScheduledSendServiceTest {
     Identity identity = new Identity(USER);
     identity.setEnable(true);
     return identity;
+  }
+
+  /**
+   * EXO-91996 -- a draft scheduled as stored is validated against the clock before the
+   * mailbox service is called, then scheduled through its stored-draft path: the
+   * caller's check runs on the stored row first, a stored row with no recipient is
+   * refused, and a valid one gets a SCHEDULED row due at the chosen instant.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aDraftScheduledAsStoredIsCheckedOnTheStoredRowThenScheduled() throws Exception {
+    long at = service.now().getTime() + 3_600_000L;
+    assertRefused(EmailScheduledSendService.DATE_TOO_SOON,
+                  () -> service.scheduleAsStored(LOCAL_ID, service.now().getTime() + 30_000, "UTC", USER, row -> {
+                  }));
+    assertRefused(EmailScheduledSendService.INVALID_TIME_ZONE, () -> service.scheduleAsStored(LOCAL_ID, at, "Mars/Olympus", USER, row -> {
+    }));
+    verify(emailBoxService, never()).scheduleDraftAsStored(anyString(), anyString(), any(), any());
+
+    Email stored = draft();
+    stored.setId(9L);
+    when(emailBoxService.scheduleDraftAsStored(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(3);
+      return scheduler.apply(stored);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    List<Email> checked = new ArrayList<>();
+
+    ScheduledEmail scheduled = service.scheduleAsStored(LOCAL_ID, at, "Europe/Paris", USER, checked::add);
+
+    assertEquals(List.of(stored), checked);
+    ArgumentCaptor<EmailScheduledSend> row = ArgumentCaptor.forClass(EmailScheduledSend.class);
+    verify(storage).create(row.capture());
+    assertEquals(9L, row.getValue().getEmailId());
+    assertEquals(ScheduledSendStatus.SCHEDULED, row.getValue().getStatus());
+    assertEquals(at, row.getValue().getScheduledDate().getTime());
+    assertEquals("Europe/Paris", scheduled.getTimeZone());
+
+    assertRefused("refused", () -> service.scheduleAsStored(LOCAL_ID, at, "UTC", USER, refused -> {
+      throw new IllegalArgumentException("refused");
+    }));
+    stored.setTo(List.of());
+    assertRefused(EmailScheduledSendService.RECIPIENTS_MANDATORY, () -> service.scheduleAsStored(LOCAL_ID, at, "UTC", USER, checked::add));
+    verify(storage, times(1)).create(any(EmailScheduledSend.class));
+  }
+
+  /**
+   * EXO-91996 -- one scheduled mail is read as the view lists it, and a handle that
+   * names none of the owner's is not found.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void oneScheduledMailIsReadAsTheViewListsIt() throws Exception {
+    EmailScheduledSend row = new EmailScheduledSend();
+    row.setUserId(USER);
+    row.setDraftLocalId(LOCAL_ID);
+    row.setScheduledDate(NOW);
+    row.setTimeZone("Europe/Paris");
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+
+    ScheduledEmail scheduled = service.getScheduledEmail(LOCAL_ID, USER);
+
+    assertEquals(LOCAL_ID, scheduled.getDraftLocalId());
+    assertEquals("See you tomorrow", scheduled.getSubject());
+    assertEquals(NOW.getTime(), scheduled.getScheduledDate());
+    assertThrows(ObjectNotFoundException.class, () -> service.getScheduledEmail("other", USER));
+    assertThrows(ObjectNotFoundException.class, () -> service.getScheduledEmail(" ", USER));
+  }
+
+  /**
+   * EXO-91996 -- a checked reschedule or cancel changes the schedule first, then checks
+   * the mail as its draft then stands, in the mailbox service's one transaction; a check
+   * that refuses the mail is thrown from inside it, which undoes the change; a date is
+   * judged before the transaction.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCheckedRescheduleOrCancelChangesTheScheduleThenChecksTheMailInOneTransaction() throws Exception {
+    long at = service.now().getTime() + 3_600_000L;
+    EmailScheduledSend row = new EmailScheduledSend();
+    row.setUserId(USER);
+    row.setDraftLocalId(LOCAL_ID);
+    row.setScheduledDate(NOW);
+    row.setTimeZone("UTC");
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+    Email editedDraft = draft();
+    editedDraft.setSubject("Edited in the Email app");
+    List<String> steps = new ArrayList<>();
+    when(emailBoxService.changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      steps.add("transaction");
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(2)).take();
+      Consumer<Email> check = invocation.getArgument(3);
+      check.accept(editedDraft);
+      return editedDraft;
+    });
+    when(storage.reschedule(eq(USER), eq(LOCAL_ID), any(Date.class), eq("UTC"), any(Date.class))).thenAnswer(invocation -> {
+      steps.add("reschedule");
+      return true;
+    });
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenAnswer(invocation -> {
+      steps.add("cancel");
+      return true;
+    });
+    Consumer<ScheduledEmail> check = mail -> steps.add("check " + mail.getSubject());
+
+    service.reschedule(LOCAL_ID, at, "UTC", USER, check);
+    service.cancel(LOCAL_ID, USER, check);
+
+    assertEquals(List.of("transaction",
+                         "reschedule",
+                         "check Edited in the Email app",
+                         "transaction",
+                         "cancel",
+                         "check Edited in the Email app"),
+                 steps);
+    verify(storage).reschedule(eq(USER), eq(LOCAL_ID), eq(new Date(at)), eq("UTC"), any(Date.class));
+
+    Consumer<ScheduledEmail> refuse = mail -> {
+      throw new IllegalArgumentException("refused");
+    };
+    assertRefused("refused", () -> service.reschedule(LOCAL_ID, at, "UTC", USER, refuse));
+    assertRefused("refused", () -> service.cancel(LOCAL_ID, USER, refuse));
+
+    assertRefused(EmailScheduledSendService.DATE_TOO_SOON,
+                  () -> service.reschedule(LOCAL_ID, service.now().getTime() + 30_000, "UTC", USER, check));
+    verify(emailBoxService, times(4)).changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any());
+    assertThrows(ObjectNotFoundException.class, () -> service.cancel("other", USER, check));
+  }
+
+  /**
+   * EXO-91996 -- a checked cancel says the mail was UNCERTAIN exactly when the removal
+   * took it in that state: the removal of a confirmed state runs first, the
+   * UNCERTAIN-only one only when it took nothing, whatever the status read before the
+   * transaction.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCheckedCancelSaysUncertainExactlyWhenTheRemovalTookAnUncertainMail() throws Exception {
+    EmailScheduledSend row = new EmailScheduledSend();
+    row.setUserId(USER);
+    row.setDraftLocalId(LOCAL_ID);
+    row.setScheduledDate(NOW);
+    row.setTimeZone("UTC");
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+    when(emailBoxService.changeScheduleIfDraftSays(eq(LOCAL_ID), eq(USER), any(), any())).thenAnswer(invocation -> {
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(2)).take();
+      return draft();
+    });
+
+    // Read SCHEDULED, its run ended UNCERTAIN meanwhile: the confirmed removal takes
+    // nothing, the UNCERTAIN-only one takes it.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(false);
+    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(true);
+    assertEquals(ScheduledSendStatus.UNCERTAIN, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus());
+    InOrder order = inOrder(storage);
+    order.verify(storage).cancelConfirmed(USER, LOCAL_ID);
+    order.verify(storage).cancelUncertain(USER, LOCAL_ID);
+
+    // Read UNCERTAIN, retried and ended in a confirmed state since: not said uncertain.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(true);
+    row.setStatus(ScheduledSendStatus.UNCERTAIN);
+    assertNull(service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus(), "read UNCERTAIN before, removed in a confirmed state: not known, never UNCERTAIN");
+    verify(storage, times(1)).cancelUncertain(USER, LOCAL_ID);
+
+    // Read SCHEDULED, being sent at the first removal, back to SCHEDULED (a retry) before
+    // the second: the confirmed removal, tried again, takes it.
+    when(storage.cancelConfirmed(USER, LOCAL_ID)).thenReturn(false, true);
+    when(storage.cancelUncertain(USER, LOCAL_ID)).thenReturn(false);
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    assertEquals(ScheduledSendStatus.SCHEDULED, service.cancel(LOCAL_ID, USER, mail -> {
+    }).getStatus());
+    verify(storage, never()).cancel(USER, LOCAL_ID);
   }
 
   /**

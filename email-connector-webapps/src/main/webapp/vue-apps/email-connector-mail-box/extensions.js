@@ -278,11 +278,12 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
       opening = search;
     } else if (mailbox) {
       opening.mailbox = mailbox;
-    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|DRAFTS|SUGGESTIONS|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
+    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|DRAFTS|SCHEDULED|SUGGESTIONS|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
       // folder=<key> alone opens that folder: the link a mail filter's notification
       // carries by mail and push when it names no mail (EXO-90654), SUGGESTIONS the
-      // Suggestions view, the link of the waiting-suggestions digest (EXO-90851), and
-      // DRAFTS the drafts an assistant prepared (EXO-91674).
+      // Suggestions view, the link of the waiting-suggestions digest (EXO-90851),
+      // DRAFTS the drafts an assistant prepared (EXO-91674), and SCHEDULED the mails
+      // an assistant scheduled (EXO-91996).
       opening.folder = urlParams.get('folder');
     }
     window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
