@@ -84,6 +84,11 @@ public class EmailSearchCriteria {
   // with emailConnector.search.attachmentNameTooLong. Implies an attachment.
   private String     attachmentName;
 
+  // Only the message carrying exactly this Message-ID (EXO-91675): how an assistant finds
+  // the mail a draft it prepared became once sent, the draft's pinned id being the one
+  // the sent mail carries.
+  private String     messageId;
+
   /**
    * Whether at least one criterion is set: a search with none would list the whole
    * folder, which is what the folder's own list is for.
@@ -93,7 +98,7 @@ public class EmailSearchCriteria {
   public boolean hasCriterion() {
     return StringUtils.isNotBlank(query) || StringUtils.isNotBlank(from) || StringUtils.isNotBlank(to)
         || StringUtils.isNotBlank(words) || unreadOnly || favoritesOnly || attachmentsOnly || sinceDays != null
-        || after != null || before != null || categoryIds != null && !categoryIds.isEmpty() || hasAttachmentFileCriterion();
+        || after != null || before != null || StringUtils.isNotBlank(messageId) || categoryIds != null && !categoryIds.isEmpty() || hasAttachmentFileCriterion();
   }
 
   /**
