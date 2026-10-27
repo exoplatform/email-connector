@@ -421,10 +421,11 @@ class SenderLogoFetcherTest {
 
   /**
    * The production fetcher reads https on port 443 only, public addresses only,
-   * nothing exempted, two redirects at most: pinned on its policy, since a plain
-   * http URL refused by its shape and a name the real DNS cannot resolve both
-   * give "no logo". And indeed a plain http URL is refused before any connection,
-   * the logo of a BIMI record pointing at one included.
+   * nothing exempted, two redirects at most, within its own timeouts and under its
+   * own User-Agent rather than the shared fetcher's defaults: pinned on its policy,
+   * since a plain http URL refused by its shape and a name the real DNS cannot
+   * resolve both give "no logo". And indeed a plain http URL is refused before any
+   * connection, the logo of a BIMI record pointing at one included.
    */
   @Test
   void productionReadsHttpsOnly() {
@@ -438,7 +439,10 @@ class SenderLogoFetcherTest {
       assertTrue(production.policy().getExemptAddresses().isEmpty());
       assertEquals(SenderLogoFetcher.MAX_REDIRECTS, production.policy().getMaxRedirects());
       assertEquals(SenderLogoFetcher.PAGE_MAX_BYTES, production.policy().getMaxBytes(), "the ceiling of every read, the page's");
+      assertEquals(SenderLogoFetcher.CONNECT_TIMEOUT, production.policy().getConnectTimeout());
+      assertEquals(SenderLogoFetcher.READ_TIMEOUT, production.policy().getReadTimeout());
       assertEquals(SenderLogoFetcher.TOTAL_TIMEOUT, production.policy().getTotalTimeout());
+      assertEquals("eXo-Email-Connector-Sender-Logo/1.0", production.policy().getUserAgent());
       answers.put("/favicon.ico", ok("image/png", PNG));
       assertNull(production.fetch(url("brand.example", "/favicon.ico"), Set.of(SenderLogoUtils.PNG)));
       assertNull(production.fetch("http://brand.example/favicon.ico", Set.of(SenderLogoUtils.PNG)));
