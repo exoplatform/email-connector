@@ -1645,9 +1645,9 @@ public class MasterChangelogTest {
     boolean from = false;
     for (ChangeSet changeSet : new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).getDatabaseChangeLog()
                                                                                                     .getChangeSets()) {
-      // Compared by number, not by equality: a changeset another vendor filters out at
+      // Compared by position, not by equality: a changeset another vendor filters out at
       // parse time (1.0.0-62 on MySQL) never appears in this list to be matched.
-      from = from || sequenceNumber(changeSet.getId()) >= sequenceNumber(fromId);
+      from = from || position(changeSet.getId()) >= position(fromId);
       if (from && appliesTo(changeSet, dbms)) {
         selected.add(changeSet);
       }
@@ -1656,29 +1656,57 @@ public class MasterChangelogTest {
   }
 
   /**
-   * Whether a changeset lies outside a bounded range of ids, by number: the file is read
-   * in its own order, where a changeset appended later may carry a lower number than
-   * the one before it (1.0.0-86 after 1.0.0-87), so a range is never "from here to
-   * there in the file".
+   * Whether a changeset lies outside a bounded range of ids, by position in the file: a
+   * range runs from one changeset of the file to another, both included. Ids do not order
+   * changesets: a task-scoped id ({@code 1.0.0-exo-<task>-NN}) carries no sequence number.
    *
    * @param id the changeset's id
    * @param fromId the first id of the range
    * @param throughId the last id of the range
-   * @return true when its number is below the first or above the last
+   * @return true when it stands before the first or after the last
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static boolean outside(String id, String fromId, String throughId) {
-    int number = sequenceNumber(id);
-    return number < sequenceNumber(fromId) || number > sequenceNumber(throughId);
+  private boolean outside(String id, String fromId, String throughId) throws Exception {
+    int position = position(id);
+    return position < position(fromId) || position > position(throughId);
   }
 
   /**
-   * The number at the end of a {@code 1.0.0-N} changeset id.
+   * The position of a changeset in the file, counted over every changeset whatever its
+   * {@code dbms}, so a changeset a vendor filters out at parse time still has one.
    *
    * @param id the id
-   * @return N
+   * @return its zero-based position
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static int sequenceNumber(String id) {
-    return Integer.parseInt(id.substring(id.lastIndexOf('-') + 1));
+  private int position(String id) throws Exception {
+    if (changeSetIds == null) {
+      changeSetIds = changeSetIdsInFileOrder();
+    }
+    int position = changeSetIds.indexOf(id);
+    assertTrue(position >= 0, id + " is not a changeset of " + CHANGELOG);
+    return position;
+  }
+
+  private static List<String> changeSetIds;
+
+  /**
+   * The id of every changeset of the file, in file order, whatever its {@code dbms}.
+   *
+   * @return the ids
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  private List<String> changeSetIdsInFileOrder() throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    List<String> ids = new ArrayList<>();
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        ids.add(((Element) changeSets.item(i)).getAttribute("id"));
+      }
+    }
+    return ids;
   }
 
   /**
