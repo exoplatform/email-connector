@@ -191,7 +191,7 @@ export default {
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.success'), 'success');
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error'))
+        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error'))
         .finally(() => this.loading = false);
     },
   }

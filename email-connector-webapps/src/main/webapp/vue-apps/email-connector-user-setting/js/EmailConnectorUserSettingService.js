@@ -51,6 +51,39 @@ export function getConnectionRequirements() {
   });
 }
 
+/**
+ * The code the server answers with, in a 403 body, when managed mode refuses a change
+ * of the user's connection; it is also the label's i18n key.
+ */
+export const CONNECTION_LOCKED_CODE = 'emailConnector.managed.connectionLocked';
+
+/**
+ * Builds the error a failed connection change rejects with: its `code` is
+ * {@link CONNECTION_LOCKED_CODE} when managed mode refused the change.
+ *
+ * @param {Response} resp the failed response
+ * @param {String} text the error's message
+ * @returns {Promise<Error>} the error to throw
+ */
+function connectionChangeError(resp, text) {
+  return resp.text().catch(() => '').then(message => {
+    const error = new Error(text);
+    error.status = resp?.status;
+    if (resp?.status === 403 && message?.includes(CONNECTION_LOCKED_CODE)) {
+      error.code = CONNECTION_LOCKED_CODE;
+    }
+    return error;
+  });
+}
+
+/**
+ * Saves the user's mail settings, the connection included.
+ *
+ * @param {Object} userEmailSetting the settings to save
+ * @param {Boolean} broadcast whether the mailbox cleanup event is broadcast
+ * @returns {Promise} rejects with an error whose `code` is
+ *          {@link CONNECTION_LOCKED_CODE} when managed mode refuses the change
+ */
 export function setUserEmailSetting(userEmailSetting, broadcast) {
   return fetch(`/email-connector/rest/user-email-setting?broadcast=${broadcast}`, {
     headers: {
@@ -61,11 +94,19 @@ export function setUserEmailSetting(userEmailSetting, broadcast) {
     method: 'PUT'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when setting user email setting');
+      return connectionChangeError(resp, 'Error when setting user email setting').then(error => {
+        throw error;
+      });
     }
   });
 }
 
+/**
+ * Disconnects the user's mailbox.
+ *
+ * @returns {Promise} rejects with an error whose `code` is
+ *          {@link CONNECTION_LOCKED_CODE} when managed mode refuses the disconnection
+ */
 export function deleteUserEmailSetting() {
   return fetch('/email-connector/rest/user-email-setting', {
     headers: {
@@ -75,7 +116,9 @@ export function deleteUserEmailSetting() {
     method: 'DELETE'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when deleting user email setting');
+      return connectionChangeError(resp, 'Error when deleting user email setting').then(error => {
+        throw error;
+      });
     }
   });
 }
