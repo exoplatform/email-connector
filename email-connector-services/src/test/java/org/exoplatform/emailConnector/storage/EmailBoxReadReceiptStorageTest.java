@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +41,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.DraftState;
@@ -121,6 +123,51 @@ class EmailBoxReadReceiptStorageTest {
 
     Email passing = emailBoxStorage.createEmail(incoming("<honest@partner.example>", MailFolder.INBOX, 12L));
     assertNull(read(passing.getId(), USER, "alice@corp.example").getContent().getAuthFailure());
+  }
+
+  /**
+   * EXO-91995: the sync's message kind and a bounce's failed addresses are stored with
+   * the row and read back by the reader and by the search of the local copy; a row with
+   * no kind (synced before it was decided) reads back none, never NORMAL; and a list of
+   * failed addresses wider than the column is cut at an address, never inside one.
+   */
+  @Test
+  void theMessageKindIsStoredAndReadBack() {
+    Email bounce = incoming("<dsn@mx.example>", MailFolder.INBOX, 21L);
+    bounce.setMessageKind(MessageKind.BOUNCE);
+    bounce.setBouncedRecipients(List.of("gone@prospect.example", "left@prospect.example"));
+    Email created = emailBoxStorage.createEmail(bounce);
+    Email read = read(created.getId(), USER, "alice@corp.example");
+    assertEquals(MessageKind.BOUNCE, read.getMessageKind());
+    assertEquals(List.of("gone@prospect.example", "left@prospect.example"), read.getBouncedRecipients());
+
+    Email reply = incoming("<ooo@prospect.example>", MailFolder.INBOX, 22L);
+    reply.setMessageKind(MessageKind.AUTO_REPLY);
+    Email createdReply = emailBoxStorage.createEmail(reply);
+    assertEquals(MessageKind.AUTO_REPLY, read(createdReply.getId(), USER, "alice@corp.example").getMessageKind());
+    assertEquals(List.of(), read(createdReply.getId(), USER, "alice@corp.example").getBouncedRecipients());
+
+    Email unknown = emailBoxStorage.createEmail(incoming("<old@partner.example>", MailFolder.INBOX, 23L));
+    assertNull(read(unknown.getId(), USER, "alice@corp.example").getMessageKind());
+
+    Email searched = new TransactionTemplate(transactionManager).execute(status -> emailBoxStorage.getEmailsForSearchInFolders(USER,
+                                                                                                                               List.of(MailFolder.INBOX))
+                                                                                                    .stream()
+                                                                                                    .filter(email -> email.getId()
+                                                                                                                          .equals(created.getId()))
+                                                                                                    .findFirst()
+                                                                                                    .orElseThrow());
+    assertEquals(MessageKind.BOUNCE, searched.getMessageKind());
+    assertEquals(List.of("gone@prospect.example", "left@prospect.example"), searched.getBouncedRecipients());
+
+    Email wide = incoming("<wide@mx.example>", MailFolder.INBOX, 24L);
+    wide.setMessageKind(MessageKind.BOUNCE);
+    List<String> many = IntStream.range(0, 60).mapToObj(i -> "recipient-number-" + i + "@prospect.example").toList();
+    wide.setBouncedRecipients(many);
+    List<String> kept = read(emailBoxStorage.createEmail(wide).getId(), USER, "alice@corp.example").getBouncedRecipients();
+    assertFalse(kept.isEmpty());
+    assertTrue(kept.size() < many.size(), "the column holds 1000 characters");
+    assertEquals(many.subList(0, kept.size()), kept, "whole addresses, in order");
   }
 
   /**
