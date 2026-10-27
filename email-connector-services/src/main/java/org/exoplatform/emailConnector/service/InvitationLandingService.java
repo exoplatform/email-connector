@@ -65,11 +65,12 @@ import jakarta.annotation.PreDestroy;
  * included -- is both, so the user knows their answer left and their calendar did not
  * follow.
  * <p>
- * <b>Whether the calendar holds an invitation already</b> ({@link #held}, EXO-90873) is
+ * <b>Whether the calendar holds an invitation already</b> ({@link #lookUpHeld}, EXO-90873) is
  * asked when the reader shows one, so it is bounded: the add-on is asked on a small
  * executor of this service and waited for {@link #HELD_TIMEOUT_PROPERTY} at most; a late
- * answer, a full executor, a failure or an add-on that cannot be linked all read as
- * "nothing held", and the reader shows the invitation as it did before.
+ * answer, a full executor, a failure or an add-on that cannot be linked all read as no
+ * answer, told apart from "nothing held", and the reader shows the invitation as it did
+ * before.
  */
 @Service
 public class InvitationLandingService {
@@ -208,21 +209,10 @@ public class InvitationLandingService {
   /**
    * Whether the user's calendar already holds the event an invitation is about, asked of
    * the add-on holding that calendar -- the first that says it holds one, alone, as for
-   * a landing -- and waited for {@link #heldTimeout()} at most. Never throws: anything
-   * but an answer in time is "nothing held".
-   *
-   * @param probe the user and the event's UID
-   * @return the held copy, or null when nothing is held or nothing could be said in time
-   */
-  public HeldInvitation held(InvitationProbe probe) {
-    return lookUpHeld(probe).held();
-  }
-
-  /**
-   * Asks, as {@link #held} does, whether the user's calendar holds the event an
-   * invitation is about, and says apart "nothing held" from "nothing said": a late
-   * answer, a full executor, a failure or no add-on to ask is unanswered. An add-on
-   * that does not implement the question answers that it holds nothing. Never throws.
+   * a landing -- and waited for {@link #heldTimeout()} at most, saying apart "nothing
+   * held" from "nothing said": a late answer, a full executor, a failure or no add-on to
+   * ask is unanswered. An add-on that does not implement the question answers that it
+   * holds nothing. Never throws.
    *
    * @param probe the user and the event's UID
    * @return the lookup

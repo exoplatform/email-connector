@@ -238,22 +238,21 @@ class InvitationLandingServiceTest {
     HeldInvitation copy = new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.DECLINED, 3);
     when(second.held(PROBE)).thenReturn(copy);
 
-    assertEquals(copy, new InvitationLandingService(applicationContext).held(PROBE));
+    assertEquals(HeldLookup.answered(copy), new InvitationLandingService(applicationContext).lookUpHeld(PROBE));
     verify(first, never()).held(any());
 
     // The one holding it says nothing is held: nothing is, and no other is asked.
     when(first.holdsCalendarFor("john")).thenReturn(true);
     when(first.held(PROBE)).thenReturn(null);
-    assertNull(new InvitationLandingService(applicationContext).held(PROBE));
-    verify(second, times(1)).held(PROBE);
     // An answer that nothing is held is told apart from no answer.
     assertEquals(HeldLookup.answered(null), new InvitationLandingService(applicationContext).lookUpHeld(PROBE));
+    verify(second, times(1)).held(PROBE);
     assertEquals(HeldLookup.answered(copy), new HeldLookup(true, copy));
   }
 
   /**
-   * An implementer written before the question existed answers nothing held, and so
-   * does a platform with no implementer at all.
+   * An implementer written before the question existed answers that nothing is held; a
+   * platform with no implementer at all gives no answer.
    */
   @Test
   void anImplementerWithoutTheQuestionHoldsNothing() {
@@ -269,8 +268,8 @@ class InvitationLandingServiceTest {
       }
     };
     when(applicationContext.getBeansOfType(InvitationCalendarPlugin.class)).thenReturn(Map.of("older", older));
-    assertNull(new InvitationLandingService(applicationContext).held(PROBE));
-    assertNull(new InvitationLandingService(null).held(PROBE));
+    assertEquals(HeldLookup.answered(null), new InvitationLandingService(applicationContext).lookUpHeld(PROBE));
+    assertEquals(HeldLookup.unanswered(), new InvitationLandingService(null).lookUpHeld(PROBE), "no add-on to ask");
   }
 
   /**
@@ -292,13 +291,12 @@ class InvitationLandingServiceTest {
     System.setProperty(InvitationLandingService.HELD_TIMEOUT_PROPERTY, "200");
     InvitationLandingService service = new InvitationLandingService(applicationContext);
     long started = System.nanoTime();
-    assertNull(service.held(PROBE), "too late");
+    assertEquals(HeldLookup.unanswered(), service.lookUpHeld(PROBE), "too late");
     assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5000, "the reader waited for the timeout only");
     assertFalse(service.lookUpHeld(PROBE).answered(), "too late is no answer");
     never.countDown();
 
     doThrow(new IllegalStateException("the calendar server is down")).when(first).held(PROBE);
-    assertNull(service.held(PROBE), "failed");
     assertEquals(HeldLookup.unanswered(), service.lookUpHeld(PROBE), "a failure is no answer");
 
     // An add-on whose classes cannot be linked is as if it were not installed: the
@@ -307,7 +305,6 @@ class InvitationLandingServiceTest {
     when(second.holdsCalendarFor("john")).thenReturn(true);
     HeldInvitation copy = new HeldInvitation(78L, null, null, 0);
     when(second.held(PROBE)).thenReturn(copy);
-    assertEquals(copy, service.held(PROBE));
     assertEquals(HeldLookup.answered(copy), service.lookUpHeld(PROBE));
 
     // The one holding the calendar failing to link while it looks is no answer, and
@@ -327,7 +324,6 @@ class InvitationLandingServiceTest {
     ExecutorService full = Executors.newSingleThreadExecutor();
     full.shutdown();
     service.setHeldExecutor(full);
-    assertNull(service.held(PROBE), "no room");
     assertFalse(service.lookUpHeld(PROBE).answered(), "no room is no answer");
     service.stop();
   }
