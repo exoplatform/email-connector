@@ -25,3 +25,13 @@ extensionRegistry.registerExtension('ai-agent', 'tool-confirm', {
   id: 'send_email_draft',
   componentName: 'email-connector-ai-send-draft-confirm',
 });
+
+/*
+ * The approval cards of the scheduled-send tools (EXO-91996), each value escaped: a
+ * draft's subject can be a received mail's, and the card names the recipients and the
+ * time the user approves.
+ */
+['schedule_email_draft', 'reschedule_email', 'cancel_scheduled_email'].forEach(id => extensionRegistry.registerExtension('ai-agent', 'tool-confirm', {
+  id,
+  componentName: 'email-connector-ai-scheduled-send-confirm',
+}));
