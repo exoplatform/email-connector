@@ -19,6 +19,8 @@ package org.exoplatform.emailConnector.model;
 import java.util.Date;
 import java.util.List;
 
+import org.exoplatform.emailConnector.constant.MessageKind;
+
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -229,4 +231,14 @@ public class Email {
   // stored one as it is; out on every read of a draft, null when the draft never said.
   // Every send of the draft reads it from the row and checks the owner's consent again.
   private String               sendMode;
+
+  // Who wrote a received message (EXO-91995): a mail server reporting a failed delivery,
+  // an automatic reply, or a person. Set by the sync only, from the headers; null on a row
+  // synced before it was decided, which says nothing rather than "normal".
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private MessageKind          messageKind;
+
+  // On a bounce, the addresses that could not be reached, as the report names them.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private List<String>         bouncedRecipients;
 }
