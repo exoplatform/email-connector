@@ -995,6 +995,43 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * An answer whose landing failed leaves the calendar's copy saying the earlier
+   * answer: the organiser was told the new one, the copy says the old one, and which
+   * the organiser read last is not known -- so neither click is refused. Once the copy
+   * and the answer given from here agree, that answer is not sent again.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void afterAFailedLandingNoAnswerIsRefusedAsAlreadyGiven() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2)));
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.FAILED, null);
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    List<SettingValue<?>> remembered = new ArrayList<>();
+    doAnswer(call -> remembered.add(call.getArgument(3))).when(settingService)
+                                                         .set(eq(Context.USER.id(USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), eq(key), any());
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> remembered.isEmpty() ? null : remembered.get(remembered.size() - 1));
+
+    assertEquals(CalendarLanding.FAILED, service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED).getLanding());
+    assertEquals(1, factories.size(), "the decline left");
+
+    // The copy still says Accepted, the organiser was told Declined: Accept goes out.
+    CalendarInvitation accepted = service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(2, factories.size(), "the acceptance is not refused as already given");
+    assertEquals(InvitationAnswer.ACCEPTED, accepted.getAnswer());
+
+    // The copy and the answer given from here now agree: Accept is not sent again.
+    assertEquals(CalendarInvitationService.ALREADY_ANSWERED,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
+    assertEquals(2, factories.size());
+  }
+
+  /**
    * "Add to my calendar" lands the invitation without an answer: nothing is sent,
    * nothing is remembered, and the add-on is handed the message with no answer.
    *
