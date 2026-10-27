@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -308,6 +309,20 @@ class InvitationLandingServiceTest {
     when(second.held(PROBE)).thenReturn(copy);
     assertEquals(copy, service.held(PROBE));
     assertEquals(HeldLookup.answered(copy), service.lookUpHeld(PROBE));
+
+    // The one holding the calendar failing to link while it looks is no answer, and
+    // the add-on after it is not asked in its place.
+    doThrow(new NoClassDefFoundError("gone while looking")).when(second).held(PROBE);
+    InvitationCalendarPlugin third = mock(InvitationCalendarPlugin.class);
+    // A third add-on that would answer, were it asked in the second's place.
+    lenient().when(third.holdsCalendarFor("john")).thenReturn(true);
+    Map<String, InvitationCalendarPlugin> three = new LinkedHashMap<>();
+    three.put("first", first);
+    three.put("second", second);
+    three.put("third", third);
+    when(applicationContext.getBeansOfType(InvitationCalendarPlugin.class)).thenReturn(three);
+    assertEquals(HeldLookup.unanswered(), service.lookUpHeld(PROBE));
+    verify(third, never()).held(any());
 
     ExecutorService full = Executors.newSingleThreadExecutor();
     full.shutdown();

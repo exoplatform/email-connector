@@ -270,8 +270,9 @@ public class InvitationLandingService {
   /**
    * Asks the add-on holding the user's calendar whether it holds the invitation, on the
    * executor's thread, bound to the reader's container for the add-on's reads. An
-   * add-on whose classes cannot be linked is as if it were not installed; any other
-   * failure is the caller's to log.
+   * add-on whose classes cannot be linked when asked whether it holds the user's
+   * calendar is as if it were not installed; any failure of the one holding it, a class
+   * it cannot link while it looks included, is the caller's to log.
    *
    * @param probe the user and the event's UID
    * @param container the reader's container, null when it has none
@@ -284,16 +285,12 @@ public class InvitationLandingService {
     }
     try {
       for (InvitationCalendarPlugin plugin : plugins()) {
-        try {
-          if (plugin.holdsCalendarFor(probe.username())) {
-            // The one add-on holding the user's calendar: no other is asked.
-            return HeldLookup.answered(plugin.held(probe));
-          }
-        } catch (LinkageError e) {
-          LOG.debug("Add-on {} could not be asked whether it holds the invitation of user {}; it is read as holding no calendar",
-                    plugin.getClass().getName(),
-                    probe.username(),
-                    e);
+        // Only an add-on that cannot say whether it holds the user's calendar is as
+        // if it were not installed; the one holding it answers, or its failure --
+        // a class it cannot link while it looks included -- is no answer, and no
+        // other add-on is asked.
+        if (holdsCalendarFor(plugin, probe.username())) {
+          return HeldLookup.answered(plugin.held(probe));
         }
       }
       return HeldLookup.unanswered();
