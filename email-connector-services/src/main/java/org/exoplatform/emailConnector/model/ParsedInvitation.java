@@ -29,10 +29,13 @@ import org.exoplatform.emailConnector.utils.InvitationReplyWriter;
  * @param url the event's URL property as written, the sender's: null when it has none
  * @param replyWriter writes the REPLY
  * @param icalendar the part as received, decoded as UTF-8
+ * @param organizerSentBy the address the ORGANIZER's SENT-BY names, who sends for the
+ *          organiser (RFC 5545 section 3.2.18); null when it names none
  */
 public record ParsedInvitation(CalendarInvitation invitation,
                                String recurrenceId,
                                String url,
                                InvitationReplyWriter replyWriter,
-                               String icalendar) {
+                               String icalendar,
+                               String organizerSentBy) {
 }

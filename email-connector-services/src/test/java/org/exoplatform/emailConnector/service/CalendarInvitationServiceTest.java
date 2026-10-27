@@ -77,9 +77,11 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.HeldInvitation;
+import org.exoplatform.emailConnector.model.HeldLookup;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MessagePart;
 import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
@@ -123,6 +125,9 @@ class CalendarInvitationServiceTest {
 
   private Email                   email;
 
+  /** The From and Sender addresses the server reads on the message, beside the stored From. */
+  private List<String>            authors     = List.of();
+
   /**
    * The user's mailbox address, and a received invitation from Google in their inbox.
    *
@@ -136,6 +141,8 @@ class CalendarInvitationServiceTest {
     email = invitationMail(MailFolder.INBOX);
     lenient().when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
     givenTheCalendarPart("google-weekly-request.ics");
+    // The calendar, when asked, answers that it holds nothing.
+    lenient().when(invitationLandingService.lookUpHeld(any())).thenReturn(HeldLookup.answered(null));
   }
 
   /**
@@ -161,7 +168,7 @@ class CalendarInvitationServiceTest {
     assertEquals(ME, invitation.getAttendeeAddress());
     assertNull(invitation.getAnswer());
     assertEquals("Weekly <b>sync</b>", invitation.getSummary());
-    verify(emailBoxService).readMessagePart(USER, email, "1.3", CalendarInvitationService.DEFAULT_MAX_BYTES);
+    verify(emailBoxService).readMessagePartAndAuthors(USER, email, "1.3", CalendarInvitationService.DEFAULT_MAX_BYTES);
   }
 
   /**
@@ -229,16 +236,16 @@ class CalendarInvitationServiceTest {
     assertThrows(ObjectNotFoundException.class, () -> service.getInvitation(13L, USER));
     assertThrows(ObjectNotFoundException.class, () -> service.respond(13L, USER, InvitationAnswer.ACCEPTED));
 
-    when(emailBoxService.readMessagePart(eq(USER), any(), anyString(), anyLong())).thenReturn(null);
+    when(emailBoxService.readMessagePartAndAuthors(eq(USER), any(), anyString(), anyLong())).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.getInvitation(EMAIL_ID, USER));
 
-    when(emailBoxService.readMessagePart(eq(USER), any(), anyString(), anyLong()))
+    when(emailBoxService.readMessagePartAndAuthors(eq(USER), any(), anyString(), anyLong()))
                                                                                     .thenThrow(new IllegalArgumentException(EmailBoxService.PART_TOO_LARGE));
     assertEquals(CalendarInvitationService.TOO_LARGE,
                  assertThrows(IllegalArgumentException.class, () -> service.getInvitation(EMAIL_ID, USER)).getMessage());
 
-    doAnswer(invocation -> "<html>no calendar</html>".getBytes(StandardCharsets.UTF_8)).when(emailBoxService)
-                                                                                    .readMessagePart(eq(USER), any(), anyString(), anyLong());
+    doAnswer(invocation -> new MessagePart("<html>no calendar</html>".getBytes(StandardCharsets.UTF_8), List.of())).when(emailBoxService)
+                                                                                    .readMessagePartAndAuthors(eq(USER), any(), anyString(), anyLong());
     assertEquals(CalendarInvitationService.UNREADABLE,
                  assertThrows(IllegalArgumentException.class, () -> service.getInvitation(EMAIL_ID, USER)).getMessage());
 
@@ -590,10 +597,10 @@ class CalendarInvitationServiceTest {
   void anInvitationTheCalendarHoldsIsShownAsHeldWithItsAnswer() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
     ArgumentCaptor<InvitationProbe> probe = ArgumentCaptor.forClass(InvitationProbe.class);
-    when(invitationLandingService.held(probe.capture())).thenReturn(new HeldInvitation(77L,
+    when(invitationLandingService.lookUpHeld(probe.capture())).thenReturn(heldCopy(new HeldInvitation(77L,
                                                                                        "/portal/dw/agenda?eventId=77",
                                                                                        InvitationAnswer.TENTATIVE,
-                                                                                       2));
+                                                                                       2)));
 
     CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
 
@@ -613,7 +620,7 @@ class CalendarInvitationServiceTest {
     assertEquals(InvitationAnswer.TENTATIVE, service.getInvitation(EMAIL_ID, USER).getAnswer());
 
     // A copy that says no answer leaves the one known so far, and still nothing to add.
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, null, null, 5));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, null, null, 5)));
     invitation = service.getInvitation(EMAIL_ID, USER);
     assertTrue(invitation.isHeld());
     assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer());
@@ -621,7 +628,7 @@ class CalendarInvitationServiceTest {
     assertFalse(invitation.isLandable());
 
     // Nothing held, or nothing said in time: the card as it was.
-    when(invitationLandingService.held(any())).thenReturn(null);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(null));
     invitation = service.getInvitation(EMAIL_ID, USER);
     assertFalse(invitation.isHeld());
     assertTrue(invitation.isLandable());
@@ -636,7 +643,7 @@ class CalendarInvitationServiceTest {
   @Test
   void aNewerRevisionOfAHeldEventIsOfferedAsAnUpdate() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.DECLINED, 1));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.DECLINED, 1)));
 
     CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
 
@@ -652,10 +659,161 @@ class CalendarInvitationServiceTest {
     assertEquals(2, landing.getValue().sequence());
 
     // The same revision, declined: held, declined, nothing to add.
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, null, InvitationAnswer.DECLINED, 2));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, null, InvitationAnswer.DECLINED, 2)));
     invitation = service.getInvitation(EMAIL_ID, USER);
     assertEquals(InvitationAnswer.DECLINED, invitation.getAnswer());
     assertFalse(invitation.isLandable());
+  }
+
+  /**
+   * The organiser's update of a held event, and the organiser's cancellation, sent by
+   * somebody else -- an attendee who knows the UID and writes the organiser's address
+   * on the ORGANIZER line -- are shown as not from the organiser: no update and no
+   * removal is offered, adding or removing it is refused, and an answer to it leaves
+   * for the organiser without landing anything.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUpdateOrACancellationNotFromItsOrganiserIsNeitherOfferedNorLanded() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    email.setSender(new EmailSender("Mallory", "mallory@partner.example", null, null));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+
+    CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
+
+    assertTrue(update.isHeld());
+    assertTrue(update.isOrganizerUnverified());
+    assertFalse(update.isNewerRevision(), "a higher SEQUENCE from anybody else is no revision");
+    assertFalse(update.isLandable(), "no update is offered");
+    assertEquals(InvitationAnswer.ACCEPTED, update.getAnswer(), "the calendar's answer stands");
+    assertTrue(update.isAnswerable(), "the invitation is still answered, to its organiser");
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    CalendarInvitation answered = service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED);
+    assertEquals(1, factories.size(), "the answer leaves");
+    assertEquals(CalendarLanding.REFUSED, answered.getLanding());
+    assertFalse(answered.isLandable());
+
+    givenTheCalendarPart("allday-cancel.ics");
+    CalendarInvitation cancellation = service.getInvitation(EMAIL_ID, USER);
+    assertTrue(cancellation.isOrganizerUnverified());
+    assertFalse(cancellation.isRemovable(), "no removal is offered");
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
+  }
+
+  /**
+   * An update or a cancellation is the organiser's when the mail's From is the
+   * ORGANIZER's address, or its Sender is -- a calendar service that sends in the
+   * organiser's name -- compared on the bare address, case aside: it is offered and
+   * landed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUpdateOrACancellationFromItsOrganiserIsLanded() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.UPDATED, "/portal/dw/agenda?eventId=77");
+
+    // From: the stored From is the organiser's, in another case.
+    email.setSender(new EmailSender("Olivia", "Olivia@Partner.Example", null, null));
+    CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(update.isOrganizerUnverified());
+    assertTrue(update.isNewerRevision());
+    assertTrue(update.isLandable());
+    assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+
+    // Sender: the From is a calendar service's, the Sender the server reads is hers.
+    email.setSender(new EmailSender("Calendar", "calendar-notification@google.com", null, null));
+    authors = List.of("calendar-notification@google.com", "OLIVIA@partner.example");
+    update = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(update.isOrganizerUnverified());
+    assertTrue(update.isNewerRevision());
+    assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+
+    // The same Sender on a cancellation.
+    givenTheCalendarPart("allday-cancel.ics");
+    givenTheLanding(landing, CalendarLanding.REMOVED, null);
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isRemovable());
+    assertEquals(CalendarLanding.REMOVED, service.removeFromCalendar(EMAIL_ID, USER).getLanding());
+    assertEquals("CANCEL", landing.getValue().method());
+
+    // Neither: refused.
+    authors = List.of("calendar-notification@google.com");
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+  }
+
+  /**
+   * A delegate who sends for the organiser is named by the ORGANIZER's SENT-BY: a mail
+   * from that address is the organiser's, a mail from anybody else still is not.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theOrganisersSentByIsTheOrganiser() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", null, 1)));
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.UPDATED, "/portal/dw/agenda?eventId=77");
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example",
+                                                                               "ORGANIZER;SENT-BY=\"mailto:Assistant@partner.example\";CN=Olivia Organizer:mailto:olivia@partner.example"));
+    email.setSender(new EmailSender("Assistant", "assistant@partner.example", null, null));
+
+    CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
+
+    assertFalse(update.isOrganizerUnverified());
+    assertTrue(update.isNewerRevision());
+    assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+
+    email.setSender(new EmailSender("Mallory", "mallory@partner.example", null, null));
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isOrganizerUnverified());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    givenTheCalendarPartText(fixtureText("allday-cancel.ics").replace("ORGANIZER:mailto:olivia@partner.example",
+                                                                       "ORGANIZER;SENT-BY=\"mailto:assistant@partner.example\":mailto:olivia@partner.example"));
+    authors = List.of("assistant@partner.example");
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isRemovable());
+  }
+
+  /**
+   * A first invitation is added whoever sent it, once the calendar said it holds no
+   * copy. When the calendar could not say in time, adding it could change a copy: only
+   * its organiser's mail is then offered and landed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aFirstInvitationIsAddedWhoeverSentItOnceTheCalendarSaidItHoldsNone() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
+    email.setSender(new EmailSender("Relay", "relay@lists.partner.example", null, null));
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isOrganizerUnverified());
+    assertTrue(invitation.isLandable());
+    assertEquals(CalendarLanding.LANDED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(HeldLookup.unanswered());
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertTrue(invitation.isOrganizerUnverified());
+    assertFalse(invitation.isLandable());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    email.setSender(new EmailSender("Olivia", "olivia@partner.example", null, null));
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isOrganizerUnverified());
+    assertTrue(invitation.isLandable(), "the organiser's own mail is offered as before");
+    verify(invitationLandingService).land(any(), any());
   }
 
   /**
@@ -668,7 +826,7 @@ class CalendarInvitationServiceTest {
   @Test
   void addingAnEventTheCalendarHoldsTellsItIsThere() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2)));
 
     CalendarInvitation invitation = service.addToCalendar(EMAIL_ID, USER);
 
@@ -688,7 +846,7 @@ class CalendarInvitationServiceTest {
   @Test
   void theCalendarIsAskedOnlyAboutWhatCouldBeAdded() throws Exception {
     service.getInvitation(EMAIL_ID, USER);
-    verify(invitationLandingService, never()).held(any());
+    verify(invitationLandingService, never()).lookUpHeld(any());
 
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
     givenTheCalendarPart("allday-cancel.ics");
@@ -701,15 +859,15 @@ class CalendarInvitationServiceTest {
       givenTheCalendarPart("agenda-own-request.ics");
       assertTrue(service.getInvitation(EMAIL_ID, USER).isExoMeeting());
     }
-    verify(invitationLandingService, never()).held(any());
+    verify(invitationLandingService, never()).lookUpHeld(any());
 
     givenTheCalendarPart("google-weekly-request.ics");
     service.getInvitation(EMAIL_ID, USER);
-    verify(invitationLandingService).held(any());
+    verify(invitationLandingService).lookUpHeld(any());
 
     givenASharedMailbox();
     assertFalse(service.getInvitation(EMAIL_ID, USER).isHeld());
-    verify(invitationLandingService).held(any());
+    verify(invitationLandingService).lookUpHeld(any());
   }
 
   /**
@@ -724,7 +882,7 @@ class CalendarInvitationServiceTest {
     givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:PUBLISH")
                                                                      .replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example\r\n", "")
                                                                      .replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example\n", ""));
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", null, 0));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", null, 0)));
 
     CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
 
@@ -743,7 +901,7 @@ class CalendarInvitationServiceTest {
   @Test
   void anAnswerWhoseLandingFailedKeepsWhatTheCalendarHeld() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2)));
     captureTransmissions();
     ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
     givenTheLanding(landing, CalendarLanding.FAILED, null);
@@ -777,7 +935,7 @@ class CalendarInvitationServiceTest {
     assertFalse(invitation.isLandable(), "no add-on lands one occurrence");
     assertEquals(CalendarInvitationService.NOT_LANDABLE,
                  assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
-    verify(invitationLandingService, never()).held(any());
+    verify(invitationLandingService, never()).lookUpHeld(any());
 
     givenTheCalendarPartText(fixtureText("outlook-occurrence-request.ics").replace("METHOD:REQUEST", "METHOD:CANCEL"));
     assertFalse(service.getInvitation(EMAIL_ID, USER).isRemovable(), "no add-on removes one occurrence");
@@ -798,7 +956,7 @@ class CalendarInvitationServiceTest {
   @Test
   void theAnswerTheOrganiserHasIsNotSentTwice() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2)));
     List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
 
     assertEquals(CalendarInvitationService.ALREADY_ANSWERED,
@@ -812,12 +970,12 @@ class CalendarInvitationServiceTest {
     assertEquals(1, factories.size(), "changing the answer stays possible");
 
     // A newer revision than the calendar's copy: its answer is asked again.
-    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1));
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
     service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
     assertEquals(2, factories.size());
 
     // Nothing held: the answer given from here to this revision is the one the organiser has.
-    when(invitationLandingService.held(any())).thenReturn(null);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(null));
     String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
     when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
                                                                                                  .thenAnswer(call -> SettingValue.create("{\"answer\":\"TENTATIVE\",\"sequence\":2,\"answeredAt\":1}"));
@@ -1247,6 +1405,16 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * What the add-on holding the calendar answers about a held copy.
+   *
+   * @param held the copy, null for none
+   * @return the answered lookup
+   */
+  private static HeldLookup heldCopy(HeldInvitation held) {
+    return HeldLookup.answered(held);
+  }
+
+  /**
    * Serves a fixture as the message's calendar part.
    *
    * @param fixture the file under invitations/
@@ -1263,8 +1431,8 @@ class CalendarInvitationServiceTest {
    * @throws Exception never
    */
   private void givenTheCalendarPartText(String icalendar) throws Exception {
-    lenient().when(emailBoxService.readMessagePart(eq(USER), any(), eq("1.3"), anyLong()))
-             .thenReturn(icalendar.getBytes(StandardCharsets.UTF_8));
+    lenient().when(emailBoxService.readMessagePartAndAuthors(eq(USER), any(), eq("1.3"), anyLong()))
+             .thenAnswer(invocation -> new MessagePart(icalendar.getBytes(StandardCharsets.UTF_8), authors));
   }
 
   /**
@@ -1293,6 +1461,8 @@ class CalendarInvitationServiceTest {
     mail.setFolder(folder);
     mail.setMailRemoteId(34L);
     mail.setMailHeaderId("<invite@partner.example>");
+    // From the organiser most fixtures name.
+    mail.setSender(new EmailSender("Olivia Organizer", "olivia@partner.example", null, null));
     mail.setContent(new EmailContent("<p>Invitation</p>"));
     mail.getContent().setAttachments(List.of(attachment("text/calendar", null, "1.3")));
     return mail;

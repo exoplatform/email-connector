@@ -159,6 +159,7 @@ const LANDING_MESSAGES = {
 const LANDING_ERRORS = {
   'emailConnector.invitation.notLandable': 'emailConnector.mailBox.invitation.notLandable',
   'emailConnector.invitation.cancelled': 'emailConnector.mailBox.invitation.cancelled',
+  'emailConnector.invitation.unverified': 'emailConnector.mailBox.invitation.unverified',
 };
 
 /**

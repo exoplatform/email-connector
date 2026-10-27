@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
@@ -58,10 +59,12 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.HeldInvitation;
+import org.exoplatform.emailConnector.model.HeldLookup;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MessagePart;
 import org.exoplatform.emailConnector.model.ParsedInvitation;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -127,9 +130,24 @@ import io.meeds.social.util.JsonUtils;
  * another client, in their mail server's webmail. The card then says so, with the answer
  * the calendar holds as the user's current one, and offers to add it only when the mail
  * is the organiser's newer revision. The question is bounded and fails open
- * ({@link InvitationLandingService#held}): the card's own request waits for it a few
+ * ({@link InvitationLandingService#lookUpHeld}): the card's own request waits for it a few
  * seconds at most, the message's body never does, and an add-on that cannot say in time
  * leaves the card as it was.
+ * <p>
+ * <b>Only the organiser changes the user's calendar from a mail.</b> Every attendee of a
+ * meeting knows its UID and its organiser's address, so a mail's ORGANIZER line proves
+ * nothing. A mail that would change an event the calendar holds -- a cancellation, or a
+ * revision whose SEQUENCE is higher than the held copy's -- is offered and landed only
+ * when its {@code From} or its {@code Sender}, as the mail server reads the message, is
+ * the ORGANIZER's address or the address the ORGANIZER's SENT-BY names (a delegate),
+ * compared on the bare address, case aside. Otherwise the card says it is not from its
+ * organiser ({@link #UNVERIFIED}), offers no update and no removal, and the landing is
+ * refused; it is still shown, and an invitation is still answered -- the answer goes to
+ * the ORGANIZER's address. A first invitation is added whoever sent it, but only once
+ * the calendar has said it does not hold the event: when it could not say in time, a
+ * mail not from its organiser is treated as a change. {@code From} and {@code Sender}
+ * are what the sender's server wrote; where the sender's domain publishes no DMARC policy
+ * they are as forgeable as the ORGANIZER line, which this does not claim to close.
  */
 @Service
 public class CalendarInvitationService {
@@ -184,6 +202,13 @@ public class CalendarInvitationService {
    * remove.
    */
   public static final String  NOT_LANDABLE            = "emailConnector.invitation.notLandable";
+
+  /**
+   * The mail would change an event in the user's calendar and is not from its organiser:
+   * neither its {@code From} nor its {@code Sender} is the ORGANIZER's address or its
+   * SENT-BY's. Nothing is landed from it.
+   */
+  public static final String  UNVERIFIED              = "emailConnector.invitation.unverified";
 
   /** The highest cap an administrator may set: 64 MiB, far above any calendar. */
   static final long           MAX_CAP                 = 64L * 1024 * 1024;
@@ -327,9 +352,14 @@ public class CalendarInvitationService {
     // again with it, as a later read would -- nothing to add after a decline,
     // the offer back after an acceptance that follows one.
     invitation.setLandable(delegation == null && addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision())
-        && invitationLandingService.holdsCalendarFor(username));
+        && !invitation.isOrganizerUnverified() && invitationLandingService.holdsCalendarFor(username));
     if (delegation == null) {
-      land(username, parsed, answer);
+      if (invitation.isOrganizerUnverified()) {
+        // The answer left to the organiser; a change not from them is not landed.
+        invitation.setLanding(CalendarLanding.REFUSED);
+      } else {
+        land(username, parsed, answer);
+      }
     }
     return invitation;
   }
@@ -352,8 +382,9 @@ public class CalendarInvitationService {
    * @throws IllegalAccessException when the user's connector is not usable, or
    *           {@link #NOT_LANDABLE} for a shared mailbox's message
    * @throws IllegalArgumentException {@link #NOT_LANDABLE} when no add-on holds a
-   *           calendar for the user, {@link #CANCELLED}, {@link #TOO_LARGE},
-   *           {@link #UNREADABLE} or {@link #UNSUPPORTED}
+   *           calendar for the user, {@link #CANCELLED}, {@link #UNVERIFIED} for a change
+   *           not from its organiser, {@link #TOO_LARGE}, {@link #UNREADABLE} or
+   *           {@link #UNSUPPORTED}
    * @throws IllegalStateException when the mailbox cannot be read
    */
   public CalendarInvitation addToCalendar(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
@@ -365,6 +396,9 @@ public class CalendarInvitationService {
     }
     if (invitation.isCancelled()) {
       throw new IllegalArgumentException(CANCELLED);
+    }
+    if (invitation.isOrganizerUnverified()) {
+      throw new IllegalArgumentException(UNVERIFIED);
     }
     if (invitation.isHeld() && !invitation.isNewerRevision()) {
       // Answered elsewhere since the card was shown: there is nothing to add.
@@ -384,8 +418,9 @@ public class CalendarInvitationService {
 
   /**
    * Removes from the user's calendar the event a cancellation says is called off. From
-   * the user's own mailbox only, and only for the organiser's CANCEL of a whole event:
-   * the add-ons land series only, so one occurrence's cancellation is not offered.
+   * the user's own mailbox only, and only for the organiser's CANCEL of a whole event,
+   * sent by the organiser: the add-ons land series only, so one occurrence's
+   * cancellation is not offered.
    *
    * @param emailId the cached message's technical id
    * @param username the user, who must own the cached row
@@ -395,6 +430,7 @@ public class CalendarInvitationService {
    *           {@link #NOT_LANDABLE} for a shared mailbox's message
    * @throws IllegalArgumentException {@link #NOT_LANDABLE} when the message is not a
    *           cancellation or no add-on holds a calendar for the user,
+   *           {@link #UNVERIFIED} when it is not from its organiser,
    *           {@link #TOO_LARGE}, {@link #UNREADABLE} or {@link #UNSUPPORTED}
    * @throws IllegalStateException when the mailbox cannot be read
    */
@@ -404,6 +440,9 @@ public class CalendarInvitationService {
     CalendarInvitation invitation = parsed.invitation();
     if (emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       throw new IllegalAccessException(NOT_LANDABLE);
+    }
+    if (invitation.isOrganizerUnverified()) {
+      throw new IllegalArgumentException(UNVERIFIED);
     }
     if (!invitation.isRemovable()) {
       throw new IllegalArgumentException(NOT_LANDABLE);
@@ -503,15 +542,16 @@ public class CalendarInvitationService {
     if (part == null) {
       throw new ObjectNotFoundException(NOT_FOUND);
     }
-    byte[] content;
+    MessagePart read;
     try {
-      content = emailBoxService.readMessagePart(username, email, part.getAttachmentRemoteId(), maxBytes());
+      read = emailBoxService.readMessagePartAndAuthors(username, email, part.getAttachmentRemoteId(), maxBytes());
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(TOO_LARGE);
     }
-    if (content == null) {
+    if (read == null || read.content() == null) {
       throw new ObjectNotFoundException(NOT_FOUND);
     }
+    byte[] content = read.content();
     EmailDelegation delegation = emailDelegationService.delegationOf(username, email.getFolder());
     String mailboxAddress = delegation == null ? ownAddress(username) : delegation.getOwnerMailbox();
     ParsedInvitation parsed;
@@ -566,45 +606,109 @@ public class CalendarInvitationService {
     // The user's own calendar, from their own mailbox: a shared mailbox's invitation
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
+      boolean fromOrganizer = fromOrganizer(email, read.authors(), invitation, parsed.organizerSentBy());
       if (askHeld && addableMethod(invitation) && !invitation.isCancelled() && !invitation.isOccurrence()) {
-        applyHeld(invitation, invitationLandingService.held(new InvitationProbe(username,
-                                                                                 invitation.getAttendeeAddress(),
-                                                                                 invitation.getUid(),
-                                                                                 parsed.recurrenceId(),
-                                                                                 invitation.getOrganizer() == null ? null
-                                                                                                                   : invitation.getOrganizer()
-                                                                                                                               .getAddress())));
+        HeldLookup lookup = invitationLandingService.lookUpHeld(new InvitationProbe(username,
+                                                                                    invitation.getAttendeeAddress(),
+                                                                                    invitation.getUid(),
+                                                                                    parsed.recurrenceId(),
+                                                                                    organizerAddressOf(invitation)));
+        applyHeld(invitation, lookup.held(), fromOrganizer);
+        if (!lookup.answered() && !fromOrganizer && organizerAddressOf(invitation) != null && addable(invitation)) {
+          // Whether the calendar holds it is unknown, so whether adding it changes a
+          // copy is too: only its organiser's mail is landed.
+          invitation.setOrganizerUnverified(true);
+        }
       }
       // Nothing to add when the calendar holds this revision already; its organiser's
       // newer one is offered, as an update.
-      invitation.setLandable(addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision()));
-      invitation.setRemovable(CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()) && !invitation.isOccurrence());
+      invitation.setLandable(addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision())
+          && !invitation.isOrganizerUnverified());
+      boolean cancellation = CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()) && !invitation.isOccurrence();
+      invitation.setRemovable(cancellation && fromOrganizer);
+      if (cancellation && !fromOrganizer) {
+        invitation.setOrganizerUnverified(true);
+      }
     }
     return parsed;
+  }
+
+  /**
+   * Whether a mail is from the organiser of the event it carries: its {@code From} or
+   * its {@code Sender} is the ORGANIZER's address, or the address the ORGANIZER's
+   * SENT-BY names, compared on the bare address, case aside. The {@code From} the sync
+   * stored for the message counts as one of its {@code From} addresses.
+   *
+   * @param email the message, for the {@code From} the sync stored
+   * @param authors the {@code From} and {@code Sender} addresses the server read
+   * @param invitation the invitation, for its ORGANIZER
+   * @param organizerSentBy the address the ORGANIZER's SENT-BY names, or null
+   * @return false when the invitation names no organiser
+   */
+  static boolean fromOrganizer(Email email, List<String> authors, CalendarInvitation invitation, String organizerSentBy) {
+    String organizer = bareAddress(organizerAddressOf(invitation));
+    if (organizer == null) {
+      return false;
+    }
+    String sentBy = bareAddress(organizerSentBy);
+    List<String> candidates = new ArrayList<>(authors == null ? List.of() : authors);
+    if (email.getSender() != null) {
+      candidates.add(email.getSender().getAddress());
+    }
+    return candidates.stream()
+                     .map(CalendarInvitationService::bareAddress)
+                     .anyMatch(author -> author != null && (author.equals(organizer) || author.equals(sentBy)));
+  }
+
+  /**
+   * An address as it is compared: trimmed, without a {@code mailto:} scheme, lower case.
+   *
+   * @param address the address
+   * @return the bare address, or null when blank
+   */
+  private static String bareAddress(String address) {
+    String bare = StringUtils.trimToNull(address);
+    if (bare != null && StringUtils.startsWithIgnoreCase(bare, "mailto:")) {
+      bare = StringUtils.trimToNull(bare.substring("mailto:".length()));
+    }
+    return bare == null ? null : bare.toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * The ORGANIZER's address.
+   *
+   * @param invitation the invitation
+   * @return the address, or null when it names no organiser or no address
+   */
+  private static String organizerAddressOf(CalendarInvitation invitation) {
+    return invitation.getOrganizer() == null ? null : StringUtils.trimToNull(invitation.getOrganizer().getAddress());
   }
 
   /**
    * Tells the invitation what the user's calendar holds of it: that it holds it, where,
    * with which answer, and whether the mail is the organiser's newer revision -- only a
    * mail naming an organiser is one: the add-ons let nobody else update an event, and a
-   * published event naming none is held as it was added. The held
-   * answer becomes the user's current one unless the mail is newer than the held copy:
-   * it is what the calendar, and every client of it, says the user answered last -- on
-   * their phone, say, after answering from here.
+   * published event naming none is held as it was added -- and only a mail from that
+   * organiser: a higher SEQUENCE anybody else sent is no revision, and is told as not
+   * from its organiser. The held answer becomes the user's current one unless the mail
+   * is the newer revision: it is what the calendar, and every client of it, says the
+   * user answered last -- on their phone, say, after answering from here.
    *
    * @param invitation the invitation, with the answer read so far
    * @param held the held copy, null when nothing is held
+   * @param fromOrganizer whether the mail is from the event's organiser
    */
-  private static void applyHeld(CalendarInvitation invitation, HeldInvitation held) {
+  private static void applyHeld(CalendarInvitation invitation, HeldInvitation held, boolean fromOrganizer) {
     if (held == null) {
       return;
     }
     invitation.setHeld(true);
     invitation.setHeldLink(held.link());
     invitation.setHeldResponse(held.answer());
-    boolean newer = invitation.getOrganizer() != null && StringUtils.isNotBlank(invitation.getOrganizer().getAddress())
-        && invitation.getSequence() > held.sequence();
+    boolean higher = organizerAddressOf(invitation) != null && invitation.getSequence() > held.sequence();
+    boolean newer = higher && fromOrganizer;
     invitation.setNewerRevision(newer);
+    invitation.setOrganizerUnverified(higher && !fromOrganizer);
     if (!newer && held.answer() != null) {
       invitation.setAnswer(held.answer());
     }
