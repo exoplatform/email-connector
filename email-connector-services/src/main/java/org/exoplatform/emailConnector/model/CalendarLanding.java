@@ -26,6 +26,12 @@ public enum CalendarLanding {
   /** The user's calendar holds the event, with the answer given when one was. */
   LANDED,
 
+  /**
+   * The user's calendar held the event already and holds it now as this message says:
+   * the answer given, or the organiser's newer revision.
+   */
+  UPDATED,
+
   /** The user's calendar holds the event, declined: the copy they held took the decline. */
   DECLINED,
 

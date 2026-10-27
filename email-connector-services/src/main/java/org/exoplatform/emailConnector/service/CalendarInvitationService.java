@@ -97,7 +97,9 @@ import io.meeds.social.util.JsonUtils;
  * The answer given is remembered per user, attendee address and event (UID and
  * RECURRENCE-ID) with the SEQUENCE it answered, in the setting service, so the reader
  * says it again when the mail is opened later; an update that raises the sequence asks
- * again. An answer may be changed: each click sends a new REPLY, as other clients do.
+ * again. An answer may be changed: each change sends a new REPLY, as other clients do.
+ * The answer the organiser already has for this revision -- given from here, or held by
+ * the user's calendar -- is not sent again ({@link #ALREADY_ANSWERED}).
  * Three limits are stated, not decided here: an answer is remembered for the user who
  * gave it, so in a shared mailbox its owner and her other delegates do not see it (the
  * owner's Sent copy is their record); remembered answers are never deleted -- one small
@@ -155,6 +157,12 @@ public class CalendarInvitationService {
 
   /** The invitation asks for no answer that may be given from here. */
   public static final String  NOT_ANSWERABLE          = "emailConnector.invitation.notAnswerable";
+
+  /**
+   * The organiser has this answer to this revision already: given from here, or held
+   * by the user's calendar (answered on a phone, say). It is not sent twice.
+   */
+  public static final String  ALREADY_ANSWERED        = "emailConnector.invitation.alreadyAnswered";
 
   /** The event was cancelled: there is nothing left to answer. */
   public static final String  CANCELLED               = "emailConnector.invitation.cancelled";
@@ -250,7 +258,7 @@ public class CalendarInvitationService {
    *           {@link #SEND_NOT_ALLOWED} for a shared mailbox whose owner did not let the
    *           user send in her name
    * @throws IllegalArgumentException {@link #INVALID_ANSWER}, {@link #NOT_ANSWERABLE},
-   *           {@link #CANCELLED}, {@link #TOO_LARGE}, {@link #UNREADABLE},
+   *           {@link #ALREADY_ANSWERED}, {@link #CANCELLED}, {@link #TOO_LARGE}, {@link #UNREADABLE},
    *           {@link #UNSUPPORTED}, or the shared mailbox's send refusal codes
    * @throws IllegalStateException {@link #SEND_FAILED} or {@link #UNCONFIRMED}
    */
@@ -273,6 +281,9 @@ public class CalendarInvitationService {
     }
     if (!invitation.isAnswerable()) {
       throw new IllegalArgumentException(NOT_ANSWERABLE);
+    }
+    if (answer == answerTheOrganiserHas(username, invitation, parsed.recurrenceId())) {
+      throw new IllegalArgumentException(ALREADY_ANSWERED);
     }
     InternetAddress organizer = organizerAddress(invitation);
     EmailDelegation delegation = emailDelegationService.delegationOf(username, email.getFolder());
@@ -820,6 +831,24 @@ public class CalendarInvitationService {
       case DECLINED -> "declined";
     };
     return who + " has " + verb + " this invitation" + (StringUtils.isBlank(summary) ? "" : ": " + summary) + "." + CRLF;
+  }
+
+  /**
+   * The answer the organiser already has from the user for this revision: the one the
+   * user's calendar holds when the mail is no newer than its copy -- answered on a
+   * phone, or from here -- else the one given from here. Never the PARTSTAT the sender
+   * wrote on the user's line, which is the sender's.
+   *
+   * @param username the user
+   * @param invitation the invitation, told what the calendar holds
+   * @param recurrenceId the occurrence's RECURRENCE-ID, null for the series
+   * @return the answer, or null when the organiser has none
+   */
+  private InvitationAnswer answerTheOrganiserHas(String username, CalendarInvitation invitation, String recurrenceId) {
+    if (invitation.isHeld() && !invitation.isNewerRevision() && invitation.getHeldResponse() != null) {
+      return invitation.getHeldResponse();
+    }
+    return givenAnswer(username, invitation, recurrenceId);
   }
 
   /**
