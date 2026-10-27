@@ -367,6 +367,34 @@ class InvitationLandingServiceTest {
   }
 
   /**
+   * An answer or an organiser's update landed on a copy the calendar held before the
+   * click -- answered on a phone, say -- is told as an update of the calendar, not as an
+   * addition (board story A4); a decline stays told as such.
+   */
+  @Test
+  void aLandingOnACopyTheCalendarHeldIsAnUpdate() {
+    givenThePlugins();
+    when(first.holdsCalendarFor("john")).thenReturn(true);
+    when(first.land(LANDING)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false, false));
+
+    CalendarInvitation invitation = new CalendarInvitation();
+    invitation.setHeld(true);
+    new InvitationLandingService(applicationContext).land(LANDING, invitation);
+    assertEquals(CalendarLanding.UPDATED, invitation.getLanding());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
+
+    assertEquals(CalendarLanding.LANDED, land(new InvitationLandingService(applicationContext)).getLanding(), "not held before: added");
+
+    InvitationLanding declined = new InvitationLanding("john", "john@acme.com", "REQUEST", "weekly-sync@google.com", null, 2,
+                                                       InvitationAnswer.DECLINED, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+    when(first.land(declined)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false, false));
+    invitation = new CalendarInvitation();
+    invitation.setHeld(true);
+    new InvitationLandingService(applicationContext).land(declined, invitation);
+    assertEquals(CalendarLanding.DECLINED, invitation.getLanding());
+  }
+
+  /**
    * A question names the user and the UID; the occurrence and the organiser are read trimmed.
    */
   @Test

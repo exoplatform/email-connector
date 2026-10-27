@@ -31,6 +31,7 @@ const OUTCOME_MESSAGES = {
   'emailConnector.invitation.unconfirmed': 'emailConnector.mailBox.invitation.unconfirmed',
   'emailConnector.invitation.cancelled': 'emailConnector.mailBox.invitation.cancelled',
   'emailConnector.invitation.notAnswerable': 'emailConnector.mailBox.invitation.notAnswerable',
+  'emailConnector.invitation.alreadyAnswered': 'emailConnector.mailBox.invitation.alreadyAnswered',
   'emailConnector.invitation.sendNotAllowed': 'emailConnector.mailBox.invitation.sendNotAllowed',
   'emailConnector.sendMode.refusedByServer': 'emailConnector.mailBox.invitation.refusedByServer',
 };
@@ -118,6 +119,10 @@ export function invitationReplyOutcome(error, answer) {
   if (code === 'emailConnector.invitation.unconfirmed') {
     return { messageKey: OUTCOME_MESSAGES[code], alertType: 'warning', answer };
   }
+  if (code === 'emailConnector.invitation.alreadyAnswered') {
+    // Nothing was sent: the organiser has this answer already, which stands.
+    return { messageKey: OUTCOME_MESSAGES[code], alertType: 'info', answer };
+  }
   return {
     messageKey: OUTCOME_MESSAGES[code] || OUTCOME_MESSAGES['emailConnector.invitation.sendFailed'],
     alertType: 'error',
@@ -130,12 +135,14 @@ export function invitationReplyOutcome(error, answer) {
 const LANDING_MESSAGES = {
   ANSWER: {
     LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+    UPDATED: { messageKey: 'emailConnector.mailBox.invitation.updated', alertType: 'success' },
     DECLINED: { messageKey: 'emailConnector.mailBox.invitation.declinedHeld', alertType: 'info' },
     REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefusedAfterAnswer', alertType: 'warning' },
     FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailedAfterAnswer', alertType: 'warning' },
   },
   ADD: {
     LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+    UPDATED: { messageKey: 'emailConnector.mailBox.invitation.updated', alertType: 'success' },
     ALREADY_HELD: { messageKey: 'emailConnector.mailBox.invitation.alreadyHeld', alertType: 'info' },
     REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefused', alertType: 'warning' },
     FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
@@ -161,7 +168,7 @@ const LANDING_ERRORS = {
  * given left either way. Nothing when no add-on holds a calendar for the user or there
  * was nothing to do, except after a removal, where "not in your calendar" is the news.
  *
- * @param {String} landing LANDED, DECLINED, ALREADY_HELD, REMOVED, REFUSED, FAILED or nothing, as the server told it
+ * @param {String} landing LANDED, UPDATED, DECLINED, ALREADY_HELD, REMOVED, REFUSED, FAILED or nothing, as the server told it
  * @param {String} click ANSWER, ADD or REMOVE
  * @returns {Object} {messageKey, alertType}, null when there is nothing to say
  */

@@ -787,6 +787,56 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * The answer the organiser already has for this revision is not sent a second time
+   * (board story A4: answered on a phone, then clicked again on the card): the one the
+   * user's calendar holds, or the one given from here. Another answer is sent, and so
+   * is any answer to a newer revision. The PARTSTAT the sender wrote on the user's line
+   * is not an answer the organiser has from the user.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theAnswerTheOrganiserHasIsNotSentTwice() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+
+    assertEquals(CalendarInvitationService.ALREADY_ANSWERED,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
+    assertTrue(factories.isEmpty(), "the calendar's answer is not sent again");
+    verify(invitationLandingService, never()).land(any(), any());
+    verify(settingService, never()).set(any(), any(), anyString(), any());
+
+    service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED);
+    assertEquals(1, factories.size(), "changing the answer stays possible");
+
+    // A newer revision than the calendar's copy: its answer is asked again.
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1));
+    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(2, factories.size());
+
+    // Nothing held: the answer given from here to this revision is the one the organiser has.
+    when(invitationLandingService.held(any())).thenReturn(null);
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"TENTATIVE\",\"sequence\":2,\"answeredAt\":1}"));
+    assertEquals(CalendarInvitationService.ALREADY_ANSWERED,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE)).getMessage());
+    assertEquals(2, factories.size());
+    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(3, factories.size());
+
+    // The sender's PARTSTAT on the user's line is no answer of theirs.
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key)).thenReturn(null);
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test User",
+                                                                               "PARTSTAT=ACCEPTED;RSVP=TRUE;CN=Test User"));
+    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(4, factories.size());
+  }
+
+  /**
    * "Add to my calendar" lands the invitation without an answer: nothing is sent,
    * nothing is remembered, and the add-on is handed the message with no answer.
    *

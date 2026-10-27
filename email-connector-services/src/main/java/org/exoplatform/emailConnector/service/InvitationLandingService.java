@@ -145,6 +145,7 @@ public class InvitationLandingService {
         }
         // The one add-on holding the user's calendar: nothing from it means
         // nothing to do, and no other add-on is asked.
+        boolean wasHeld = invitation.isHeld();
         LandedInvitation landed = plugin.land(landing);
         if (landed != null) {
           LOG.debug("The invitation {} of user {} {} their calendar through {}",
@@ -152,7 +153,7 @@ public class InvitationLandingService {
                     landing.username(),
                     landed.removed() ? "was removed from" : "landed in",
                     plugin.getClass().getName());
-          invitation.setLanding(landingOf(landed, landing.answer()));
+          invitation.setLanding(landingOf(landed, landing.answer(), wasHeld));
           invitation.setLandingLink(landed.removed() ? null : landed.link());
           // The click was honoured: the card does not offer it again.
           invitation.setLandable(invitation.isLandable() && landed.removed());
@@ -375,20 +376,25 @@ public class InvitationLandingService {
   /**
    * What the reader tells of a landing: removed, already held, declined on a copy the
    * user held -- the add-on sets a decline on a copy and creates none, so what it
-   * holds is a declined event, not an addition -- or landed.
+   * holds is a declined event, not an addition -- updated, when the calendar held the
+   * event before the click (answered on a phone, say), or landed.
    *
    * @param landed what the add-on did
    * @param answer the answer given, null for an addition or a removal
+   * @param wasHeld whether the reader was told the calendar held the event before
    * @return the outcome
    */
-  private static CalendarLanding landingOf(LandedInvitation landed, InvitationAnswer answer) {
+  private static CalendarLanding landingOf(LandedInvitation landed, InvitationAnswer answer, boolean wasHeld) {
     if (landed.removed()) {
       return CalendarLanding.REMOVED;
     }
     if (landed.alreadyHeld()) {
       return CalendarLanding.ALREADY_HELD;
     }
-    return answer == InvitationAnswer.DECLINED ? CalendarLanding.DECLINED : CalendarLanding.LANDED;
+    if (answer == InvitationAnswer.DECLINED) {
+      return CalendarLanding.DECLINED;
+    }
+    return wasHeld ? CalendarLanding.UPDATED : CalendarLanding.LANDED;
   }
 
   /**
