@@ -708,9 +708,8 @@ class CalendarInvitationServiceTest {
 
   /**
    * An update or a cancellation is the organiser's when the mail's From is the
-   * ORGANIZER's address, or its Sender is -- a calendar service that sends in the
-   * organiser's name -- compared on the bare address, case aside: it is offered and
-   * landed.
+   * ORGANIZER's address alone, compared on the bare address, case aside: it is offered,
+   * and landed with the verdict, so the add-on may change its copy.
    *
    * @throws Exception never
    */
@@ -721,66 +720,87 @@ class CalendarInvitationServiceTest {
     ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
     givenTheLanding(landing, CalendarLanding.UPDATED, "/portal/dw/agenda?eventId=77");
 
-    // From: the stored From is the organiser's, in another case.
+    // The stored From is the organiser's, in another case; the server read none.
     email.setSender(new EmailSender("Olivia", "Olivia@Partner.Example", null, null));
     CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
     assertFalse(update.isOrganizerUnverified());
     assertTrue(update.isNewerRevision());
     assertTrue(update.isLandable());
     assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+    assertTrue(landing.getValue().fromOrganizer(), "the verdict travels with the landing");
 
-    // Sender: the From is a calendar service's, the Sender the server reads is hers.
+    // The From the server read is hers.
     email.setSender(new EmailSender("Calendar", "calendar-notification@google.com", null, null));
-    authors = List.of("calendar-notification@google.com", "OLIVIA@partner.example");
-    update = service.getInvitation(EMAIL_ID, USER);
-    assertFalse(update.isOrganizerUnverified());
-    assertTrue(update.isNewerRevision());
-    assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
-
-    // The same Sender on a cancellation.
+    authors = List.of("OLIVIA@partner.example");
     givenTheCalendarPart("allday-cancel.ics");
     givenTheLanding(landing, CalendarLanding.REMOVED, null);
     assertTrue(service.getInvitation(EMAIL_ID, USER).isRemovable());
     assertEquals(CalendarLanding.REMOVED, service.removeFromCalendar(EMAIL_ID, USER).getLanding());
     assertEquals("CANCEL", landing.getValue().method());
+    assertTrue(landing.getValue().fromOrganizer());
 
-    // Neither: refused.
-    authors = List.of("calendar-notification@google.com");
+    // A From naming her beside another address is not hers alone.
+    authors = List.of("olivia@partner.example", "mallory@elsewhere.example");
     assertEquals(CalendarInvitationService.UNVERIFIED,
                  assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
   }
 
   /**
-   * A delegate who sends for the organiser is named by the ORGANIZER's SENT-BY: a mail
-   * from that address is the organiser's, a mail from anybody else still is not.
+   * Neither a Sender naming the organiser behind an outside From, nor an ORGANIZER
+   * whose SENT-BY names the sender, makes a mail the organiser's: SENT-BY is read from
+   * the object the check verifies, and the Sender is not what DMARC authenticates.
+   * Both are refused, and a first invitation landed from such a mail says it is not
+   * from its organiser.
    *
    * @throws Exception never
    */
   @Test
-  void theOrganisersSentByIsTheOrganiser() throws Exception {
+  void aSenderOrASentByNamingTheSenderIsNotTheOrganiser() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
     when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", null, 1)));
     ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
-    givenTheLanding(landing, CalendarLanding.UPDATED, "/portal/dw/agenda?eventId=77");
-    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example",
-                                                                               "ORGANIZER;SENT-BY=\"mailto:Assistant@partner.example\";CN=Olivia Organizer:mailto:olivia@partner.example"));
-    email.setSender(new EmailSender("Assistant", "assistant@partner.example", null, null));
 
+    // A Sender naming the organiser behind an outside From: the server reads the From.
+    email.setSender(new EmailSender("Mallory", "mallory@elsewhere.example", null, null));
+    authors = EmailBoxService.authorsOf(senderNamingTheOrganiser());
+    assertEquals(List.of("mallory@elsewhere.example"), authors);
     CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
-
-    assertFalse(update.isOrganizerUnverified());
-    assertTrue(update.isNewerRevision());
-    assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
-
-    email.setSender(new EmailSender("Mallory", "mallory@partner.example", null, null));
-    assertTrue(service.getInvitation(EMAIL_ID, USER).isOrganizerUnverified());
+    assertTrue(update.isOrganizerUnverified());
     assertEquals(CalendarInvitationService.UNVERIFIED,
                  assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
 
+    // An ORGANIZER whose SENT-BY names the sender itself.
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example",
+                                                                               "ORGANIZER;SENT-BY=\"mailto:mallory@elsewhere.example\";CN=Olivia Organizer:mailto:olivia@partner.example"));
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isOrganizerUnverified());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
     givenTheCalendarPartText(fixtureText("allday-cancel.ics").replace("ORGANIZER:mailto:olivia@partner.example",
-                                                                       "ORGANIZER;SENT-BY=\"mailto:assistant@partner.example\":mailto:olivia@partner.example"));
-    authors = List.of("assistant@partner.example");
-    assertTrue(service.getInvitation(EMAIL_ID, USER).isRemovable());
+                                                                       "ORGANIZER;SENT-BY=\"mailto:mallory@elsewhere.example\":mailto:olivia@partner.example"));
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isRemovable());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
+
+    // A first invitation from her is still added, carrying the verdict.
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(HeldLookup.answered(null));
+    givenTheCalendarPart("google-weekly-request.ics");
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
+    assertEquals(CalendarLanding.LANDED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+    assertFalse(landing.getValue().fromOrganizer(), "the add-on must not change a copy on its strength");
+  }
+
+  /**
+   * A message whose From is an outsider and whose Sender header names the organiser.
+   *
+   * @return the message
+   * @throws Exception never
+   */
+  private static MimeMessage senderNamingTheOrganiser() throws Exception {
+    MimeMessage message = new MimeMessage((javax.mail.Session) null);
+    message.setFrom(new InternetAddress("mallory@elsewhere.example"));
+    message.setSender(new InternetAddress("olivia@partner.example"));
+    return message;
   }
 
   /**
