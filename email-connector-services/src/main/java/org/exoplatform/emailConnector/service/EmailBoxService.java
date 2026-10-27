@@ -180,6 +180,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.MessagePart;
 import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.RawEmailRef;
 import org.exoplatform.emailConnector.model.RawEmailSource;
@@ -7101,6 +7102,31 @@ public class EmailBoxService {
    * @throws IllegalStateException when the mailbox cannot be read
    */
   public byte[] readMessagePart(String username, Email email, String partPath, long maxBytes) throws IllegalAccessException {
+    MessagePart part = readMessagePartAndAuthors(username, email, partPath, maxBytes);
+    return part == null ? null : part.content();
+  }
+
+  /**
+   * One MIME part of a cached message, read as {@link #readMessagePart} reads it, with
+   * the addresses the message says it is from -- every {@code From} address and the
+   * {@code Sender} -- read from the same message on the server, in the same round trip.
+   * Over IMAP the {@code Sender} is the envelope's, which is the {@code From} when the
+   * message has no {@code Sender} header (RFC 3501 section 7.4.2).
+   *
+   * @param username the mailbox owner, whose own connection reads it
+   * @param email the cached message, already resolved for this user
+   * @param partPath the part's IMAP section path, as the cached attachment names it
+   * @param maxBytes the most decoded bytes the caller accepts
+   * @return the bytes and the authors, or null when the folder, the message or the part
+   *         is gone
+   * @throws IllegalAccessException if the user has no usable connector
+   * @throws IllegalArgumentException {@link #PART_TOO_LARGE} when the part exceeds the cap
+   * @throws IllegalStateException when the mailbox cannot be read
+   */
+  public MessagePart readMessagePartAndAuthors(String username,
+                                               Email email,
+                                               String partPath,
+                                               long maxBytes) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -7134,7 +7160,7 @@ public class EmailBoxService {
         if (bytes.length > maxBytes) {
           throw new IllegalArgumentException(PART_TOO_LARGE);
         }
-        return bytes;
+        return new MessagePart(bytes, authorsOf(message));
       }
     } catch (IllegalArgumentException e) {
       if (PART_TOO_LARGE.equals(e.getMessage())) {
@@ -7149,6 +7175,38 @@ public class EmailBoxService {
     } finally {
       closeQuietly(folder, store, username);
     }
+  }
+
+  /**
+   * The bare addresses a message says it is from: every {@code From} address, then the
+   * {@code Sender}. A header that cannot be parsed adds nothing.
+   *
+   * @param message the message, as the server reads it
+   * @return the addresses, possibly empty
+   */
+  static List<String> authorsOf(Message message) {
+    List<String> authors = new ArrayList<>();
+    try {
+      Address[] from = message.getFrom();
+      if (from != null) {
+        for (Address address : from) {
+          if (address instanceof InternetAddress internetAddress && StringUtils.isNotBlank(internetAddress.getAddress())) {
+            authors.add(internetAddress.getAddress().trim());
+          }
+        }
+      }
+    } catch (MessagingException e) {
+      LOG.debug("The From of a message could not be read", e);
+    }
+    try {
+      if (message instanceof MimeMessage mimeMessage && mimeMessage.getSender() instanceof InternetAddress sender
+          && StringUtils.isNotBlank(sender.getAddress())) {
+        authors.add(sender.getAddress().trim());
+      }
+    } catch (MessagingException e) {
+      LOG.debug("The Sender of a message could not be read", e);
+    }
+    return authors;
   }
 
   public String broadcastOpenEmail(String username) throws IllegalAccessException {

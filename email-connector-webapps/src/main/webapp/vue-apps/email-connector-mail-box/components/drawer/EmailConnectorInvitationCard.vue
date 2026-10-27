@@ -89,6 +89,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <div v-if="heldLabel && invitation.newerRevision" class="caption text-sub-title invitation-newer-revision">
           {{ $t('emailConnector.mailBox.invitation.newerRevision') }}
         </div>
+        <!-- A change to the user's calendar that does not come from the event's organiser:
+             shown, never landed. -->
+        <div v-if="invitation.organizerUnverified" class="caption warning--text invitation-unverified">
+          <v-icon size="12" class="warning--text me-1">fas fa-exclamation-triangle</v-icon>{{ $t('emailConnector.mailBox.invitation.unverified') }}
+        </div>
         <div v-if="answerLabel" class="mt-2 font-weight-bold invitation-answer">{{ answerLabel }}</div>
         <div
           v-if="invitation.answerable || invitation.landable || invitation.removable"
