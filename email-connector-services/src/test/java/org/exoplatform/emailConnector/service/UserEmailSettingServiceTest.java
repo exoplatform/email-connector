@@ -1719,7 +1719,9 @@ public class UserEmailSettingServiceTest {
   /**
    * EXO-90836. The user-facing disconnection runs in its own transaction and rolls back
    * on any exception: the removal it delegates to is a private method, so without this
-   * annotation the account-cleanup listeners would run in none. The setting removals
+   * annotation the {@code BEFORE_COMMIT} account-cleanup listeners would run in none;
+   * the AI filter cleanup ({@code EmailFilterAiCleanupListener}, {@code AFTER_COMMIT})
+   * runs after its commit. The setting removals
    * and the set-aside commit on their own either way, in the kernel transaction of
    * SettingService's own {@code @ExoTransactional} writes.
    * Pins the annotation-removed mutant, which a call made by hand cannot kill.

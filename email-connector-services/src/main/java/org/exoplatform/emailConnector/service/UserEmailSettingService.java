@@ -871,7 +871,9 @@ public class UserEmailSettingService {
    *
    * <p>
    * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
-   * account-cleanup listeners run in it. The setting removals and the set-aside commit
+   * {@code BEFORE_COMMIT} account-cleanup listeners run in it; the AI filter cleanup
+   * ({@code EmailFilterAiCleanupListener}, {@code AFTER_COMMIT}) runs after its commit.
+   * The setting removals and the set-aside commit
    * on their own, in the kernel transaction of SettingService's own
    * {@code @ExoTransactional} writes, which a rollback of this transaction does not undo.
    *
