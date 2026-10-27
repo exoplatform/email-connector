@@ -233,10 +233,10 @@ class EmailMcpToolTest {
                                                   false,
                                                   null);
     hit.setMessageKind(MessageKind.AUTO_REPLY);
-    when(emailBoxService.searchEmails(eq(USERNAME), eq("absence"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.INBOX), anyInt()))
                                                                                                                                   .thenReturn(new EmailSearchResultPage(List.of(hit),
                                                                                                                                                                         1));
-    assertEquals("auto_reply", emailMcpTool.searchEmails("absence", null, null, null, null, null, null).getResults().get(0).getMessageKind());
+    assertEquals("auto_reply", emailMcpTool.searchEmails("absence", null, null, null, null, null, null, null, null, null, null).getResults().get(0).getMessageKind());
 
     Email bounce = threadMessage("<dsn@mx>", "Mail Delivery System", "mailer-daemon@mx.example", "<p>failed</p>");
     bounce.setMessageKind(MessageKind.BOUNCE);
