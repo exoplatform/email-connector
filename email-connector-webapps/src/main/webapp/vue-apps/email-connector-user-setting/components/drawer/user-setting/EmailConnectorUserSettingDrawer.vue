@@ -269,7 +269,7 @@ export default {
         document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');
         this.$emailConnectorCommonService.openEmailBox();
-      }).catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'), 'error')
+      }).catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.userSetting.drawer.connect.error'), 'error')
       ).finally(() => this.loading = false);
     }
   }
