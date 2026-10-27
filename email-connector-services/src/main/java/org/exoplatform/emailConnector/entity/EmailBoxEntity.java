@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.entity;
 import java.util.Date;
 import java.util.List;
 
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 
@@ -241,4 +242,17 @@ public class EmailBoxEntity {
   // by name.
   @Column(name = "DMARC_PASS")
   private Boolean                     dmarcPass;
+
+  // Who wrote the message (EXO-91995): BOUNCE, AUTO_REPLY or NORMAL, decided at sync from
+  // its headers and MIME structure (EmailMessageKindUtils). Null on a row written before
+  // changeset 1.0.0-exo-91995-01, and when the message could not be read: unknown, never
+  // read as NORMAL. Declared last and set by name, like the DMARC verdict.
+  @Enumerated(EnumType.STRING)
+  @Column(name = "MESSAGE_KIND")
+  private MessageKind                 messageKind;
+
+  // On a BOUNCE, the addresses the report says could not be reached, comma-separated and
+  // cut to the column's 1000 characters at an address boundary; null otherwise.
+  @Column(name = "BOUNCED_RECIPIENTS")
+  private String                      bouncedRecipients;
 }

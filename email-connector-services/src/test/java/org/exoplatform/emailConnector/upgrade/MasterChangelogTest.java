@@ -1645,9 +1645,9 @@ public class MasterChangelogTest {
     boolean from = false;
     for (ChangeSet changeSet : new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).getDatabaseChangeLog()
                                                                                                     .getChangeSets()) {
-      // Compared by number, not by equality: a changeset another vendor filters out at
+      // Compared by position, not by equality: a changeset another vendor filters out at
       // parse time (1.0.0-62 on MySQL) never appears in this list to be matched.
-      from = from || sequenceNumber(changeSet.getId()) >= sequenceNumber(fromId);
+      from = from || position(changeSet.getId()) >= position(fromId);
       if (from && appliesTo(changeSet, dbms)) {
         selected.add(changeSet);
       }
@@ -1656,29 +1656,57 @@ public class MasterChangelogTest {
   }
 
   /**
-   * Whether a changeset lies outside a bounded range of ids, by number: the file is read
-   * in its own order, where a changeset appended later may carry a lower number than
-   * the one before it (1.0.0-86 after 1.0.0-87), so a range is never "from here to
-   * there in the file".
+   * Whether a changeset lies outside a bounded range of ids, by position in the file: a
+   * range runs from one changeset of the file to another, both included. Ids do not order
+   * changesets: a task-scoped id ({@code 1.0.0-exo-<task>-NN}) carries no sequence number.
    *
    * @param id the changeset's id
    * @param fromId the first id of the range
    * @param throughId the last id of the range
-   * @return true when its number is below the first or above the last
+   * @return true when it stands before the first or after the last
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static boolean outside(String id, String fromId, String throughId) {
-    int number = sequenceNumber(id);
-    return number < sequenceNumber(fromId) || number > sequenceNumber(throughId);
+  private boolean outside(String id, String fromId, String throughId) throws Exception {
+    int position = position(id);
+    return position < position(fromId) || position > position(throughId);
   }
 
   /**
-   * The number at the end of a {@code 1.0.0-N} changeset id.
+   * The position of a changeset in the file, counted over every changeset whatever its
+   * {@code dbms}, so a changeset a vendor filters out at parse time still has one.
    *
    * @param id the id
-   * @return N
+   * @return its zero-based position
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static int sequenceNumber(String id) {
-    return Integer.parseInt(id.substring(id.lastIndexOf('-') + 1));
+  private int position(String id) throws Exception {
+    if (changeSetIds == null) {
+      changeSetIds = changeSetIdsInFileOrder();
+    }
+    int position = changeSetIds.indexOf(id);
+    assertTrue(position >= 0, id + " is not a changeset of " + CHANGELOG);
+    return position;
+  }
+
+  private static List<String> changeSetIds;
+
+  /**
+   * The id of every changeset of the file, in file order, whatever its {@code dbms}.
+   *
+   * @return the ids
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  private List<String> changeSetIdsInFileOrder() throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    List<String> ids = new ArrayList<>();
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        ids.add(((Element) changeSets.item(i)).getAttribute("id"));
+      }
+    }
+    return ids;
   }
 
   /**
@@ -1976,6 +2004,72 @@ public class MasterChangelogTest {
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
       String rollback = offlineRollbackSql(vendor, "1.0.0-99", "1.0.0-99").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DMARC_PASS;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
+   * EXO-91995 -- 1.0.0-exo-91995-01 adds EMAIL_BOX.MESSAGE_KIND and BOUNCED_RECIPIENTS, null on
+   * a message cached before it (its kind was never decided); rolls back to a tag placed
+   * immediately before it, dropping those two columns and nothing else, the message kept;
+   * and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theMessageKindRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback100" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-91995-01"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-message-kind");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "not before 1.0.0-exo-91995-01");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
+            + " VALUES (1, 'bob', 's', 'Mail Delivery System,mailer-daemon@mx.example', CURRENT_TIMESTAMP, 'INBOX')");
+      }
+      liquibase.update("");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "MESSAGE_KIND"), "1.0.0-exo-91995-01 adds EMAIL_BOX.MESSAGE_KIND");
+      assertEquals(1000, columnSize(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"), "and EMAIL_BOX.BOUNCED_RECIPIENTS");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT MESSAGE_KIND, BOUNCED_RECIPIENTS FROM EMAIL_BOX WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "a message cached before it carries no kind");
+          assertNull(row.getString(2));
+        }
+        statement.executeUpdate("UPDATE EMAIL_BOX SET MESSAGE_KIND = 'BOUNCE', BOUNCED_RECIPIENTS = 'gone@prospect.example' WHERE ID = 1");
+      }
+      liquibase.rollback("before-message-kind", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "the rollback drops it");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"), "and the failed addresses");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "and nothing before them");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT SUBJECT FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the message itself survives the rollback");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "MESSAGE_KIND"), "the changeset applies again after its rollback");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "BOUNCED_RECIPIENTS"));
+    }
+  }
+
+  /**
+   * EXO-91995 -- 1.0.0-exo-91995-01 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: two nullable VARCHAR columns, unquoted, and a rollback that drops them.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theMessageKindOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-91995-01", "1.0.0-exo-91995-01").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("MESSAGE_KIND VARCHAR(16)"), vendor + ": " + update);
+      assertTrue(update.contains("BOUNCED_RECIPIENTS VARCHAR(1000)"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the columns are nullable: " + update);
+      assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-91995-01", "1.0.0-exo-91995-01").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("DROP COLUMN BOUNCED_RECIPIENTS"), vendor + ": " + rollback);
+      assertTrue(rollback.contains("DROP COLUMN MESSAGE_KIND"), vendor + ": " + rollback);
+      assertFalse(rollback.contains("DMARC_PASS"), vendor + " rollback drops those columns only: " + rollback);
     }
   }
 
