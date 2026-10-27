@@ -56,11 +56,13 @@ import jakarta.annotation.PreDestroy;
  * the one asked to land, alone: what it answers, nothing included, is the outcome.
  * <p>
  * Tolerant by construction: no implementer, a context that cannot be listed, or an
- * implementer whose classes cannot be linked all read as "no calendar for this user",
- * and the reader says nothing about a calendar. An implementer that holds the user's
- * calendar and refuses the invitation as it is ({@link IllegalArgumentException}) is
- * told to the user and not an incident; one that fails to update the calendar is
- * both, so the user knows their answer left and their calendar did not follow.
+ * implementer whose classes cannot be linked when asked whether it holds the user's
+ * calendar all read as "no calendar for this user", and the reader says nothing about a
+ * calendar. An implementer that holds the user's calendar and refuses the invitation as
+ * it is ({@link IllegalArgumentException}) is told to the user and not an incident; one
+ * that fails to update the calendar -- its classes failing to link while it lands
+ * included -- is both, so the user knows their answer left and their calendar did not
+ * follow.
  * <p>
  * <b>Whether the calendar holds an invitation already</b> ({@link #held}, EXO-90873) is
  * asked when the reader shows one, so it is bounded: the add-on is asked on a small
@@ -138,7 +140,7 @@ public class InvitationLandingService {
   public void land(InvitationLanding landing, CalendarInvitation invitation) {
     for (InvitationCalendarPlugin plugin : plugins()) {
       try {
-        if (!plugin.holdsCalendarFor(landing.username())) {
+        if (!holdsCalendarFor(plugin, landing.username())) {
           continue;
         }
         // The one add-on holding the user's calendar: nothing from it means
@@ -158,12 +160,6 @@ public class InvitationLandingService {
           heldAfter(landed, landing.answer(), invitation);
         }
         return;
-      } catch (LinkageError e) {
-        // The add-on's classes cannot be linked: as if it were not installed.
-        LOG.debug("Add-on {} could not be asked to land the invitation of user {}; it is read as holding no calendar",
-                  plugin.getClass().getName(),
-                  landing.username(),
-                  e);
       } catch (IllegalArgumentException e) {
         // The sender's content, or a shape not landed yet: the user's to know, not an incident.
         LOG.debug("The invitation {} of user {} was not landed by {}: {}",
@@ -173,7 +169,9 @@ public class InvitationLandingService {
                   e.getMessage());
         invitation.setLanding(CalendarLanding.REFUSED);
         return;
-      } catch (RuntimeException e) {
+      } catch (RuntimeException | LinkageError e) {
+        // Whatever stopped the add-on, a class it cannot link while landing
+        // included, the calendar did not follow: no other add-on is asked.
         LOG.warn("The invitation {} of user {} could not be landed in their calendar by {}",
                  landing.uid(),
                  landing.username(),
@@ -182,6 +180,26 @@ public class InvitationLandingService {
         invitation.setLanding(CalendarLanding.FAILED);
         return;
       }
+    }
+  }
+
+  /**
+   * Whether one add-on holds a calendar for the user; one whose classes cannot be
+   * linked is as if it were not installed.
+   *
+   * @param plugin the add-on
+   * @param username the user
+   * @return true when it holds one
+   */
+  private static boolean holdsCalendarFor(InvitationCalendarPlugin plugin, String username) {
+    try {
+      return plugin.holdsCalendarFor(username);
+    } catch (LinkageError e) {
+      LOG.debug("Add-on {} could not say whether it holds a calendar for user {}; it is read as holding none",
+                plugin.getClass().getName(),
+                username,
+                e);
+      return false;
     }
   }
 

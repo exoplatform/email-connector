@@ -164,7 +164,8 @@ class InvitationLandingServiceTest {
   /**
    * An implementer that tried and failed, and one that refused the invitation as it
    * is, are the two outcomes the user is told of -- told apart by the exception; one
-   * whose classes cannot be linked is as if it were not installed.
+   * whose classes cannot be linked when asked whether it holds the user's calendar is as
+   * if it were not installed.
    */
   @Test
   void anAttemptThatFailedIsToldAndAMissingLibraryIsNot() {
@@ -179,9 +180,28 @@ class InvitationLandingServiceTest {
     assertEquals(CalendarLanding.REFUSED, land(new InvitationLandingService(applicationContext)).getLanding());
     verify(second, never()).land(any());
 
-    doThrow(new NoClassDefFoundError("net/fortuna/ical4j/model/Calendar")).when(first).land(LANDING);
+    doThrow(new NoClassDefFoundError("net/fortuna/ical4j/model/Calendar")).when(first).holdsCalendarFor("john");
     when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, null, false, false));
     assertEquals(CalendarLanding.LANDED, land(new InvitationLandingService(applicationContext)).getLanding());
+  }
+
+  /**
+   * An implementer that holds the user's calendar and whose classes fail to link while
+   * it lands -- a library its reader needs, missing from the server -- did not update
+   * the calendar: the user is told, and no other implementer is asked in its place.
+   */
+  @Test
+  void aLandingWhoseClassesCannotBeLinkedIsAFailedLanding() {
+    givenThePlugins();
+    when(first.holdsCalendarFor("john")).thenReturn(true);
+    lenient().when(second.holdsCalendarFor("john")).thenReturn(true);
+    doThrow(new NoClassDefFoundError("org/apache/commons/validator/routines/EmailValidator")).when(first).land(LANDING);
+
+    CalendarInvitation invitation = land(new InvitationLandingService(applicationContext));
+
+    assertEquals(CalendarLanding.FAILED, invitation.getLanding());
+    assertTrue(invitation.isLandable(), "nothing was added: the offer stays");
+    verify(second, never()).land(any());
   }
 
   /**
