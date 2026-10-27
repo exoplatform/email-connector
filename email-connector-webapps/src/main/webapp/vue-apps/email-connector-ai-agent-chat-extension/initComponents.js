@@ -16,9 +16,11 @@
  */
 
 import EmailConnectorAiSendDraftConfirm from './components/EmailConnectorAiSendDraftConfirm.vue';
+import EmailConnectorAiScheduledSendConfirm from './components/EmailConnectorAiScheduledSendConfirm.vue';
 
 const components = {
   'email-connector-ai-send-draft-confirm': EmailConnectorAiSendDraftConfirm,
+  'email-connector-ai-scheduled-send-confirm': EmailConnectorAiScheduledSendConfirm,
 };
 
 for (const key in components) {

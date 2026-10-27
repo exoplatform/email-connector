@@ -12786,6 +12786,92 @@ public class EmailBoxService {
   }
 
   /**
+   * Schedules a draft as it is stored at this moment (EXO-91996): the user's last edits
+   * in the Email app are what will go out, never an older copy the caller read earlier.
+   * <p>
+   * The row is read under the draft's lock and handed to {@link #scheduleDraft} as the
+   * composer's text, still under that lock (it is reentrant), so no save made on this
+   * node can land between the read and the schedule, as {@link #sendDraftAsStored} does
+   * for a send. The lock is this node's: a save handled by another node of a cluster in
+   * between is not held off by it.
+   * <p>
+   * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
+   * is, before anything is written: a caller that had the user approve what the draft
+   * said refuses there a row that says something else by now, and nothing is scheduled.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row; nothing is scheduled then
+   * @param scheduler creates the schedule row for the draft row, and answers it
+   * @return the schedule row
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException when the user has no draft under that id
+   * @throws IllegalArgumentException what {@link #scheduleDraft} or {@code check} refuses
+   *           with
+   * @throws ScheduledSendConflictException when the draft is already scheduled or being
+   *           sent
+   */
+  public EmailScheduledSend scheduleDraftAsStored(String draftLocalId,
+                                                  String username,
+                                                  Consumer<Email> check,
+                                                  Function<Email, EmailScheduledSend> scheduler) throws IllegalAccessException,
+                                                                                                 ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
+      }
+      return scheduleDraft(stored, username, scheduler);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Changes a scheduled draft's schedule, then checks the draft, in one transaction
+   * (EXO-91996): a reschedule or a cancel that holds only if the mail still says what
+   * its caller had the user approve.
+   * <p>
+   * {@code takeSchedule} runs first, as the transaction's first statement: its
+   * conditional write on the schedule row waits for the row's lock, which an edit of the
+   * scheduled mail in the Email app holds until it commits (see
+   * {@link #updateScheduledDraft}, whose draft lock is released before that commit). So
+   * the draft read next is the one such an edit committed, on every node. {@code check}
+   * runs on it; a refusal rolls the schedule's change back.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param takeSchedule changes the schedule row, or throws
+   * @param check throws to refuse the draft; the schedule's change is undone then
+   * @return the draft as it stands
+   * @throws ObjectNotFoundException when the schedule or the draft is not there
+   * @throws IllegalArgumentException what {@code check} refuses with
+   * @throws ScheduledSendConflictException what {@code takeSchedule} refuses with
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public Email changeScheduleIfDraftSays(String draftLocalId,
+                                         String username,
+                                         ScheduleTaker takeSchedule,
+                                         Consumer<Email> check) throws ObjectNotFoundException {
+    takeSchedule.take();
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft == null) {
+      throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+    }
+    check.accept(draft);
+    return draft;
+  }
+
+  /**
    * Takes a scheduled draft's schedule row for an edit, or refuses (see
    * {@link #updateScheduledDraft}).
    */

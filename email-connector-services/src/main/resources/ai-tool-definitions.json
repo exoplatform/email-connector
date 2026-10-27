@@ -432,6 +432,93 @@
       }
     },
     {
+      "name": "schedule_email_draft",
+      "title": "Schedule an email draft",
+      "description": "Schedule a draft of the current user's own mailbox to be sent at a date and time, as the Email app's 'Schedule send' does. The draft leaves the Drafts folder for the Email app's Scheduled view, where the user can change, cancel or send it; it is sent once, at that time, by the server, even if nobody is connected. It is scheduled as it is stored at this moment, the user's own edits in the Email app included, and cannot be changed by update_email_draft while it is scheduled. send_at is a local date and time with no offset, such as 2026-10-23T08:30, read in time_zone (an IANA name, such as Europe/Paris); leave time_zone empty for the user's own time zone. A time the clocks skip or show twice in that zone, when they change, is refused: ask the user for another. If the user's time zone is not known you are told so, and you ask the user. The time must be ahead of now and within the limits this deployment sets: a refused time says whether it is too soon or too far. IMPORTANT: once the time comes, the email goes out over real SMTP. Read the draft with list_email_drafts first and pass its to, cc, bcc and subject exactly as it says them now: they are what the user approves, and the draft is scheduled only if it still says exactly that; otherwise nothing is scheduled and you read it again. Always show the user the recipients, the subject and the time, and never schedule without their explicit confirmation. A draft already scheduled, or written in a mailbox shared with the user, is refused. Returns the scheduled email with its draft_id, its send_at in its time zone and send_at_utc, its status, and a link to the Scheduled view.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id create_email_draft or list_email_drafts gave." },
+          "send_at": { "type": "string", "description": "When to send it: a local date and time in time_zone, with no offset, such as 2026-10-23T08:30." },
+          "time_zone": { "type": "string", "description": "The IANA time zone of send_at, such as Europe/Paris. Empty for the user's own." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
+          "cc": { "type": "array", "items": { "type": "string" }, "description": "The draft's copied recipients as read now; empty when it has none." },
+          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." }
+        },
+        "required": ["draft_id", "send_at", "to", "subject"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_scheduled_emails",
+      "title": "List scheduled emails",
+      "description": "List the emails of the current user's Scheduled view in the Email app, soonest first: for each, its draft_id (to pass to reschedule_email and cancel_scheduled_email), its recipients, subject and first words, when it is sent (send_at in its time_zone, and send_at_utc), its status and, when it was written in a mailbox shared with the user, that mailbox. status is SCHEDULED (waiting), SENDING, FAILED (not sent; error says why, and the user can change its time or cancel it) or UNCERTAIN (it may have been sent: the user checks their Sent folder in the Email app). An email no longer listed was sent or cancelled: once sent, it is in the Sent folder. 'limit' caps the list (default 20, max 100); 'offset' skips that many, a multiple of limit.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "offset": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "reschedule_email",
+      "title": "Change when a scheduled email is sent",
+      "description": "Change when a scheduled email of the current user is sent. Only an email waiting to be sent, or one that failed, gets a new time; one being sent, sent, or whose sending could not be confirmed is refused. send_at and time_zone as in schedule_email_draft; leave time_zone empty for the user's own time zone (or the email's, when the user's is not known). Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not changed. Always show the user the email and the new time, and get their confirmation first. Returns the scheduled email as it now stands.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id list_scheduled_emails gave." },
+          "send_at": { "type": "string", "description": "The new time: a local date and time in time_zone, with no offset, such as 2026-10-23T08:30." },
+          "time_zone": { "type": "string", "description": "The IANA time zone of send_at, such as Europe/Paris. Empty for the user's own." },
+          "subject": { "type": "string", "description": "The email's subject as list_scheduled_emails reads it now." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The email's recipients as list_scheduled_emails reads them now, bare addresses." }
+        },
+        "required": ["draft_id", "send_at", "subject", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "cancel_scheduled_email",
+      "title": "Cancel a scheduled email",
+      "description": "Cancel a scheduled email of the current user: it is not sent, and goes back to the Drafts folder as it is, where list_email_drafts finds it under the same draft_id. One being sent or already sent is refused. An UNCERTAIN email is not sent again once cancelled, but it may already have reached its recipients: tell the user to check their Sent folder. Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not cancelled. Always name the email to the user and get their confirmation first.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id list_scheduled_emails gave." },
+          "subject": { "type": "string", "description": "The email's subject as list_scheduled_emails reads it now." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The email's recipients as list_scheduled_emails reads them now, bare addresses." }
+        },
+        "required": ["draft_id", "subject", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "archive_email",
       "title": "Archive emails",
       "description": "Move one or more emails from the inbox to the Archive folder. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox (in Sent or Archive, for instance) is refused and nothing is done. Confirm the affected emails with the user before archiving. With mailbox, acts on that shared mailbox's inbox and files into its own Archive, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",

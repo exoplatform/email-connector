@@ -20,8 +20,15 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -45,6 +52,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.nodes.TextNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -58,6 +66,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
 import org.exoplatform.emailConnector.mcp.model.RefusedDocumentModel;
+import org.exoplatform.emailConnector.mcp.model.ScheduledEmailModel;
 import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
 import org.exoplatform.emailConnector.model.DocumentAttachments;
 import org.exoplatform.emailConnector.model.Email;
@@ -71,6 +80,8 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.SanitizedEmailBody;
+import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.OwnerCopy;
@@ -88,6 +99,7 @@ import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -97,6 +109,7 @@ import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 import io.meeds.mcp.server.plugin.McpToolPlugin;
+import io.meeds.social.timezone.service.UserTimeZoneService;
 
 /**
  * MCP tools exposing the Email Connector add-on to the AI agent (EVA). Every
@@ -133,6 +146,35 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /** What a draft tool says it was about to do with a draft it refuses to delete. */
   private static final String           DELETED              = "deleted";
+
+  /** What the scheduled-send tools say they were about to do with a draft they refuse to schedule. */
+  private static final String           SCHEDULED            = "scheduled";
+
+  /** What the scheduled-send tools say they were about to do with a mail they refuse to reschedule. */
+  private static final String           RESCHEDULED          = "rescheduled";
+
+  /** What the scheduled-send tools say they were about to do with a mail they refuse to cancel. */
+  private static final String           CANCELLED            = "cancelled";
+
+  /**
+   * The service's refusals of a date or of a draft to schedule, in words a model can act
+   * on. No limit is named: an administrator can change them.
+   */
+  private static final Map<String, String> SCHEDULE_MESSAGES =
+                                                            Map.of(EmailScheduledSendService.DATE_TOO_SOON,
+                                                                   "send_at is too soon: pick a later time.",
+                                                                   EmailScheduledSendService.DATE_TOO_FAR,
+                                                                   "send_at is too far ahead: pick an earlier time.",
+                                                                   EmailScheduledSendService.INVALID_TIME_ZONE,
+                                                                   "time_zone is not a time zone: pass an IANA name, such as Europe/Paris.",
+                                                                   EmailScheduledSendService.LIMIT_REACHED,
+                                                                   "The user has as many scheduled mails as allowed: one must be sent or cancelled first.",
+                                                                   EmailScheduledSendService.RECIPIENTS_MANDATORY,
+                                                                   "The draft has no recipient: add one with update_email_draft first.",
+                                                                   "emailConnector.scheduled.attachmentsNotStored",
+                                                                   "A file of the draft is not stored on it yet: the user saves the draft in the Email app first.",
+                                                                   "emailConnector.drafts.send.attachmentGone",
+                                                                   "A file of the draft can no longer be read: the user removes it in the Email app first.");
 
   /** The HTML attribute holding an image's height. */
   private static final String           HEIGHT               = "height";
@@ -244,6 +286,10 @@ public class EmailMcpTool implements McpToolPlugin {
 
   private final EmailSignatureService   emailSignatureService;
 
+  private final EmailScheduledSendService emailScheduledSendService;
+
+  private final UserTimeZoneService     userTimeZoneService;
+
   /**
    * The tools' services.
    *
@@ -253,16 +299,24 @@ public class EmailMcpTool implements McpToolPlugin {
    *          {@code mailbox} argument (EXO-90555)
    * @param emailSignatureService the signature service, which signs the drafts the tools
    *          prepare as the composer signs them (EXO-91674)
+   * @param emailScheduledSendService the scheduled-send service, whose rules the
+   *          scheduling tools apply as the Email app does (EXO-91996)
+   * @param userTimeZoneService the platform's record of the user's time zone, which a
+   *          time to send at is read in when the call names none (EXO-91996)
    */
   @Autowired
   public EmailMcpTool(EmailBoxService emailBoxService,
                       UserEmailSettingService userEmailSettingService,
                       EmailDelegationService emailDelegationService,
-                      EmailSignatureService emailSignatureService) {
+                      EmailSignatureService emailSignatureService,
+                      EmailScheduledSendService emailScheduledSendService,
+                      UserTimeZoneService userTimeZoneService) {
     this.emailBoxService = emailBoxService;
     this.userEmailSettingService = userEmailSettingService;
     this.emailDelegationService = emailDelegationService;
     this.emailSignatureService = emailSignatureService;
+    this.emailScheduledSendService = emailScheduledSendService;
+    this.userTimeZoneService = userTimeZoneService;
   }
 
   // ---------------------------------------------------------------------------
@@ -1408,6 +1462,189 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   // ---------------------------------------------------------------------------
+  // Scheduled send (EXO-91996)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Schedule a draft of the user's own mailbox to be sent at a date and time, as the
+   * Email app's "Schedule send" does: it leaves the Drafts folder for the Scheduled view,
+   * where the user can change or cancel it, and it is sent once, at that time, as it
+   * says then. It is scheduled as it is stored at this moment, the user's edits in the
+   * Email app included.
+   * <p>
+   * The approval card is drawn from the arguments, so they must say what will go out:
+   * {@code to}, {@code cc}, {@code bcc} and {@code subject} must be the draft's own, as
+   * list_email_drafts reads them now. If the user changed any of them since, nothing is
+   * scheduled and the call must be made again with the draft read anew.
+   *
+   * @param draftId the draft's id
+   * @param sendAt when to send it, a local date and time in {@code timeZone}, such as
+   *          2026-10-23T08:30
+   * @param timeZone the IANA time zone {@code sendAt} is in; blank for the user's own
+   * @param to the draft's recipients, as read
+   * @param subject the draft's subject, as read
+   * @param cc the draft's copied recipients, as read
+   * @param bcc the draft's blind-copied recipients, as read
+   * @return the scheduled mail, with the time it is sent at in its time zone and in UTC
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the arguments are not what the draft says, the
+   *           time cannot be read, is too soon or too far, the draft is already scheduled
+   *           or was written in a shared mailbox, or the user has as many scheduled mails
+   *           as allowed; nothing was scheduled
+   */
+  public ScheduledEmailModel scheduleEmailDraft(String draftId,
+                                                String sendAt,
+                                                String timeZone,
+                                                List<String> to,
+                                                String subject,
+                                                List<String> cc,
+                                                List<String> bcc) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    Email stored = ownDraft(draftId, username, SCHEDULED);
+    requireDraftSays(stored, to, cc, bcc, subject, SCHEDULED);
+    ZoneId zone = zoneOf(timeZone, username, null, SCHEDULED);
+    long instant = instantOf(sendAt, zone, SCHEDULED);
+    ScheduledEmail scheduled;
+    try {
+      // Checked again under the draft's lock on the row that is scheduled: the user may
+      // edit it in the Email app between the check above and the schedule.
+      scheduled = emailScheduledSendService.scheduleAsStored(stored.getDraftLocalId(), instant, zone.getId(), username, row -> {
+        requireActionable(row, draftId, SCHEDULED);
+        requireDraftSays(row, to, cc, bcc, subject, SCHEDULED);
+      });
+    } catch (ScheduledSendConflictException e) {
+      if (ScheduledSendConflictException.SENDING.equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s is being sent right now, so it cannot be scheduled. Nothing was "
+            + "done.", draftId), e);
+      }
+      throw scheduledDraftRefusal(draftId, SCHEDULED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    } catch (IllegalArgumentException e) {
+      throw scheduleRefusal(e, draftId, SCHEDULED);
+    } catch (IllegalStateException e) {
+      if ("emailConnector.scheduled.serverCopyRemains".equals(e.getMessage())) {
+        throw new IllegalStateException(String.format("Draft %s was not scheduled: its copy in the mail server's Drafts folder could "
+            + "not be removed, and another mail client could have sent it. Try again later.", draftId), e);
+      }
+      throw e;
+    }
+    return toScheduledModel(scheduled);
+  }
+
+  /**
+   * The mails of the user's Scheduled view, soonest first, as the Email app lists them:
+   * those waiting to be sent, and those that failed or whose sending could not be
+   * confirmed, which stay there until the user acts on them.
+   *
+   * @param limit how many to return (default 20, at most 100)
+   * @param offset how many to skip, a multiple of {@code limit}; default 0
+   * @return the scheduled mails
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  public List<ScheduledEmailModel> listScheduledEmails(Integer limit, Integer offset) throws IllegalAccessException {
+    int max = Math.min(Math.max(getInteger(limit, DEFAULT_DRAFTS_LIMIT), 1), MAX_DRAFTS_LIMIT);
+    int skip = Math.max(getInteger(offset, 0), 0);
+    return emailScheduledSendService.getScheduledEmails(getCurrentUserName(), skip, max)
+                                    .stream()
+                                    .map(this::toScheduledModel)
+                                    .toList();
+  }
+
+  /**
+   * Change when a scheduled mail of the user is sent. Only a mail waiting to be sent, or
+   * one that failed, can be given a new time. {@code subject} and {@code to} must be the
+   * mail's, as list_scheduled_emails reads them now, so the approval card names the mail.
+   *
+   * @param draftId the scheduled mail's draft_id
+   * @param sendAt the new time, a local date and time in {@code timeZone}
+   * @param timeZone the IANA time zone {@code sendAt} is in; blank for the user's own, or
+   *          the mail's when the user's is not known
+   * @param subject the mail's subject, as read
+   * @param to the mail's recipients, as read
+   * @return the scheduled mail as it now stands
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the subject or recipients are not the mail's,
+   *           the time cannot be read or is too soon or too far, or the mail is being
+   *           sent, was sent or may have been sent; nothing was changed
+   */
+  public ScheduledEmailModel rescheduleEmail(String draftId,
+                                             String sendAt,
+                                             String timeZone,
+                                             String subject,
+                                             List<String> to) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    ScheduledEmail current = scheduledEmail(draftId, username);
+    requireSameScheduledEmail(current, subject, to, RESCHEDULED);
+    ZoneId zone = zoneOf(timeZone, username, current.getTimeZone(), RESCHEDULED);
+    long instant = instantOf(sendAt, zone, RESCHEDULED);
+    try {
+      // Checked again on the mail as it stands once the change is written: the user may
+      // edit it in the Email app between the check above and the change, and a refusal
+      // there undoes the change.
+      return toScheduledModel(emailScheduledSendService.reschedule(current.getDraftLocalId(),
+                                                                   instant,
+                                                                   zone.getId(),
+                                                                   username,
+                                                                   mail -> requireSameScheduledEmail(mail, subject, to, RESCHEDULED)));
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledStateRefusal(e, draftId, RESCHEDULED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, RESCHEDULED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    } catch (IllegalArgumentException e) {
+      throw scheduleRefusal(e, draftId, RESCHEDULED);
+    }
+  }
+
+  /**
+   * Cancel a scheduled mail of the user: it is not sent, and goes back to the Drafts
+   * folder as it is. {@code subject} and {@code to} must be the mail's, as
+   * list_scheduled_emails reads them now, so the approval card names the mail.
+   *
+   * @param draftId the scheduled mail's draft_id
+   * @param subject the mail's subject, as read
+   * @param to the mail's recipients, as read
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the subject or recipients are not the mail's,
+   *           or the mail is being sent or was sent; nothing was cancelled
+   */
+  public String cancelScheduledEmail(String draftId, String subject, List<String> to) throws ObjectNotFoundException,
+                                                                                     IllegalAccessException {
+    String username = getCurrentUserName();
+    ScheduledEmail current = scheduledEmail(draftId, username);
+    requireSameScheduledEmail(current, subject, to, CANCELLED);
+    try {
+      // Checked again on the mail as it stands once the change is written, as reschedule
+      // does.
+      current = emailScheduledSendService.cancel(current.getDraftLocalId(),
+                                                 username,
+                                                 mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledStateRefusal(e, draftId, CANCELLED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, CANCELLED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    if (current.getStatus() == ScheduledSendStatus.UNCERTAIN) {
+      // The Email app's "move it to Drafts" of a mail whose sending could not be confirmed:
+      // it is not sent again, but an earlier attempt may have reached its recipients.
+      return String.format("The schedule of \"%s\" is cancelled and it is back in your drafts: it will not be sent again. Its earlier "
+          + "sending could not be confirmed, so it may already have reached its recipients: check your Sent folder in the Email "
+          + "app. draft_id: %s.", StringUtils.defaultString(current.getSubject()), current.getDraftLocalId());
+    }
+    return String.format("The schedule of \"%s\" is cancelled: it will not be sent, and is back in your drafts. draft_id: %s.",
+                         StringUtils.defaultString(current.getSubject()),
+                         current.getDraftLocalId());
+  }
+
+  // ---------------------------------------------------------------------------
   // Slice 3 - organize (approval-gated)
   // ---------------------------------------------------------------------------
 
@@ -1873,14 +2110,29 @@ public class EmailMcpTool implements McpToolPlugin {
    *           address; nothing has been sent
    */
   private static void requireBareAddresses(String field, List<String> given) {
+    requireBareAddresses(field, given, "sent");
+  }
+
+  /**
+   * {@link #requireBareAddresses(String, List)}, naming in the refusal what was not done
+   * (EXO-91996): a refused reschedule or cancel sent nothing either way, and says what
+   * it did not do.
+   *
+   * @param field the argument's name, for the refusal
+   * @param given the addresses the agent passed, possibly null
+   * @param what what was not done: sent, scheduled, rescheduled or cancelled
+   * @throws IllegalArgumentException naming the first entry that is not a bare
+   *           address; nothing has been done
+   */
+  private static void requireBareAddresses(String field, List<String> given, String what) {
     if (given == null) {
       return;
     }
     for (String entry : given) {
       if (!isBareAddress(entry)) {
-        throw new IllegalArgumentException(String.format("Nothing was sent: %s must list bare addresses, such as alice@acme.com -- "
+        throw new IllegalArgumentException(String.format("Nothing was %s: %s must list bare addresses, such as alice@acme.com -- "
             + "no name, no brackets, no blank entry; \"%s\" is not one. Call again with the bare addresses read off the email, "
-            + "and ask the user to approve again.", field, StringUtils.defaultString(entry)));
+            + "and ask the user to approve again.", what, field, StringUtils.defaultString(entry)));
       }
     }
   }
@@ -2072,12 +2324,236 @@ public class EmailMcpTool implements McpToolPlugin {
    * its schedule is cancelled.
    *
    * @param draftId the draft's id
-   * @param what what was refused: changed, sent or deleted
+   * @param what what was refused: changed, sent, deleted or scheduled
    * @return the exception to throw
    */
   private static IllegalArgumentException scheduledDraftRefusal(String draftId, String what) {
-    return new IllegalArgumentException(String.format("Draft %s is scheduled to be sent, so it cannot be %s here: the user cancels "
-        + "the schedule in the Email app first. Nothing was done.", draftId, what));
+    return new IllegalArgumentException(String.format("Draft %s is scheduled to be sent, so it cannot be %s here: list_scheduled_emails "
+        + "shows it, reschedule_email changes its time and cancel_scheduled_email puts it back in the drafts. Nothing was done.",
+                                                      draftId,
+                                                      what));
+  }
+
+  /**
+   * A refusal of the scheduled-send service, in words: a message code it answers with
+   * is replaced by what the model can do about it, and anything else -- the draft
+   * checks' own refusals, already in words -- is kept.
+   *
+   * @param e the refusal
+   * @param draftId the draft's id
+   * @param what what was refused: scheduled or rescheduled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException scheduleRefusal(IllegalArgumentException e, String draftId, String what) {
+    String code = e.getMessage();
+    String message = code == null ? null : SCHEDULE_MESSAGES.get(code);
+    if (message != null) {
+      return new IllegalArgumentException(String.format("%s Nothing was %s.", message, what), e);
+    }
+    if (code != null && code.startsWith("emailConnector.")) {
+      return new IllegalArgumentException(String.format("Draft %s cannot be %s here (%s): the user schedules it from the Email app. "
+          + "Nothing was %s.", draftId, what, code, what), e);
+    }
+    return e;
+  }
+
+  /**
+   * The refusal of a scheduled mail whose state forbids the change: being sent, sent, or
+   * sent without confirmation.
+   *
+   * @param e the service's refusal
+   * @param draftId the mail's draft_id
+   * @param what what was refused: rescheduled or cancelled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException scheduledStateRefusal(ScheduledSendConflictException e, String draftId, String what) {
+    if (EmailScheduledSendService.UNCERTAIN_CONFLICT.equals(e.getMessage())) {
+      return new IllegalArgumentException(String.format("The scheduled mail %s may already have been sent: its sending could not be "
+          + "confirmed, so it cannot be %s here. The user checks their Sent folder and decides in the Email app. Nothing was done.",
+                                                        draftId,
+                                                        what),
+                                          e);
+    }
+    return new IllegalArgumentException(String.format("The scheduled mail %s is being sent or was sent, so it cannot be %s. "
+        + "Nothing was done.", draftId, what), e);
+  }
+
+  /**
+   * The refusal of a change that waited too long on the scheduled mail: an edit of it in
+   * the Email app held it past the database's lock-wait limit, where the engine has one
+   * (MySQL's innodb_lock_wait_timeout, 50 s by default; PostgreSQL's lock_timeout is
+   * none by default, and the change then waits for the edit to commit).
+   *
+   * @param e the database's refusal
+   * @param draftId the mail's draft_id
+   * @param what what was refused: rescheduled or cancelled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException beingEditedRefusal(PessimisticLockingFailureException e, String draftId, String what) {
+    LOG.debug("The scheduled mail {} was held by another change", draftId, e);
+    return new IllegalArgumentException(String.format("The scheduled mail %s is being changed in the Email app, so it was not %s. "
+        + "Try again in a moment. Nothing was done.", draftId, what));
+  }
+
+  /**
+   * One of the user's scheduled mails, by its draft_id.
+   *
+   * @param draftId the draft_id given
+   * @param username the user
+   * @return the scheduled mail
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private ScheduledEmail scheduledEmail(String draftId, String username) throws ObjectNotFoundException, IllegalAccessException {
+    if (StringUtils.isBlank(draftId)) {
+      throw new IllegalArgumentException("draft_id is required: pass the draft_id list_scheduled_emails gave.");
+    }
+    ScheduledEmail scheduled;
+    try {
+      scheduled = emailScheduledSendService.getScheduledEmail(draftId.trim(), username);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    // What the Scheduled view does not list is not the scheduled-send tools' to act on: a
+    // mail sent, or one held for its Undo wait, which the Email app offers no action on.
+    if (scheduled.getStatus() == ScheduledSendStatus.HELD) {
+      throw new IllegalArgumentException(String.format("The mail %s is about to be sent, waiting out the user's Undo delay: only the "
+          + "user takes it back, with Undo in the Email app. Nothing was done.", draftId));
+    }
+    if (scheduled.getStatus() == ScheduledSendStatus.SENT) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    return scheduled;
+  }
+
+  /**
+   * The refusal of a draft_id that names no scheduled mail of the user.
+   *
+   * @param draftId the id given
+   * @return the message
+   */
+  private static String scheduledNotFound(String draftId) {
+    return String.format("No scheduled mail with draft_id %s: it was sent, cancelled, or never scheduled. "
+        + "list_scheduled_emails lists the scheduled mails there are.", draftId);
+  }
+
+  /**
+   * Refuse to change a scheduled mail whose subject or recipients are not the ones the
+   * user approved.
+   *
+   * @param scheduled the scheduled mail as stored
+   * @param subject the subject the user approved
+   * @param to the recipients the user approved
+   * @param what what was refused: rescheduled or cancelled
+   * @throws IllegalArgumentException when they differ; nothing was done
+   */
+  private static void requireSameScheduledEmail(ScheduledEmail scheduled, String subject, List<String> to, String what) {
+    requireBareAddresses("to", to, what);
+    if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(scheduled.getSubject()))
+        || !sameAddresses(to, scheduled.getTo())) {
+      throw new IllegalArgumentException(String.format("Nothing was %s: subject and to must be the scheduled mail's own, \"%s\" to [%s]. "
+          + "Read it with list_scheduled_emails and ask the user to approve again.",
+                                                       what,
+                                                       StringUtils.defaultString(scheduled.getSubject()),
+                                                       String.join(", ", addressesOf(scheduled.getTo()))));
+    }
+  }
+
+  /**
+   * The time zone a time to send at is read in: the one the call names, else the user's
+   * own as the platform records it, else the fallback.
+   *
+   * @param timeZone the zone the call names, possibly blank
+   * @param username the user
+   * @param fallback the zone to use when neither is known, possibly null
+   * @param what what is refused when no zone is known: scheduled or rescheduled
+   * @return the zone
+   * @throws IllegalArgumentException when no zone is known or the one named is not a zone
+   */
+  private ZoneId zoneOf(String timeZone, String username, String fallback, String what) {
+    String candidate = StringUtils.trimToNull(timeZone);
+    if (candidate == null) {
+      candidate = StringUtils.trimToNull(userTimeZoneService.getUserTimeZone(username));
+    }
+    if (candidate == null) {
+      candidate = StringUtils.trimToNull(fallback);
+    }
+    if (candidate == null) {
+      throw new IllegalArgumentException(String.format("The user's time zone is not known: ask the user which time zone send_at is in, "
+          + "and pass it as time_zone, such as Europe/Paris. Nothing was %s.", what));
+    }
+    try {
+      return ZoneId.of(candidate);
+    } catch (DateTimeException e) {
+      throw new IllegalArgumentException(String.format("\"%s\" is not a time zone: pass an IANA name, such as Europe/Paris. "
+          + "Nothing was %s.", candidate, what), e);
+    }
+  }
+
+  /**
+   * The instant a local date and time names in a zone. A time the zone skips (clocks
+   * moved forward) or shows twice (clocks moved back) is refused rather than moved, since
+   * the user approved the time as written.
+   *
+   * @param sendAt the local time, such as 2026-10-23T08:30
+   * @param zone the zone it is read in
+   * @param what what is refused when it cannot be read: scheduled or rescheduled
+   * @return the instant, epoch milliseconds
+   * @throws IllegalArgumentException when it is blank, cannot be read, is not one
+   *           instant in the zone, or is out of any reach
+   */
+  private static long instantOf(String sendAt, ZoneId zone, String what) {
+    LocalDateTime local;
+    try {
+      local = LocalDateTime.parse(StringUtils.trimToEmpty(sendAt));
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException(String.format("send_at must be a local date and time, such as 2026-10-23T08:30, with no "
+          + "offset: it is read in time_zone. Nothing was %s.", what), e);
+    }
+    List<ZoneOffset> offsets = zone.getRules().getValidOffsets(local);
+    if (offsets.size() != 1) {
+      throw new IllegalArgumentException(String.format("%s does not name one moment in %s: the clocks change then (%s). Ask the user "
+          + "for another time. Nothing was %s.",
+                                                       sendAt.trim(),
+                                                       zone.getId(),
+                                                       offsets.isEmpty() ? "that hour is skipped" : "that hour comes twice",
+                                                       what));
+    }
+    try {
+      return local.toInstant(offsets.get(0)).toEpochMilli();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(String.format("%s Nothing was %s.",
+                                                       SCHEDULE_MESSAGES.get(EmailScheduledSendService.DATE_TOO_FAR),
+                                                       what),
+                                         e);
+    }
+  }
+
+  /**
+   * A scheduled mail as the scheduled-send tools return it.
+   *
+   * @param scheduled the scheduled mail
+   * @return the model
+   */
+  private ScheduledEmailModel toScheduledModel(ScheduledEmail scheduled) {
+    ZoneId zone;
+    try {
+      zone = ZoneId.of(scheduled.getTimeZone());
+    } catch (RuntimeException e) {
+      zone = ZoneOffset.UTC;
+    }
+    Instant instant = Instant.ofEpochMilli(scheduled.getScheduledDate()).truncatedTo(ChronoUnit.SECONDS);
+    return new ScheduledEmailModel(scheduled.getDraftLocalId(),
+                                   addressesOf(scheduled.getTo()),
+                                   scheduled.getSubject(),
+                                   scheduled.getSnippet(),
+                                   instant.atZone(zone).toLocalDateTime().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                                   zone.getId(),
+                                   instant.toString(),
+                                   scheduled.getStatus() == null ? null : scheduled.getStatus().name(),
+                                   scheduled.getLastError(),
+                                   scheduled.getMailbox() == null ? null : scheduled.getMailbox().ownerMailbox(),
+                                   scheduledLink());
   }
 
   /**
@@ -2120,9 +2596,9 @@ public class EmailMcpTool implements McpToolPlugin {
                                        List<String> bcc,
                                        String subject,
                                        String what) {
-    requireBareAddresses("to", to);
-    requireBareAddresses("cc", cc);
-    requireBareAddresses("bcc", bcc);
+    requireBareAddresses("to", to, what);
+    requireBareAddresses("cc", cc, what);
+    requireBareAddresses("bcc", bcc, what);
     if (!sameAddresses(to, stored.getTo()) || !sameAddresses(cc, stored.getCc()) || !sameAddresses(bcc, stored.getBcc())
         || !StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(stored.getSubject()))) {
       throw new IllegalArgumentException(String.format("Nothing was %s: the draft now says to [%s], cc [%s], bcc [%s], subject \"%s\". "
@@ -2604,6 +3080,23 @@ public class EmailMcpTool implements McpToolPlugin {
           + EmailConnectorUtils.getEmailsLink(getCurrentUserName()) + "&folder=" + MailFolder.DRAFTS;
     } catch (RuntimeException e) {
       LOG.debug("No link to the drafts of user {}", getCurrentUserName(), e);
+      return null;
+    }
+  }
+
+  /**
+   * Where the user opens their scheduled mails in the Email app: the mailbox on its
+   * Scheduled view, on this deployment's domain (EXO-91996). Null when the user's site
+   * cannot be resolved.
+   *
+   * @return the link, or null
+   */
+  String scheduledLink() {
+    try {
+      return StringUtils.removeEnd(CommonsUtils.getCurrentDomain(), "/")
+          + EmailConnectorUtils.getEmailsLink(getCurrentUserName()) + "&folder=" + MailFolder.SCHEDULED;
+    } catch (RuntimeException e) {
+      LOG.debug("No link to the scheduled mails of user {}", getCurrentUserName(), e);
       return null;
     }
   }
