@@ -814,6 +814,12 @@ public class EmailConnectorService {
     // configuration in use, and a failed row write leaves the stored row with the new
     // configuration of the same provider. The configuration of the provider being left
     // is removed only once the connector no longer points at it.
+    boolean providerChange = isProviderChange(previousEmailConnector, emailConnector);
+    // Read before the write: the drawer posts the stored configuration back with every
+    // save, so only a comparison tells a changed configuration from an edit of the
+    // connector's name, icon or servers.
+    boolean configPosted = MapUtils.isNotEmpty(emailConnector.getProviderConfig());
+    EmailConnectorProviderConfig configBefore = !providerChange && configPosted ? storedProviderConfig(emailConnector) : null;
     storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
     try {
       emailConnectorStorage.updateEmailConnector(emailConnector);
@@ -822,16 +828,65 @@ public class EmailConnectorService {
       throw e;
     }
     discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
-    if (isProviderChange(previousEmailConnector, emailConnector)) {
+    if (providerChange) {
       // Every user of the connector is disconnected, whoever made the connection: the
       // authentication changed for all of them.
       eventPublisher.publishEvent(new EmailConnectorProviderChangedEvent(previousEmailConnector.getId()));
     }
-    if (isProviderChange(previousEmailConnector, emailConnector) || MapUtils.isNotEmpty(emailConnector.getProviderConfig())) {
+    if (providerChange || providerConfigChanged(configBefore, emailConnector)) {
       // The users managed mode could not connect were refused by the authentication
       // this save replaces - another provider, or another technical account: they are
       // offered the connection again.
       eventPublisher.publishEvent(new EmailConnectorAuthenticationChangedEvent(previousEmailConnector.getId()));
+    }
+  }
+
+  /**
+   * Whether the save just made changed the provider configuration a connector keeps on
+   * the same provider: a stored value, the set of stored secrets, or a secret typed in.
+   * A typed secret counts even when it is the one already stored, which is never read
+   * back to compare. A configuration that cannot be read, before or after, counts as
+   * changed: forgetting the refusals costs one more attempt per user, keeping them
+   * after a real change would hide the connection from users it would now serve.
+   *
+   * @param configBefore the configuration stored before the write, null when it could
+   *          not be read
+   * @param emailConnector the connector as posted
+   * @return true when the users refused under the previous configuration are worth a
+   *         new attempt
+   */
+  private boolean providerConfigChanged(EmailConnectorProviderConfig configBefore, EmailConnector emailConnector) {
+    Map<String, String> posted = emailConnector.getProviderConfig();
+    if (MapUtils.isEmpty(posted)) {
+      return false;
+    }
+    EmailConnectorProviderConfig configAfter = configBefore == null ? null : storedProviderConfig(emailConnector);
+    if (configAfter == null) {
+      return true;
+    }
+    return !configBefore.equals(configAfter)
+        || configAfter.storedSecretKeys().stream().anyMatch(key -> StringUtils.isNotBlank(posted.get(key)));
+  }
+
+  /**
+   * The provider configuration stored for a connector, under the provider the posted
+   * connector names - the context the write uses - without any secret value.
+   *
+   * @param emailConnector the connector as posted
+   * @return the stored values and secret keys, empty when the storage is not deployed,
+   *         null when they cannot be read
+   */
+  private EmailConnectorProviderConfig storedProviderConfig(EmailConnector emailConnector) {
+    if (providerConfigStorage == null) {
+      return EmailConnectorProviderConfig.EMPTY;
+    }
+    try {
+      ConnectorCredentialsContext context = providerConfigContext(emailConnector.getId(), emailConnector.getAuthProviderName());
+      return new EmailConnectorProviderConfig(providerConfigStorage.readWithoutSecrets(context),
+                                              providerConfigStorage.readStoredSecretKeys(context));
+    } catch (RuntimeException e) {
+      LOG.debug("The provider configuration of email connector {} could not be read", emailConnector.getId(), e);
+      return null;
     }
   }
 
