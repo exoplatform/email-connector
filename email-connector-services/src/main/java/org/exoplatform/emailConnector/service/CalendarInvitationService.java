@@ -938,21 +938,28 @@ public class CalendarInvitationService {
   }
 
   /**
-   * The answer the organiser already has from the user for this revision: the one the
-   * user's calendar holds when the mail is no newer than its copy -- answered on a
-   * phone, or from here -- else the one given from here. Never the PARTSTAT the sender
-   * wrote on the user's line, which is the sender's.
+   * The answer the organiser surely has from the user for this revision, which is not
+   * sent twice: the one every source agrees on. The answer given from here to this
+   * revision, and the one the user's calendar holds when the mail is no newer than its
+   * copy -- answered on a phone, or from here -- are each that answer when the other
+   * says nothing, and are it together when they say the same. When they differ --
+   * a landing that failed after the answer left, so the copy still says the earlier
+   * one, or a phone that answered since -- which one the organiser read last is not
+   * known, and none is refused. Never the PARTSTAT the sender wrote on the user's line,
+   * which is the sender's.
    *
    * @param username the user
    * @param invitation the invitation, told what the calendar holds
    * @param recurrenceId the occurrence's RECURRENCE-ID, null for the series
-   * @return the answer, or null when the organiser has none
+   * @return the answer, or null when the organiser surely has none
    */
   private InvitationAnswer answerTheOrganiserHas(String username, CalendarInvitation invitation, String recurrenceId) {
-    if (invitation.isHeld() && !invitation.isNewerRevision() && invitation.getHeldResponse() != null) {
-      return invitation.getHeldResponse();
+    InvitationAnswer held = invitation.isHeld() && !invitation.isNewerRevision() ? invitation.getHeldResponse() : null;
+    InvitationAnswer given = givenAnswer(username, invitation, recurrenceId);
+    if (held == null || given == null) {
+      return held == null ? given : held;
     }
-    return givenAnswer(username, invitation, recurrenceId);
+    return held == given ? held : null;
   }
 
   /**
