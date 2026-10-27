@@ -370,7 +370,8 @@ public class CalendarInvitationService {
 
   /**
    * Removes from the user's calendar the event a cancellation says is called off. From
-   * the user's own mailbox only, and only for the organiser's CANCEL.
+   * the user's own mailbox only, and only for the organiser's CANCEL of a whole event:
+   * the add-ons land series only, so one occurrence's cancellation is not offered.
    *
    * @param emailId the cached message's technical id
    * @param username the user, who must own the cached row
@@ -551,7 +552,7 @@ public class CalendarInvitationService {
     // The user's own calendar, from their own mailbox: a shared mailbox's invitation
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
-      if (askHeld && addableMethod(invitation) && !invitation.isCancelled()) {
+      if (askHeld && addableMethod(invitation) && !invitation.isCancelled() && !invitation.isOccurrence()) {
         applyHeld(invitation, invitationLandingService.held(new InvitationProbe(username,
                                                                                  invitation.getAttendeeAddress(),
                                                                                  invitation.getUid(),
@@ -563,7 +564,7 @@ public class CalendarInvitationService {
       // Nothing to add when the calendar holds this revision already; its organiser's
       // newer one is offered, as an update.
       invitation.setLandable(addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision()));
-      invitation.setRemovable(CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()));
+      invitation.setRemovable(CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()) && !invitation.isOccurrence());
     }
     return parsed;
   }
@@ -619,17 +620,18 @@ public class CalendarInvitationService {
    * Whether an invitation may be added to the user's calendar, the calendar being
    * there: an invitation, a published event, or an object naming no method -- a REPLY,
    * a COUNTER, a REFRESH or a DECLINECOUNTER ({@link CalendarInvitationUtils#ANSWER_METHODS})
-   * speaks to an organiser, not to a calendar -- with a UID, not cancelled, not one of
-   * this deployment's own Agenda events (it lives in Agenda already, and is answered
-   * there), and not declined by the user: the add-on creates nothing for a declined
-   * event.
+   * speaks to an organiser, not to a calendar -- with a UID, not cancelled, about a whole
+   * event rather than one occurrence of a series (the add-ons land series only, and
+   * refuse an occurrence), not one of this deployment's own Agenda events (it lives in
+   * Agenda already, and is answered there), and not declined by the user: the add-on
+   * creates nothing for a declined event.
    *
    * @param invitation the invitation, with the answer the user gave when they did
    * @return true when "Add to my calendar" may be offered
    */
   private static boolean addable(CalendarInvitation invitation) {
     return addableMethod(invitation) && StringUtils.isNotBlank(invitation.getUid()) && !invitation.isCancelled()
-        && !invitation.isExoMeeting() && invitation.getAnswer() != InvitationAnswer.DECLINED;
+        && !invitation.isOccurrence() && !invitation.isExoMeeting() && invitation.getAnswer() != InvitationAnswer.DECLINED;
   }
 
   /**
