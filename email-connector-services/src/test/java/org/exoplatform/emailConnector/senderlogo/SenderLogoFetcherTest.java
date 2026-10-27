@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.senderlogo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -364,6 +365,48 @@ class SenderLogoFetcherTest {
     answers.put("/missing", new Answer(404, "image/png", PNG, null, false, 0));
     for (String path : new String[] { "/html-as-png", "/png-as-html", "/untyped", "/svg-not-accepted", "/missing" }) {
       assertNull(fetcher.fetch(url("brand.example", path), Set.of(SenderLogoUtils.PNG)), path);
+    }
+  }
+
+  /**
+   * A logo may declare the image types a mail reader shows and the three names of a
+   * Windows icon, in any case and with parameters ({@code SenderLogoUtils.DECLARED_TYPES});
+   * any other declared type is refused, bytes that are a real image included.
+   */
+  @Test
+  void aLogoMayDeclareTheImageTypesOnly() {
+    String[] accepted = { "image/svg+xml", "IMAGE/PNG", "image/jpeg", "image/webp; charset=binary", "image/x-icon",
+        "image/vnd.microsoft.icon", "image/ico" };
+    String[] refused = { "application/octet-stream", "image/gif", "image/bmp", "text/xml", "application/javascript",
+        "text/html", "text/plain" };
+    for (int i = 0; i < accepted.length; i++) {
+      answers.put("/accepted/" + i, ok(accepted[i], PNG));
+      assertNotNull(fetcher.fetch(url("brand.example", "/accepted/" + i), Set.of(SenderLogoUtils.PNG)), accepted[i]);
+    }
+    for (int i = 0; i < refused.length; i++) {
+      answers.put("/refused/" + i, ok(refused[i], PNG));
+      assertNull(fetcher.fetch(url("brand.example", "/refused/" + i), Set.of(SenderLogoUtils.PNG)), refused[i]);
+    }
+  }
+
+  /**
+   * A home page is read for its declared icon when it declares HTML or XHTML, in any
+   * case and with parameters ({@code SenderLogoUtils.PAGE_TYPES}), and is not parsed
+   * when it declares anything else.
+   */
+  @Test
+  void aHomePageMustDeclareHtmlOrXhtml() {
+    byte[] html = "<link rel=\"icon\" href=\"/declared.png\">".getBytes(StandardCharsets.UTF_8);
+    answers.put("/declared.png", ok("image/png", PNG));
+    for (String declared : new String[] { "text/html; charset=utf-8", "TEXT/HTML", "Application/XHTML+XML" }) {
+      answers.put("/", ok(declared, html));
+      assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource(), declared);
+    }
+    for (String declared : new String[] { "text/xml", "application/xml", "text/plain", "image/png" }) {
+      hits.clear();
+      answers.put("/", ok(declared, html));
+      assertFalse(fetcher.resolve("brand.example").isPresent(), declared);
+      assertEquals(List.of("/favicon.ico", "/"), hits, declared);
     }
   }
 
