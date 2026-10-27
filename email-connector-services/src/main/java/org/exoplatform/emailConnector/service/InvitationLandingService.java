@@ -38,6 +38,7 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.HeldInvitation;
+import org.exoplatform.emailConnector.model.HeldLookup;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.InvitationProbe;
@@ -214,13 +215,26 @@ public class InvitationLandingService {
    * @return the held copy, or null when nothing is held or nothing could be said in time
    */
   public HeldInvitation held(InvitationProbe probe) {
+    return lookUpHeld(probe).held();
+  }
+
+  /**
+   * Asks, as {@link #held} does, whether the user's calendar holds the event an
+   * invitation is about, and says apart "nothing held" from "nothing said": a late
+   * answer, a full executor, a failure or no add-on to ask is unanswered. An add-on
+   * that does not implement the question answers that it holds nothing. Never throws.
+   *
+   * @param probe the user and the event's UID
+   * @return the lookup
+   */
+  public HeldLookup lookUpHeld(InvitationProbe probe) {
     ExoContainer container = currentContainer();
-    Future<HeldInvitation> answer;
+    Future<HeldLookup> answer;
     try {
       answer = heldExecutor.submit(() -> askHeld(probe, container));
     } catch (RejectedExecutionException e) {
       LOG.debug("Too many invitations being looked up; the invitation {} of user {} is shown as not held", probe.uid(), probe.username());
-      return null;
+      return HeldLookup.unanswered();
     }
     try {
       return answer.get(heldTimeout(), TimeUnit.MILLISECONDS);
@@ -230,17 +244,17 @@ public class InvitationLandingService {
                probe.username(),
                heldTimeout(),
                probe.uid());
-      return null;
+      return HeldLookup.unanswered();
     } catch (ExecutionException e) {
       LOG.warn("The calendar of user {} could not say whether it holds the invitation {}; it is shown as not held",
                probe.username(),
                probe.uid(),
                e.getCause());
-      return null;
+      return HeldLookup.unanswered();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       answer.cancel(true);
-      return null;
+      return HeldLookup.unanswered();
     }
   }
 
@@ -261,9 +275,9 @@ public class InvitationLandingService {
    *
    * @param probe the user and the event's UID
    * @param container the reader's container, null when it has none
-   * @return the held copy, or null
+   * @return the add-on's answer, unanswered when no add-on holds the user's calendar
    */
-  HeldInvitation askHeld(InvitationProbe probe, ExoContainer container) {
+  HeldLookup askHeld(InvitationProbe probe, ExoContainer container) {
     if (container != null) {
       ExoContainerContext.setCurrentContainer(container);
       RequestLifeCycle.begin(container);
@@ -273,7 +287,7 @@ public class InvitationLandingService {
         try {
           if (plugin.holdsCalendarFor(probe.username())) {
             // The one add-on holding the user's calendar: no other is asked.
-            return plugin.held(probe);
+            return HeldLookup.answered(plugin.held(probe));
           }
         } catch (LinkageError e) {
           LOG.debug("Add-on {} could not be asked whether it holds the invitation of user {}; it is read as holding no calendar",
@@ -282,7 +296,7 @@ public class InvitationLandingService {
                     e);
         }
       }
-      return null;
+      return HeldLookup.unanswered();
     } finally {
       if (container != null) {
         RequestLifeCycle.end();

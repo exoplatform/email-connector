@@ -18393,6 +18393,30 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The addresses a message says it is from, which decide whether a calendar change is
+   * its organiser's: every From address, then the Sender; a header that cannot be read
+   * adds nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMessagesAuthorsAreItsFromAddressesThenItsSender() throws Exception {
+    MimeMessage message = mock(MimeMessage.class);
+    when(message.getFrom()).thenReturn(new Address[] { new InternetAddress("Calendar <calendar@google.com>"),
+        new InternetAddress("olivia@partner.example") });
+    when(message.getSender()).thenReturn(new InternetAddress("Olivia <olivia@partner.example>"));
+
+    assertEquals(List.of("calendar@google.com", "olivia@partner.example", "olivia@partner.example"),
+                 EmailBoxService.authorsOf(message));
+
+    when(message.getSender()).thenThrow(new MessagingException("unparsable"));
+    assertEquals(List.of("calendar@google.com", "olivia@partner.example"), EmailBoxService.authorsOf(message));
+    Message plain = mock(Message.class);
+    when(plain.getFrom()).thenReturn(null);
+    assertEquals(List.of(), EmailBoxService.authorsOf(plain), "a message saying nothing has no author");
+  }
+
+  /**
    * EXO-90840. A part read for its content is read from the row's folder and UID, only
    * from the message the row names, and no further than the cap: a part the server
    * announces as far larger is refused before its body is fetched, and one larger once
@@ -18434,6 +18458,10 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.readMessagePart(TEST_USER, email, "2", 14))
                                                                                                                           .getMessage());
     verify(calendar, times(2)).getInputStream();
+    // The same read carries the message's authors.
+    when(calendar.getSize()).thenReturn(10);
+    when(message.getFrom()).thenReturn(new Address[] { new InternetAddress("olivia@partner.example") });
+    assertEquals(List.of("olivia@partner.example"), emailBoxService.readMessagePartAndAuthors(TEST_USER, email, "2", 100).authors());
 
     assertNull(emailBoxService.readMessagePart(TEST_USER, email, "7", 100), "a part the message does not have");
     email.setMailHeaderId("<another@partner.example>");

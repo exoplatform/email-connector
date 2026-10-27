@@ -180,7 +180,18 @@ public class CalendarInvitation {
 
   /**
    * Whether the mail is the organiser's newer revision of the event held: its SEQUENCE
-   * is higher than the held copy's, so adding it updates the calendar.
+   * is higher than the held copy's, so adding it updates the calendar. Only a mail its
+   * organiser sent is one ({@code organizerUnverified}).
    */
   private boolean                        newerRevision;
+
+  /**
+   * Whether the mail would change an event in the user's calendar -- a cancellation, a
+   * higher SEQUENCE than the held copy's, or an invitation the calendar could not say in
+   * time whether it holds -- and is not from its organiser: neither its {@code From}
+   * nor its {@code Sender} is the ORGANIZER's address or the address its SENT-BY
+   * names. Such a mail is shown, and answered as any invitation is; it is never
+   * offered for adding, updating or removing, and a landing of it is refused.
+   */
+  private boolean                        organizerUnverified;
 }

@@ -196,7 +196,25 @@ public final class CalendarInvitationUtils {
                                 recurrenceId == null ? null : StringUtils.trimToNull(recurrenceId.getValue()),
                                 value(event.getProperty(Property.URL)),
                                 (address, name, answer, sentBy) -> buildReply(calendar, event, address, name, answer, sentBy),
-                                new String(content, StandardCharsets.UTF_8));
+                                new String(content, StandardCharsets.UTF_8),
+                                sentByOf(event.getProperty(Property.ORGANIZER)));
+  }
+
+  /**
+   * The address a calendar user property's SENT-BY names (RFC 5545 section 3.2.18): who
+   * sends for that user, a delegate say, as a {@code mailto:} URI.
+   *
+   * @param property the property, the ORGANIZER
+   * @return the address, or null when it names none or not one mail address
+   */
+  static String sentByOf(Property property) {
+    Parameter sentBy = property == null ? null : property.getParameter(Parameter.SENT_BY);
+    String value = sentBy == null ? null : StringUtils.trimToEmpty(sentBy.getValue());
+    if (!StringUtils.startsWithIgnoreCase(value, MAILTO)) {
+      return null;
+    }
+    String address = StringUtils.trimToNull(value.substring(MAILTO.length()));
+    return address == null || !address.contains("@") || StringUtils.containsAny(address, ",;<>\"\r\n ") ? null : address;
   }
 
   /**

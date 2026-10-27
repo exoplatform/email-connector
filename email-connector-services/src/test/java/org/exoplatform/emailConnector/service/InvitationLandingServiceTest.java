@@ -46,6 +46,7 @@ import org.springframework.context.ApplicationContext;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.HeldInvitation;
+import org.exoplatform.emailConnector.model.HeldLookup;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.InvitationProbe;
@@ -244,6 +245,9 @@ class InvitationLandingServiceTest {
     when(first.held(PROBE)).thenReturn(null);
     assertNull(new InvitationLandingService(applicationContext).held(PROBE));
     verify(second, times(1)).held(PROBE);
+    // An answer that nothing is held is told apart from no answer.
+    assertEquals(HeldLookup.answered(null), new InvitationLandingService(applicationContext).lookUpHeld(PROBE));
+    assertEquals(HeldLookup.answered(copy), new HeldLookup(true, copy));
   }
 
   /**
@@ -289,10 +293,12 @@ class InvitationLandingServiceTest {
     long started = System.nanoTime();
     assertNull(service.held(PROBE), "too late");
     assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5000, "the reader waited for the timeout only");
+    assertFalse(service.lookUpHeld(PROBE).answered(), "too late is no answer");
     never.countDown();
 
     doThrow(new IllegalStateException("the calendar server is down")).when(first).held(PROBE);
     assertNull(service.held(PROBE), "failed");
+    assertEquals(HeldLookup.unanswered(), service.lookUpHeld(PROBE), "a failure is no answer");
 
     // An add-on whose classes cannot be linked is as if it were not installed: the
     // next one holding the calendar answers.
@@ -301,11 +307,13 @@ class InvitationLandingServiceTest {
     HeldInvitation copy = new HeldInvitation(78L, null, null, 0);
     when(second.held(PROBE)).thenReturn(copy);
     assertEquals(copy, service.held(PROBE));
+    assertEquals(HeldLookup.answered(copy), service.lookUpHeld(PROBE));
 
     ExecutorService full = Executors.newSingleThreadExecutor();
     full.shutdown();
     service.setHeldExecutor(full);
     assertNull(service.held(PROBE), "no room");
+    assertFalse(service.lookUpHeld(PROBE).answered(), "no room is no answer");
     service.stop();
   }
 
