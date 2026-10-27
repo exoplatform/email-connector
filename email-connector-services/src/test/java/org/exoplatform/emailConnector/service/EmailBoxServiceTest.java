@@ -101,6 +101,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -9542,6 +9543,95 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     Email draft = draft(null);
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  /**
+   * EXO-91674 -- a draft sent with no composer goes out as the row says it now: the
+   * subject and body the user last saved in the Email app, checked by the caller on
+   * that very row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredGoesOutAsTheRowSaysItNow() {
+    Email stored = mockDraftSendFixture();
+    stored.setSubject("Edited in the app");
+    stored.setContent(new EmailContent("<p>The user's own words</p>"));
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+    List<Email> checked = new ArrayList<>();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email sent = emailBoxService.sendDraftAsStored("draft-1", TEST_USER, checked::add);
+
+      ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(message.capture()));
+      assertEquals("Edited in the app", message.getValue().getSubject());
+      assertSame(stored, sent);
+      assertEquals(List.of(stored), checked);
+    }
+  }
+
+  /**
+   * EXO-91674 -- a row the caller's check refuses is not sent and not claimed: the user
+   * approved something else than what the draft says now.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredIsLeftAloneWhenTheCheckRefusesTheRow() {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraftAsStored("draft-1", TEST_USER, row -> {
+        throw new IllegalArgumentException("not what was approved");
+      }));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-91674 -- a discard whose check refuses the row, here because the draft has been
+   * scheduled, removes nothing: not the schedule, not the copy, not the row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftDiscardIsLeftAloneWhenTheCheckRefusesTheRow() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER, row -> {
+      if (row.isScheduled()) {
+        throw new IllegalArgumentException("scheduled");
+      }
+    }));
+    verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    // The draft is still there, and so is its lock: a writer waiting on it and the next
+    // caller must share one lock, never hold two.
+    @SuppressWarnings("unchecked")
+    Map<String, ReentrantLock> draftLocks = (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                    "draftLocks");
+    assertTrue(draftLocks.containsKey(TEST_USER + "/draft-1"));
+  }
+
+  /**
+   * EXO-91674 -- reading one draft is the owner's: a user who may not use their mailbox
+   * reads none, and a scheduled draft says it is.
+   */
+  @Test
+  @SneakyThrows
+  void getDraftIsTheOwnersAndMarksAScheduledDraft() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertTrue(emailBoxService.getDraft("draft-1", TEST_USER).isScheduled());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getDraft("draft-1", TEST_USER));
   }
 
   /**
