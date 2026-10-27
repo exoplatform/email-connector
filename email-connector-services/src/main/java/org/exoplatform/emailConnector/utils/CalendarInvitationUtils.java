@@ -209,7 +209,7 @@ public final class CalendarInvitationUtils {
    */
   static String sentByOf(Property property) {
     Parameter sentBy = property == null ? null : property.getParameter(Parameter.SENT_BY);
-    String value = sentBy == null ? null : StringUtils.trimToEmpty(sentBy.getValue());
+    String value = StringUtils.trimToEmpty(sentBy == null ? null : sentBy.getValue());
     if (!StringUtils.startsWithIgnoreCase(value, MAILTO)) {
       return null;
     }

@@ -107,6 +107,36 @@ class CalendarInvitationUtilsTest {
   }
 
   /**
+   * The ORGANIZER's SENT-BY is read as one plain mail address, and nothing else is: no
+   * property, no parameter, a URI that is not {@code mailto:}, or a value that is not
+   * one address all read as none.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theOrganisersSentByIsOnePlainAddress() throws Exception {
+    assertNull(CalendarInvitationUtils.sentByOf(null));
+    assertNull(CalendarInvitationUtils.sentByOf(new Organizer("mailto:olivia@partner.example")));
+    assertEquals("assistant@partner.example", CalendarInvitationUtils.sentByOf(organizerSentBy("mailto:assistant@partner.example")));
+    assertNull(CalendarInvitationUtils.sentByOf(organizerSentBy("https://partner.example/assistant")));
+    assertNull(CalendarInvitationUtils.sentByOf(organizerSentBy("mailto:assistant")));
+    assertNull(CalendarInvitationUtils.sentByOf(organizerSentBy("mailto:a@partner.example,b@partner.example")));
+  }
+
+  /**
+   * An ORGANIZER whose SENT-BY is the value given.
+   *
+   * @param sentBy the parameter's value
+   * @return the property
+   * @throws Exception never
+   */
+  private static Organizer organizerSentBy(String sentBy) throws Exception {
+    Organizer organizer = new Organizer("mailto:olivia@partner.example");
+    organizer.getParameters().add(new net.fortuna.ical4j.model.parameter.SentBy(new java.net.URI(sentBy)));
+    return organizer;
+  }
+
+  /**
    * The EMAIL parameter (RFC 7986) is read as plain text: the library's own factory
    * validates it with commons-validator, which the server does not ship, and refuses a
    * value it finds invalid -- which would lose the attendee, or the whole calendar.
