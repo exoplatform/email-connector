@@ -15,6 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+import { connectionChangeError } from '../../email-connector-common/js/EmailConnectorCommonService.js';
+
 export function getUserEmailConnectors() {
   return fetch('/email-connector/rest/user-email-setting/connectors', {
     headers: {
@@ -52,37 +54,12 @@ export function getConnectionRequirements() {
 }
 
 /**
- * The code the server answers with, in a 403 body, when managed mode refuses a change
- * of the user's connection; it is also the label's i18n key.
- */
-export const CONNECTION_LOCKED_CODE = 'emailConnector.managed.connectionLocked';
-
-/**
- * Builds the error a failed connection change rejects with: its `code` is
- * {@link CONNECTION_LOCKED_CODE} when managed mode refused the change.
- *
- * @param {Response} resp the failed response
- * @param {String} text the error's message
- * @returns {Promise<Error>} the error to throw
- */
-function connectionChangeError(resp, text) {
-  return resp.text().catch(() => '').then(message => {
-    const error = new Error(text);
-    error.status = resp?.status;
-    if (resp?.status === 403 && message?.includes(CONNECTION_LOCKED_CODE)) {
-      error.code = CONNECTION_LOCKED_CODE;
-    }
-    return error;
-  });
-}
-
-/**
  * Saves the user's mail settings, the connection included.
  *
  * @param {Object} userEmailSetting the settings to save
  * @param {Boolean} broadcast whether the mailbox cleanup event is broadcast
  * @returns {Promise} rejects with an error whose `code` is
- *          {@link CONNECTION_LOCKED_CODE} when managed mode refuses the change
+ *          the common service's CONNECTION_LOCKED_CODE when managed mode refuses the change
  */
 export function setUserEmailSetting(userEmailSetting, broadcast) {
   return fetch(`/email-connector/rest/user-email-setting?broadcast=${broadcast}`, {
@@ -105,7 +82,7 @@ export function setUserEmailSetting(userEmailSetting, broadcast) {
  * Disconnects the user's mailbox.
  *
  * @returns {Promise} rejects with an error whose `code` is
- *          {@link CONNECTION_LOCKED_CODE} when managed mode refuses the disconnection
+ *          the common service's CONNECTION_LOCKED_CODE when managed mode refuses the disconnection
  */
 export function deleteUserEmailSetting() {
   return fetch('/email-connector/rest/user-email-setting', {

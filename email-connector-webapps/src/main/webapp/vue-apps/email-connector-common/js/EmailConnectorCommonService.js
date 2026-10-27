@@ -111,9 +111,29 @@ export function resetAndResyncMailbox() {
 
 /**
  * The message code a managed-mode refusal carries in its 403 body: the instance keeps
- * the user on the designated connector.
+ * the user on the designated connector. It is also the label's i18n key.
  */
 export const CONNECTION_LOCKED_CODE = 'emailConnector.managed.connectionLocked';
+
+/**
+ * Builds the error a failed change of the user's connection (a connection, a save of
+ * the settings, a disconnection) rejects with: its `code` is
+ * {@link CONNECTION_LOCKED_CODE} when managed mode refused the change.
+ *
+ * @param {Response} resp the failed response
+ * @param {String} text the error's message
+ * @returns {Promise<Error>} the error to throw
+ */
+export function connectionChangeError(resp, text) {
+  return resp.text().catch(() => '').then(message => {
+    const error = new Error(text);
+    error.status = resp?.status;
+    if (resp?.status === 403 && message?.includes(CONNECTION_LOCKED_CODE)) {
+      error.code = CONNECTION_LOCKED_CODE;
+    }
+    return error;
+  });
+}
 
 /**
  * Connects to a connector whose provider asks the user for nothing. The server
@@ -133,12 +153,7 @@ export function connectThroughProvider(emailConnectorId) {
     if (resp?.ok) {
       return;
     }
-    return resp.text().catch(() => '').then(message => {
-      const error = new Error('Error when connecting through the configured provider');
-      error.status = resp.status;
-      if (resp.status === 403 && message?.includes(CONNECTION_LOCKED_CODE)) {
-        error.code = CONNECTION_LOCKED_CODE;
-      }
+    return connectionChangeError(resp, 'Error when connecting through the configured provider').then(error => {
       throw error;
     });
   });
