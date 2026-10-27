@@ -287,7 +287,7 @@ export default {
      */
     calendarLink() {
       const invitation = this.invitation;
-      if ((invitation?.landing === 'LANDED' || invitation?.landing === 'ALREADY_HELD') && invitation.landingLink) {
+      if (['LANDED', 'UPDATED', 'ALREADY_HELD'].includes(invitation?.landing) && invitation.landingLink) {
         return invitation.landingLink;
       }
       return (invitation?.held && !invitation.cancelled && invitation.heldLink) || '';
