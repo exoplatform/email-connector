@@ -614,9 +614,11 @@ public class CalendarInvitationService {
                                                                                     parsed.recurrenceId(),
                                                                                     organizerAddressOf(invitation)));
         applyHeld(invitation, lookup.held(), fromOrganizer);
-        if (!lookup.answered() && !fromOrganizer && organizerAddressOf(invitation) != null && addable(invitation)) {
+        if (!lookup.answered() && !fromOrganizer && organizerAddressOf(invitation) != null) {
           // Whether the calendar holds it is unknown, so whether adding it changes a
-          // copy is too: only its organiser's mail is landed.
+          // copy is too: only its organiser's mail is landed. Decided on the message,
+          // never on an answer: a decline given from here is followed by an acceptance
+          // the same landing would carry.
           invitation.setOrganizerUnverified(true);
         }
       }
