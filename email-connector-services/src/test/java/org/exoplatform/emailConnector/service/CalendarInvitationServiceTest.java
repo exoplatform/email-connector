@@ -817,6 +817,36 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * Whether a mail not from its organiser may be landed while the calendar could not
+   * say in time whether it holds a copy is decided on the message, never on the answer
+   * the user gave: after a decline from here, an acceptance is sent to the organiser
+   * and its landing is still refused.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aDeclineFromHereNeverLetsALaterAnswerLandAMailNotFromItsOrganiser() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(HeldLookup.unanswered());
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    List<SettingValue<?>> remembered = new ArrayList<>();
+    doAnswer(call -> remembered.add(call.getArgument(3))).when(settingService)
+                                                         .set(eq(Context.USER.id(USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), eq(key), any());
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> remembered.isEmpty() ? null : remembered.get(remembered.size() - 1));
+    email.setSender(new EmailSender("Mallory", "mallory@partner.example", null, null));
+
+    assertEquals(CalendarLanding.REFUSED, service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED).getLanding());
+    CalendarInvitation accepted = service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+
+    assertEquals(2, factories.size(), "both answers left for the organiser");
+    assertTrue(accepted.isOrganizerUnverified());
+    assertEquals(CalendarLanding.REFUSED, accepted.getLanding());
+    verify(invitationLandingService, never()).land(any(), any());
+  }
+
+  /**
    * "Add to my calendar" clicked on a card shown before the event was answered
    * elsewhere: the calendar holds it now, so nothing is handed over and the card is
    * told it is already there, with its link.
