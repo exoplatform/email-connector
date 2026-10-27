@@ -200,7 +200,9 @@ class AiToolDefinitionsTest {
    * EXO-90585 -- the approval card of each sending tool shows the identity argument as
    * given, and says what an empty one and each of the three words mean: the card is
    * drawn from the arguments before the tool runs, so it is where the user sees in whose
-   * name the mail leaves. The bundle ships in the webapp module, next door.
+   * name the mail leaves. The bundle ships in the webapp module, next door. The
+   * English text is Crowdin's source, which the POs reword, so the test checks what the
+   * card must carry rather than its sentence.
    *
    * @throws Exception when the bundle cannot be read
    */
@@ -224,10 +226,12 @@ class AiToolDefinitionsTest {
     }
     for (String name : SENDING_TOOLS) {
       String text = texts.getProperty("AiAgentChat.tool.confirm." + name);
-      assertTrue(text != null && text.contains("In whose name it leaves (empty or me: your own; owner_on_behalf: on behalf of the "
-          + "shared mailbox's owner, you shown as the sender; owner: as the shared mailbox's owner, you not named): "
-          + "<strong>{identity}</strong>"), name + ": " + text);
+      assertTrue(text != null && text.contains("<strong>{identity}</strong>"), name + ": " + text);
       assertTrue(text.contains("<strong>{mailbox}</strong>"), name + ": " + text);
+      // what an empty identity and each of the three words mean
+      for (String meaning : java.util.List.of("empty", "me:", "owner_on_behalf:", "owner:")) {
+        assertTrue(text.contains(meaning), name + " must explain '" + meaning + "': " + text);
+      }
     }
   }
 
