@@ -970,81 +970,10 @@ public class EmailConnectorServiceTest {
     posted.setId(7L);
     posted.setAuthProviderName("bluemind-sudo");
     posted.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt"));
-    when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("technicalLogin", "admin@global.virt"),
-                                                                     Map.of("technicalLogin", "admin0@global.virt"));
 
     emailConnectorService.updateEmailConnector(posted, TEST_USER);
 
     assertEquals(0, events.stream(EmailConnectorProviderChangedEvent.class).count());
-    assertEquals(List.of(7L),
-                 events.stream(EmailConnectorAuthenticationChangedEvent.class)
-                       .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
-                       .toList());
-  }
-
-  /**
-   * EXO-91017. The administration drawer posts the stored provider configuration back
-   * with every save, its secret left blank: an edit of the connector's name, icon or
-   * port changes no authentication, and the managed refusals are kept. Typing the
-   * secret again is a change, even when nothing else is.
-   */
-  @Test
-  @SneakyThrows
-  void aConfigurationPostedBackUnchangedKeepsTheManagedRefusals() {
-    grantAdministration();
-    EmailConnector stored = emailConnector();
-    stored.setId(7L);
-    stored.setAuthProviderName("bluemind-sudo");
-    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
-    when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("technicalLogin", "admin0@global.virt"));
-    when(providerConfigStorage.readStoredSecretKeys(any())).thenReturn(Set.of("technicalSecret"));
-    EmailConnector renamed = emailConnector();
-    renamed.setId(7L);
-    renamed.setName("Renamed");
-    renamed.setAuthProviderName("bluemind-sudo");
-    renamed.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt", "technicalSecret", ""));
-
-    emailConnectorService.updateEmailConnector(renamed, TEST_USER);
-
-    verify(providerConfigStorage).store(any(), eq(Map.of("technicalLogin", "admin0@global.virt", "technicalSecret", "")));
-    assertEquals(0,
-                 events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
-                 "a configuration posted back as stored keeps the managed refusals");
-
-    EmailConnector secretTyped = emailConnector();
-    secretTyped.setId(7L);
-    secretTyped.setAuthProviderName("bluemind-sudo");
-    secretTyped.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt", "technicalSecret", "n3w"));
-
-    emailConnectorService.updateEmailConnector(secretTyped, TEST_USER);
-
-    assertEquals(List.of(7L),
-                 events.stream(EmailConnectorAuthenticationChangedEvent.class)
-                       .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
-                       .toList(),
-                 "a secret typed in is a change of the technical account");
-  }
-
-  /**
-   * EXO-91017. A configuration that cannot be read back is taken as changed: the
-   * refusals are forgotten, as they were before the comparison existed.
-   */
-  @Test
-  @SneakyThrows
-  void aConfigurationThatCannotBeReadCountsAsChanged() {
-    grantAdministration();
-    EmailConnector stored = emailConnector();
-    stored.setId(7L);
-    stored.setAuthProviderName("bluemind-sudo");
-    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
-    when(providerConfigStorage.readWithoutSecrets(any())).thenThrow(new IllegalStateException("settings unreadable"));
-    EmailConnector posted = emailConnector();
-    posted.setId(7L);
-    posted.setAuthProviderName("bluemind-sudo");
-    posted.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt"));
-
-    emailConnectorService.updateEmailConnector(posted, TEST_USER);
-
     assertEquals(List.of(7L),
                  events.stream(EmailConnectorAuthenticationChangedEvent.class)
                        .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)

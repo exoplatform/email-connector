@@ -18,9 +18,8 @@ package org.exoplatform.emailConnector.event;
 
 /**
  * Published when an administrator's save changes how a connector authenticates its
- * users: another credentials provider, or a provider configuration that differs from the
- * stored one. The managed refusals recorded on that connector are then forgotten
- * (EXO-91017).
+ * users: another credentials provider, or a provider configuration written. The managed
+ * refusals recorded on that connector are then forgotten (EXO-91017).
  */
 public class EmailConnectorAuthenticationChangedEvent {
 
