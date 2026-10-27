@@ -758,6 +758,35 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * A mail about one occurrence of a series -- Exchange's update of a single date -- is
+   * never offered for adding or removing: the calendar add-ons land series only and
+   * refuse an occurrence, so the click could only fail. Its calendar copy is not asked
+   * about either.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void oneOccurrenceOfASeriesIsNeitherAddedNorRemoved() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    givenTheCalendarPart("outlook-occurrence-request.ics");
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+
+    assertTrue(invitation.isOccurrence());
+    assertTrue(invitation.isAnswerable(), "the occurrence is still answered");
+    assertFalse(invitation.isLandable(), "no add-on lands one occurrence");
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).held(any());
+
+    givenTheCalendarPartText(fixtureText("outlook-occurrence-request.ics").replace("METHOD:REQUEST", "METHOD:CANCEL"));
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isRemovable(), "no add-on removes one occurrence");
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
+  }
+
+  /**
    * "Add to my calendar" lands the invitation without an answer: nothing is sent,
    * nothing is remembered, and the add-on is handed the message with no answer.
    *
