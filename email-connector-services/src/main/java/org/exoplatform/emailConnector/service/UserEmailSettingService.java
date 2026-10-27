@@ -871,7 +871,9 @@ public class UserEmailSettingService {
    *
    * <p>
    * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
-   * removal and the account-cleanup listeners run in it.
+   * account-cleanup listeners run in it. The setting removals and the set-aside commit
+   * on their own, in the kernel transaction of SettingService's own
+   * {@code @ExoTransactional} writes, which a rollback of this transaction does not undo.
    *
    * @param username the eXo login disconnecting
    * @throws ManagedConnectionLockedException when managed mode governs the user
