@@ -245,7 +245,7 @@ public final class CalendarInvitationUtils {
    *
    * @param calendar the calendar
    * @param event its primary event
-   * @param attendeeAddress the address the reader answers for, to find their own status
+   * @param attendeeAddress the address the reader answers for, to find the line listing them
    * @param maxAttendees how many attendees to list at most
    * @return the description
    */
@@ -281,8 +281,10 @@ public final class CalendarInvitationUtils {
         invitation.getAttendees().add(person);
       }
       if (person.getAddress() != null && StringUtils.equalsIgnoreCase(person.getAddress(), attendeeAddress)) {
+        // The address the reader answers for. The PARTSTAT on that line is the
+        // sender's copy speaking, not an answer the reader gave: it stays on the
+        // attendee, and the answer is the caller's to set.
         invitation.setAttendeeAddress(person.getAddress());
-        invitation.setAnswer(InvitationAnswer.ofPartStat(person.getPartStat()));
       }
     }
     invitation.setRespondent(respondentOf(invitation));

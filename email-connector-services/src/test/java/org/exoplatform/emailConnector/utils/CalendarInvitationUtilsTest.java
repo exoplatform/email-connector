@@ -118,7 +118,8 @@ class CalendarInvitationUtilsTest {
     CalendarInvitation invitation = CalendarInvitationUtils.parseInvitation(fixture("email-parameter.ics"), ME, 50).invitation();
 
     assertEquals(1, invitation.getAttendeeCount());
-    assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer());
+    assertEquals("ACCEPTED", invitation.getAttendees().get(0).getPartStat());
+    assertNull(invitation.getAnswer(), "the sender's PARTSTAT is not the reader's answer");
   }
 
   /**
@@ -232,7 +233,8 @@ class CalendarInvitationUtilsTest {
     assertNull(invitation.getStart());
     assertEquals("2026-10-12", invitation.getStartDate());
     assertEquals("2026-10-13", invitation.getEndDate());
-    assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer(), "the address is matched whatever its case");
+    assertTrue(ME.equalsIgnoreCase(invitation.getAttendeeAddress()), "the address is matched whatever its case");
+    assertNull(invitation.getAnswer(), "the sender's PARTSTAT is not the reader's answer");
     assertFalse(invitation.isRecurring());
   }
 

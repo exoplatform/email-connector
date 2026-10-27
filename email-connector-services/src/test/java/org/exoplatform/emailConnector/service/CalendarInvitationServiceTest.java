@@ -1032,6 +1032,36 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * The PARTSTAT the sender wrote on the user's own line -- an organiser's update mailed
+   * after the user answered elsewhere, say -- is the sender's copy speaking: the card
+   * shows no answer of the user's, Accept is sent when clicked, and a DECLINED there
+   * does not take "Add to my calendar" away.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSendersPartStatIsNeverShownAsTheUsersAnswer() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test User",
+                                                                               "PARTSTAT=ACCEPTED;RSVP=TRUE;CN=Test User"));
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+
+    assertNull(invitation.getAnswer(), "no \"You accepted\", no highlighted Accept");
+    assertTrue(invitation.getAttendees().stream().anyMatch(attendee -> ME.equals(attendee.getAddress()) && "ACCEPTED".equals(attendee.getPartStat())),
+               "the organiser's copy still lists what it lists");
+    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(1, factories.size(), "the click sends the answer");
+
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test User",
+                                                                               "PARTSTAT=DECLINED;RSVP=TRUE;CN=Test User"));
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertNull(invitation.getAnswer());
+    assertTrue(invitation.isLandable(), "nothing says the user declined");
+  }
+
+  /**
    * "Add to my calendar" lands the invitation without an answer: nothing is sent,
    * nothing is remembered, and the add-on is handed the message with no answer.
    *
