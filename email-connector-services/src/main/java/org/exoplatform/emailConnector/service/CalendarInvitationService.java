@@ -326,8 +326,10 @@ public class CalendarInvitationService {
   /**
    * Adds the event a message describes to the user's calendar without sending an
    * answer: an invitation they do not want to answer yet, or a published event with
-   * nobody to answer -- with the answer they already gave for this revision, when they
-   * did, so the calendar says what the organiser was told. From the user's own mailbox
+   * nobody to answer -- with the answer they already gave from here for this revision,
+   * when they did, so the calendar says what the organiser was told; never the PARTSTAT
+   * the sender wrote on the user's attendee line, and an update of a copy the calendar
+   * holds keeps the answer the copy carries. From the user's own mailbox
    * only, never a cancelled event, and not after a decline. An event the calendar holds
    * already, and the mail is no newer revision of, is not handed over again: it is told
    * as already held, with its link.
@@ -362,9 +364,10 @@ public class CalendarInvitationService {
     if (!invitation.isLandable()) {
       throw new IllegalArgumentException(NOT_LANDABLE);
     }
-    // With the answer the user already gave for this revision, when they did:
-    // the calendar says what the organiser was told.
-    land(username, parsed, invitation.getAnswer());
+    // With the answer the user already gave from here for this revision, when
+    // they did: the calendar says what the organiser was told. Never the
+    // PARTSTAT the sender wrote on the user's line, which is the sender's.
+    land(username, parsed, givenAnswer(username, invitation, parsed.recurrenceId()));
     return invitation;
   }
 
@@ -537,9 +540,9 @@ public class CalendarInvitationService {
       invitation.setAnswer(null);
       return parsed;
     }
-    CalendarInvitationAnswer given = rememberedAnswer(username, invitation, parsed.recurrenceId());
-    if (given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence()) {
-      invitation.setAnswer(given.getAnswer());
+    InvitationAnswer given = givenAnswer(username, invitation, parsed.recurrenceId());
+    if (given != null) {
+      invitation.setAnswer(given);
     }
     if (invitation.isExoMeeting()) {
       return parsed;
@@ -817,6 +820,21 @@ public class CalendarInvitationService {
       case DECLINED -> "declined";
     };
     return who + " has " + verb + " this invitation" + (StringUtils.isBlank(summary) ? "" : ": " + summary) + "." + CRLF;
+  }
+
+  /**
+   * The answer the user gave from here to this revision of an event, or a later one:
+   * an answer to an older revision is not this one's.
+   *
+   * @param username the user
+   * @param invitation the invitation, for its attendee address, UID and SEQUENCE
+   * @param recurrenceId the occurrence's RECURRENCE-ID, null for the series
+   * @return the answer, or null
+   */
+  private InvitationAnswer givenAnswer(String username, CalendarInvitation invitation, String recurrenceId) {
+    CalendarInvitationAnswer given = rememberedAnswer(username, invitation, recurrenceId);
+    return given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence() ? given.getAnswer()
+                                                                                                          : null;
   }
 
   /**

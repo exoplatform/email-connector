@@ -824,6 +824,34 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * "Add to my calendar" on an invitation whose sender wrote an answer on the user's own
+   * attendee line lands it unanswered: that PARTSTAT is the sender's, not an answer the
+   * user gave, and the organiser was told nothing by them.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void addingNeverLandsTheSendersPartStatAsTheUsersAnswer() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test User",
+                                                                               "PARTSTAT=ACCEPTED;RSVP=TRUE;CN=Test User"));
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
+
+    service.addToCalendar(EMAIL_ID, USER);
+
+    assertNull(landing.getValue().answer(), "the sender's PARTSTAT is not the user's answer");
+    verifyNothingSent();
+
+    // An answer the user gave from here to this revision still goes with it.
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"TENTATIVE\",\"sequence\":2,\"answeredAt\":1}"));
+    service.addToCalendar(EMAIL_ID, USER);
+    assertEquals(InvitationAnswer.TENTATIVE, landing.getValue().answer());
+  }
+
+  /**
    * "Remove from my calendar" hands the organiser's cancellation to the add-on; a
    * cancellation is never added, and an invitation is never removed.
    *
