@@ -7108,10 +7108,8 @@ public class EmailBoxService {
 
   /**
    * One MIME part of a cached message, read as {@link #readMessagePart} reads it, with
-   * the addresses the message says it is from -- every {@code From} address and the
-   * {@code Sender} -- read from the same message on the server, in the same round trip.
-   * Over IMAP the {@code Sender} is the envelope's, which is the {@code From} when the
-   * message has no {@code Sender} header (RFC 3501 section 7.4.2).
+   * the addresses the message says it is from -- every {@code From} address -- read from
+   * the same message on the server, in the same round trip.
    *
    * @param username the mailbox owner, whose own connection reads it
    * @param email the cached message, already resolved for this user
@@ -7178,8 +7176,9 @@ public class EmailBoxService {
   }
 
   /**
-   * The bare addresses a message says it is from: every {@code From} address, then the
-   * {@code Sender}. A header that cannot be parsed adds nothing.
+   * The bare addresses a message says it is from: every {@code From} address. The
+   * {@code Sender} is not one: DMARC authenticates the {@code From} domain only. A header
+   * that cannot be parsed adds nothing.
    *
    * @param message the message, as the server reads it
    * @return the addresses, possibly empty
@@ -7197,14 +7196,6 @@ public class EmailBoxService {
       }
     } catch (MessagingException e) {
       LOG.debug("The From of a message could not be read", e);
-    }
-    try {
-      if (message instanceof MimeMessage mimeMessage && mimeMessage.getSender() instanceof InternetAddress sender
-          && StringUtils.isNotBlank(sender.getAddress())) {
-        authors.add(sender.getAddress().trim());
-      }
-    } catch (MessagingException e) {
-      LOG.debug("The Sender of a message could not be read", e);
     }
     return authors;
   }

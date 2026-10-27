@@ -25,7 +25,7 @@ import java.util.List;
  * reads the message's header.
  *
  * @param content the decoded bytes, capped by the reader
- * @param authors the {@code From} and {@code Sender} addresses, bare, possibly empty
+ * @param authors the {@code From} addresses, bare, possibly empty
  */
 public record MessagePart(byte[] content, List<String> authors) {
 

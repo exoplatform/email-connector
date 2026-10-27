@@ -20,12 +20,16 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 import javax.activation.DataHandler;
 import javax.mail.Message;
@@ -138,16 +142,21 @@ import io.meeds.social.util.JsonUtils;
  * meeting knows its UID and its organiser's address, so a mail's ORGANIZER line proves
  * nothing. A mail that would change an event the calendar holds -- a cancellation, or a
  * revision whose SEQUENCE is higher than the held copy's -- is offered and landed only
- * when its {@code From} or its {@code Sender}, as the mail server reads the message, is
- * the ORGANIZER's address or the address the ORGANIZER's SENT-BY names (a delegate),
- * compared on the bare address, case aside. Otherwise the card says it is not from its
+ * when its {@code From} -- one address, as the mail server reads the message -- is the
+ * ORGANIZER's address, compared on the bare address, case aside. Neither the
+ * {@code Sender} nor the ORGANIZER's SENT-BY counts: SENT-BY is read from the same object
+ * the check verifies, and the {@code Sender} is not what DMARC authenticates. Otherwise the card says it is not from its
  * organiser ({@link #UNVERIFIED}), offers no update and no removal, and the landing is
  * refused; it is still shown, and an invitation is still answered -- the answer goes to
  * the ORGANIZER's address. A first invitation is added whoever sent it, but only once
  * the calendar has said it does not hold the event: when it could not say in time, a
- * mail not from its organiser is treated as a change. {@code From} and {@code Sender}
- * are what the sender's server wrote; where the sender's domain publishes no DMARC policy
- * they are as forgeable as the ORGANIZER line, which this does not claim to close.
+ * mail not from its organiser is treated as a change. The verdict travels with the
+ * landing ({@link InvitationLanding#fromOrganizer()}), and the add-on refuses to change
+ * a copy it holds without it. A {@code From} is only as good as the organiser domain's
+ * DMARC policy and the receiving server's enforcement of it: this closes a forgery by
+ * one header or one parameter, not a forged {@code From} from a domain that publishes
+ * no policy. A delegate mailing an update from their own address, or a calendar service
+ * relaying it, reads as not from its organiser.
  */
 @Service
 public class CalendarInvitationService {
@@ -205,8 +214,9 @@ public class CalendarInvitationService {
 
   /**
    * The mail would change an event in the user's calendar and is not from its organiser:
-   * neither its {@code From} nor its {@code Sender} is the ORGANIZER's address or its
-   * SENT-BY's. Nothing is landed from it.
+   * its {@code From} is not the ORGANIZER's address alone ({@code Sender} and SENT-BY
+   * aside). Nothing is landed from it. A {@code From} is only as good as the organiser
+   * domain's DMARC policy and the receiving server's enforcement of it.
    */
   public static final String  UNVERIFIED              = "emailConnector.invitation.unverified";
 
@@ -468,7 +478,8 @@ public class CalendarInvitationService {
                                                         parsed.recurrenceId(),
                                                         invitation.getSequence(),
                                                         answer,
-                                                        parsed.icalendar()),
+                                                        parsed.icalendar(),
+                                                        parsed.fromOrganizer()),
                                   invitation);
   }
 
@@ -575,6 +586,7 @@ public class CalendarInvitationService {
     if (invitation.getAttendeeAddress() == null) {
       invitation.setAttendeeAddress(mailboxAddress);
     }
+    parsed = parsed.withFromOrganizer(fromOrganizer(email, read.authors(), invitation));
     if (invitation.getRespondent() == null && CalendarInvitationUtils.METHOD_COUNTER.equals(invitation.getMethod())) {
       invitation.setRespondent(proposer(email, invitation));
     }
@@ -606,7 +618,7 @@ public class CalendarInvitationService {
     // The user's own calendar, from their own mailbox: a shared mailbox's invitation
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
-      boolean fromOrganizer = fromOrganizer(email, read.authors(), invitation, parsed.organizerSentBy());
+      boolean fromOrganizer = parsed.fromOrganizer();
       if (askHeld && addableMethod(invitation) && !invitation.isCancelled() && !invitation.isOccurrence()) {
         HeldLookup lookup = invitationLandingService.lookUpHeld(new InvitationProbe(username,
                                                                                     invitation.getAttendeeAddress(),
@@ -636,30 +648,33 @@ public class CalendarInvitationService {
   }
 
   /**
-   * Whether a mail is from the organiser of the event it carries: its {@code From} or
-   * its {@code Sender} is the ORGANIZER's address, or the address the ORGANIZER's
-   * SENT-BY names, compared on the bare address, case aside. The {@code From} the sync
-   * stored for the message counts as one of its {@code From} addresses.
+   * Whether a mail is from the organiser of the event it carries: its {@code From} is
+   * one address, the ORGANIZER's, compared on the bare address, case aside. The
+   * {@code Sender} and the ORGANIZER's SENT-BY do not count: SENT-BY is read from the
+   * object this verifies, and DMARC authenticates the {@code From} domain only. The
+   * {@code From} the server read wins; the one the sync stored stands in when the server
+   * read none.
    *
    * @param email the message, for the {@code From} the sync stored
-   * @param authors the {@code From} and {@code Sender} addresses the server read
+   * @param from the {@code From} addresses the server read
    * @param invitation the invitation, for its ORGANIZER
-   * @param organizerSentBy the address the ORGANIZER's SENT-BY names, or null
-   * @return false when the invitation names no organiser
+   * @return false when the invitation names no organiser, or the {@code From} names
+   *         several addresses or another one
    */
-  static boolean fromOrganizer(Email email, List<String> authors, CalendarInvitation invitation, String organizerSentBy) {
+  static boolean fromOrganizer(Email email, List<String> from, CalendarInvitation invitation) {
     String organizer = bareAddress(organizerAddressOf(invitation));
     if (organizer == null) {
       return false;
     }
-    String sentBy = bareAddress(organizerSentBy);
-    List<String> candidates = new ArrayList<>(authors == null ? List.of() : authors);
-    if (email.getSender() != null) {
-      candidates.add(email.getSender().getAddress());
-    }
-    return candidates.stream()
-                     .map(CalendarInvitationService::bareAddress)
-                     .anyMatch(author -> author != null && (author.equals(organizer) || author.equals(sentBy)));
+    List<String> candidates = from == null || from.isEmpty()
+                                                             ? email.getSender() == null ? List.of()
+                                                                                         : Collections.singletonList(email.getSender()
+                                                                                                                         .getAddress())
+                                                             : from;
+    Set<String> addresses = candidates.stream()
+                                      .map(CalendarInvitationService::bareAddress)
+                                      .collect(Collectors.toCollection(HashSet::new));
+    return addresses.size() == 1 && addresses.contains(organizer);
   }
 
   /**

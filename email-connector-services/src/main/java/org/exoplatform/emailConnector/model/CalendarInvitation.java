@@ -188,9 +188,8 @@ public class CalendarInvitation {
   /**
    * Whether the mail would change an event in the user's calendar -- a cancellation, a
    * higher SEQUENCE than the held copy's, or an invitation the calendar could not say in
-   * time whether it holds -- and is not from its organiser: neither its {@code From}
-   * nor its {@code Sender} is the ORGANIZER's address or the address its SENT-BY
-   * names. Such a mail is shown, and answered as any invitation is; it is never
+   * time whether it holds -- and is not from its organiser: its {@code From} is not the
+   * ORGANIZER's address alone ({@code Sender} and SENT-BY aside). Such a mail is shown, and answered as any invitation is; it is never
    * offered for adding, updating or removing, and a landing of it is refused.
    */
   private boolean                        organizerUnverified;

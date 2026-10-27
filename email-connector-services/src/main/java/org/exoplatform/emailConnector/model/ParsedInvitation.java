@@ -29,13 +29,23 @@ import org.exoplatform.emailConnector.utils.InvitationReplyWriter;
  * @param url the event's URL property as written, the sender's: null when it has none
  * @param replyWriter writes the REPLY
  * @param icalendar the part as received, decoded as UTF-8
- * @param organizerSentBy the address the ORGANIZER's SENT-BY names, who sends for the
- *          organiser (RFC 5545 section 3.2.18); null when it names none
+ * @param fromOrganizer whether the mail is from the event's organiser, as the reader
+ *          established it from the message's {@code From}; false as parsed
  */
 public record ParsedInvitation(CalendarInvitation invitation,
                                String recurrenceId,
                                String url,
                                InvitationReplyWriter replyWriter,
                                String icalendar,
-                               String organizerSentBy) {
+                               boolean fromOrganizer) {
+
+  /**
+   * The same invitation, with whether its mail is from the event's organiser.
+   *
+   * @param fromOrganizer the reader's verdict
+   * @return the invitation
+   */
+  public ParsedInvitation withFromOrganizer(boolean fromOrganizer) {
+    return new ParsedInvitation(invitation, recurrenceId, url, replyWriter, icalendar, fromOrganizer);
+  }
 }
