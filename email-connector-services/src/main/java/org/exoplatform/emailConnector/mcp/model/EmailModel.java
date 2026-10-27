@@ -84,4 +84,17 @@ public class EmailModel {
   private List<EmailRecipient> cc;
 
   private List<EmailRecipient> bcc;
+
+  /**
+   * Who wrote the message (EXO-91995): {@code bounce} (a mail server reporting it could
+   * not deliver), {@code auto_reply} (sent without a person typing it: an out-of-office, a
+   * read receipt, a delay notice) or {@code normal} (a person, a mail relayed by a
+   * mailing list included). Absent when unknown: a mail synced before it was decided.
+   */
+  @JsonProperty("message_kind")
+  private String       messageKind;
+
+  /** On a bounce, the addresses that could not be reached; absent otherwise. */
+  @JsonProperty("bounced_recipients")
+  private List<String> bouncedRecipients;
 }
