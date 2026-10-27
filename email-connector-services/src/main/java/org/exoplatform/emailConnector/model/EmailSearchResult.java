@@ -17,6 +17,9 @@
 package org.exoplatform.emailConnector.model;
 
 import java.util.Date;
+import java.util.List;
+
+import org.exoplatform.emailConnector.constant.MessageKind;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
@@ -93,6 +96,15 @@ public class EmailSearchResult implements ListedMailRow {
 
   @JsonInclude(Include.NON_NULL)
   private Boolean     threadHasDraft;
+
+  // Who wrote the hit (EXO-91995), and on a bounce the addresses it failed: the cached
+  // row's for a hit of the local copy, decided from the live message otherwise. Left out
+  // when unknown.
+  @JsonInclude(Include.NON_NULL)
+  private MessageKind  messageKind;
+
+  @JsonInclude(Include.NON_EMPTY)
+  private List<String> bouncedRecipients;
 
   /**
    * A hit named by its folder and UID only, with no local id, no share and no owner.
