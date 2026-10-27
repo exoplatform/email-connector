@@ -17,7 +17,9 @@
 package org.exoplatform.emailConnector.rest;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -69,12 +71,12 @@ public class CalendarInvitationRest {
       @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation (emailConnector.invitation.notFound)"),
       @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
-  public CalendarInvitation getInvitation(HttpServletRequest request,
+  public ResponseEntity<CalendarInvitation> getInvitation(HttpServletRequest request,
                                           @Parameter(description = "Technical id of the message", required = true)
                                           @PathVariable("emailId")
                                           long emailId) {
     try {
-      return calendarInvitationService.getInvitation(emailId, request.getRemoteUser());
+      return privateBody(calendarInvitationService.getInvitation(emailId, request.getRemoteUser()));
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
     } catch (IllegalArgumentException e) {
@@ -103,7 +105,7 @@ public class CalendarInvitationRest {
       @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the shared mailbox's owner does not let the caller send in her name (emailConnector.invitation.sendNotAllowed)"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),
       @ApiResponse(responseCode = "500", description = "The answer could not be sent (emailConnector.invitation.sendFailed), or the mail server failed after it may have been accepted (emailConnector.invitation.unconfirmed)"), })
-  public CalendarInvitation respond(HttpServletRequest request,
+  public ResponseEntity<CalendarInvitation> respond(HttpServletRequest request,
                                     @Parameter(description = "Technical id of the message", required = true)
                                     @PathVariable("emailId")
                                     long emailId,
@@ -111,7 +113,7 @@ public class CalendarInvitationRest {
                                     @RequestBody
                                     InvitationReplyRequest reply) {
     try {
-      return calendarInvitationService.respond(emailId, request.getRemoteUser(), reply == null ? null : reply.getAnswer());
+      return privateBody(calendarInvitationService.respond(emailId, request.getRemoteUser(), reply == null ? null : reply.getAnswer()));
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
     } catch (IllegalArgumentException e) {
@@ -146,12 +148,12 @@ public class CalendarInvitationRest {
       @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the message is a shared mailbox's (emailConnector.invitation.notLandable)"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be read"), })
-  public CalendarInvitation addToCalendar(HttpServletRequest request,
+  public ResponseEntity<CalendarInvitation> addToCalendar(HttpServletRequest request,
                                           @Parameter(description = "Technical id of the message", required = true)
                                           @PathVariable("emailId")
                                           long emailId) {
     try {
-      return calendarInvitationService.addToCalendar(emailId, request.getRemoteUser());
+      return privateBody(calendarInvitationService.addToCalendar(emailId, request.getRemoteUser()));
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
     } catch (IllegalArgumentException e) {
@@ -179,12 +181,12 @@ public class CalendarInvitationRest {
       @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the message is a shared mailbox's (emailConnector.invitation.notLandable)"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be read"), })
-  public CalendarInvitation removeFromCalendar(HttpServletRequest request,
+  public ResponseEntity<CalendarInvitation> removeFromCalendar(HttpServletRequest request,
                                                @Parameter(description = "Technical id of the message", required = true)
                                                @PathVariable("emailId")
                                                long emailId) {
     try {
-      return calendarInvitationService.removeFromCalendar(emailId, request.getRemoteUser());
+      return privateBody(calendarInvitationService.removeFromCalendar(emailId, request.getRemoteUser()));
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
     } catch (IllegalArgumentException e) {
@@ -194,6 +196,16 @@ public class CalendarInvitationRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, null);
     }
+  }
+
+  /**
+   * One user's mail content, kept by no shared cache or proxy in front of the portal.
+   *
+   * @param invitation the invitation
+   * @return the response
+   */
+  private static ResponseEntity<CalendarInvitation> privateBody(CalendarInvitation invitation) {
+    return ResponseEntity.ok().cacheControl(CacheControl.noStore().cachePrivate()).body(invitation);
   }
 
   /**

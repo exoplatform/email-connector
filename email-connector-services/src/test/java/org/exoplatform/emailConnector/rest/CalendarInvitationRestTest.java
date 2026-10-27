@@ -24,6 +24,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -74,6 +75,9 @@ class CalendarInvitationRestTest {
 
   private static final String       USER = "simple";
 
+  /** One user's mail content: kept by no shared cache. */
+  private static final String       NO_STORE = "no-store, private";
+
   @MockitoBean
   private CalendarInvitationService calendarInvitationService;
 
@@ -107,6 +111,7 @@ class CalendarInvitationRestTest {
     when(calendarInvitationService.getInvitation(12L, USER)).thenReturn(invitation);
     mockMvc.perform(get(PATH).with(simpleUser()))
            .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", NO_STORE))
            .andExpect(jsonPath("$.summary").value("<b>Sync</b>"))
            .andExpect(jsonPath("$.answerable").value(true));
 
@@ -141,7 +146,9 @@ class CalendarInvitationRestTest {
     CalendarInvitation answered = new CalendarInvitation();
     answered.setAnswer(InvitationAnswer.ACCEPTED);
     when(calendarInvitationService.respond(12L, USER, InvitationAnswer.ACCEPTED)).thenReturn(answered);
-    reply(PATH, "ACCEPTED").andExpect(status().isOk()).andExpect(jsonPath("$.answer").value("ACCEPTED"));
+    reply(PATH, "ACCEPTED").andExpect(status().isOk())
+                           .andExpect(header().string("Cache-Control", NO_STORE))
+                           .andExpect(jsonPath("$.answer").value("ACCEPTED"));
     verify(calendarInvitationService).respond(12L, USER, InvitationAnswer.ACCEPTED);
 
     doThrow(new IllegalArgumentException(CalendarInvitationService.CANCELLED)).when(calendarInvitationService)
@@ -196,6 +203,7 @@ class CalendarInvitationRestTest {
     when(calendarInvitationService.addToCalendar(12L, USER)).thenReturn(landed);
     mockMvc.perform(post(PATH + "/calendar").with(simpleUser()))
            .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", NO_STORE))
            .andExpect(jsonPath("$.landing").value("LANDED"))
            .andExpect(jsonPath("$.landingLink").value("/portal/dw/agenda?eventId=77"));
 
@@ -204,6 +212,7 @@ class CalendarInvitationRestTest {
     when(calendarInvitationService.removeFromCalendar(12L, USER)).thenReturn(removed);
     mockMvc.perform(delete(PATH + "/calendar").with(simpleUser()))
            .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", NO_STORE))
            .andExpect(jsonPath("$.landing").value("REMOVED"));
 
     when(calendarInvitationService.addToCalendar(13L, USER)).thenThrow(new IllegalArgumentException(CalendarInvitationService.NOT_LANDABLE));
