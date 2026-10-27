@@ -40,7 +40,10 @@ import org.exoplatform.emailConnector.model.LandedInvitation;
  * claims, capped in size but not vetted. An implementer treats it as such -- it must
  * not act on one of this deployment's own events because a UID or a link names it (at
  * most say the event is held already, when the message describes it), must let only
- * an event's organiser change or cancel it, and the only person it acts for is
+ * an event's organiser change or cancel it -- it changes or removes a copy the user
+ * holds only when {@link InvitationLanding#fromOrganizer()} is true, whatever its
+ * {@link #held} answered, since the reader checked the mail's {@code From} and the
+ * object cannot vouch for itself -- and the only person it acts for is
  * {@link InvitationLanding#username()}, in that user's own calendar: the attendee
  * address names that same user's mailbox, never somebody else to resolve. The link it
  * returns is built from the platform's own domain, never from the object.
@@ -63,9 +66,10 @@ public interface InvitationCalendarPlugin {
    * <p>
    * What lands depends on the message and the answer: an invitation or a published
    * event is created in the calendar, or updated when the user already holds it and
-   * the message is its organiser's newer revision; an answer given is set on it, and
+   * the message is its organiser's newer revision ({@link InvitationLanding#fromOrganizer()}
+   * true: never otherwise, whatever {@link #held} answered); an answer given is set on it, and
    * a decline sets it on an event the user holds and creates nothing; a cancellation
-   * removes the event the user holds. Asked only of the implementer that answered true
+   * removes the event the user holds, its organiser's only. Asked only of the implementer that answered true
    * to {@link #holdsCalendarFor}, and of that one alone: it returns what it did, or
    * null when there was nothing to do for this message (a decline or a cancellation of
    * an event the user never added) -- and null when, asked anyway, it holds no calendar
@@ -101,6 +105,10 @@ public interface InvitationCalendarPlugin {
    * that a UID names is not "held" on that strength alone, and a copy is held for this
    * mail only when it is the mail's organiser's ({@link InvitationProbe#organizer()}),
    * never one the user organises themselves.
+   * <p>
+   * A null here never licenses a change: the reader lands a mail not from its organiser
+   * once this answered null, so {@link #land} still refuses to change or remove a copy it
+   * holds unless {@link InvitationLanding#fromOrganizer()} is true.
    * <p>
    * The default answers null, so an implementer written before this method keeps the
    * reader's card as it was.

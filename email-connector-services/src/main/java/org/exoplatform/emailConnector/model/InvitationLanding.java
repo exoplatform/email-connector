@@ -42,6 +42,10 @@ import org.apache.commons.lang3.StringUtils;
  * @param answer the answer given, null when the user only asked to add or remove the
  *          event
  * @param icalendar the iCalendar object, as text
+ * @param fromOrganizer whether the mail is from the event's organiser: its {@code From}
+ *          is the ORGANIZER's address alone ({@code Sender} and SENT-BY aside). The
+ *          implementer changes or removes a copy the user holds only when it is true,
+ *          whatever its {@code held} answered; a first copy is created either way
  */
 public record InvitationLanding(String username,
                                 String attendeeAddress,
@@ -50,7 +54,8 @@ public record InvitationLanding(String username,
                                 String recurrenceId,
                                 int sequence,
                                 InvitationAnswer answer,
-                                String icalendar) {
+                                String icalendar,
+                                boolean fromOrganizer) {
 
   /**
    * Refuses a landing missing what every implementer needs.
@@ -63,6 +68,7 @@ public record InvitationLanding(String username,
    * @param sequence the SEQUENCE
    * @param answer the answer, or null
    * @param icalendar the object
+   * @param fromOrganizer whether the mail is from the event's organiser
    * @throws IllegalArgumentException without a user, a UID or an object
    */
   public InvitationLanding {
@@ -70,5 +76,30 @@ public record InvitationLanding(String username,
       throw new IllegalArgumentException("A landing names the user, the event's UID and the object");
     }
     method = StringUtils.upperCase(StringUtils.trimToNull(method));
+  }
+
+  /**
+   * A landing of a mail not known to be from the event's organiser: it may create a
+   * copy, never change or remove one the user holds.
+   *
+   * @param username the user
+   * @param attendeeAddress their mailbox address
+   * @param method the iTIP method
+   * @param uid the event's UID
+   * @param recurrenceId the occurrence, or null
+   * @param sequence the SEQUENCE
+   * @param answer the answer, or null
+   * @param icalendar the object
+   * @throws IllegalArgumentException without a user, a UID or an object
+   */
+  public InvitationLanding(String username,
+                           String attendeeAddress,
+                           String method,
+                           String uid,
+                           String recurrenceId,
+                           int sequence,
+                           InvitationAnswer answer,
+                           String icalendar) {
+    this(username, attendeeAddress, method, uid, recurrenceId, sequence, answer, icalendar, false);
   }
 }
