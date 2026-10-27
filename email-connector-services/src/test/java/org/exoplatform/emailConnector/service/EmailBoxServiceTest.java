@@ -17662,6 +17662,123 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91996 -- scheduling a draft as stored hands the check the row read while the
+   * draft's lock is held, and schedules that very row: the text saved is the stored one,
+   * the user's edits in the Email app included, never a copy the caller read earlier.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredChecksTheStoredRowUnderItsLockThenSchedulesIt() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setSubject("Edited in the Email app");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    when(scheduler.apply(any(Email.class))).thenReturn(created);
+    Map<String, ReentrantLock> draftLocks =
+                                          (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                  "draftLocks");
+    List<Email> checked = new ArrayList<>();
+    boolean[] lockHeld = new boolean[1];
+
+    assertSame(created, emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      checked.add(row);
+      lockHeld[0] = draftLocks.get(TEST_USER + "/draft-1").isHeldByCurrentThread();
+    }, scheduler));
+
+    assertEquals(List.of(stored), checked);
+    assertTrue(lockHeld[0], "the check runs on the row read under the draft's lock");
+    ArgumentCaptor<Email> saved = ArgumentCaptor.forClass(Email.class);
+    InOrder order = inOrder(emailBoxStorage, scheduler);
+    order.verify(emailBoxStorage).saveDraft(saved.capture());
+    order.verify(scheduler).apply(any(Email.class));
+    assertEquals("Edited in the Email app", saved.getValue().getSubject());
+  }
+
+  /**
+   * EXO-91996 -- a check that refuses the stored row schedules nothing and saves
+   * nothing; the row it is handed says whether the draft is scheduled already; a draft
+   * that is gone is not found.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredSchedulesNothingWhenTheCheckRefusesTheRow() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    boolean[] markedScheduled = new boolean[1];
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      markedScheduled[0] = row.isScheduled();
+      throw new IllegalArgumentException("refused");
+    }, scheduler));
+
+    assertTrue(markedScheduled[0], "the row handed to the check says it is scheduled");
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(scheduler, never()).apply(any(Email.class));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.scheduleDraftAsStored("gone", TEST_USER, row -> {
+    }, scheduler));
+  }
+
+  /**
+   * EXO-91996 -- a checked change of a schedule writes the schedule first and only then
+   * reads the draft and checks it: the write's row lock is what orders the read after an
+   * edit of the mail in the Email app. A refused check, or a draft that is gone, is
+   * thrown from the method, whose transaction rolls back on any exception: the
+   * annotation is pinned, since a test calling the method directly cannot see the
+   * transaction it is missing (the annotation-removed mutant).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCheckedScheduleChangeWritesFirstThenChecksTheDraftInOneTransaction() throws Exception {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    List<String> steps = new ArrayList<>();
+
+    assertSame(stored, emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      verify(emailBoxStorage, never()).getDraftByLocalId(anyString(), anyString());
+      steps.add("write");
+    }, draft -> steps.add("check " + draft.getSubject())));
+    assertEquals(List.of("write", "check " + stored.getSubject()), steps);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+    }, draft -> {
+      throw new IllegalArgumentException("refused");
+    }));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("gone", TEST_USER, () -> {
+    }, draft -> {
+    }));
+    List<String> beforeWrite = new ArrayList<>();
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      beforeWrite.add("write");
+      throw new ObjectNotFoundException("no schedule");
+    }, draft -> beforeWrite.add("check")));
+    assertEquals(List.of("write"), beforeWrite, "nothing is read or checked once the write refused");
+
+    org.springframework.transaction.annotation.Transactional transactional =
+                                                                            EmailBoxService.class.getMethod("changeScheduleIfDraftSays",
+                                                                                                            String.class,
+                                                                                                            String.class,
+                                                                                                            EmailBoxService.ScheduleTaker.class,
+                                                                                                            java.util.function.Consumer.class)
+                                                                                                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+    assertNotNull(transactional, "the write, the read and the check share one transaction");
+    assertEquals(List.of(Exception.class), List.of(transactional.rollbackFor()), "any refusal rolls the write back");
+  }
+
+  /**
    * An edit of a scheduled draft takes the schedule row before it writes anything, then
    * takes the removed files off, stores the new ones, and writes the text with a forced
    * revision -- the mail staying scheduled (EXO-90434).

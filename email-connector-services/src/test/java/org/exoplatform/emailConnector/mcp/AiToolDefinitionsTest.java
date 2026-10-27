@@ -61,7 +61,10 @@ class AiToolDefinitionsTest {
                                                             "delete_email",
                                                             "create_contact",
                                                             "send_email_draft",
-                                                            "delete_email_draft");
+                                                            "delete_email_draft",
+                                                            "schedule_email_draft",
+                                                            "reschedule_email",
+                                                            "cancel_scheduled_email");
 
   /**
    * Every public tool method must be declared in the JSON, and every JSON entry
@@ -99,14 +102,16 @@ class AiToolDefinitionsTest {
                  "Tool " + name + " must carry require_approval: true");
     }
     // EXO-91674: preparing, changing and listing drafts never leaves the user's mailbox,
-    // so a batch of prepared drafts does not ask once per draft.
+    // so a batch of prepared drafts does not ask once per draft. EXO-91996: listing the
+    // scheduled mails is a read.
     for (String name : Set.of("search_contacts",
                               "get_contact",
                               "suggest_recipients",
                               "list_shared_mailboxes",
                               "create_email_draft",
                               "update_email_draft",
-                              "list_email_drafts")) {
+                              "list_email_drafts",
+                              "list_scheduled_emails")) {
       JsonNode tool = definitions.get(name);
       assertFalse(tool == null || tool.path("require_approval").asBoolean(false),
                   "Read tool " + name + " must not be approval-gated");
