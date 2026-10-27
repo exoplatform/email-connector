@@ -44,7 +44,10 @@ import org.mockito.Mockito;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import tools.jackson.databind.json.JsonMapper;
+
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
@@ -189,6 +192,59 @@ class EmailMcpToolTest {
     assertEquals("thread-1", model.getThreadId());
     // And it must reach the agent under the name the tool definition promises.
     assertTrue(new ObjectMapper().writeValueAsString(model).contains("\"thread_id\":\"thread-1\""));
+  }
+
+  /**
+   * EXO-91995: a bounce reaches the agent as {@code message_kind: bounce} with the
+   * addresses it failed, under the names the tool definitions promise; an email whose
+   * kind is unknown carries no message_kind at all, never "normal".
+   */
+  @Test
+  void getEmailByIdSaysWhoWroteTheEmail() throws Exception {
+    Email bounce = buildEmail(EMAIL_ID);
+    bounce.setMessageKind(MessageKind.BOUNCE);
+    bounce.setBouncedRecipients(List.of("gone@prospect.example"));
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(bounce);
+
+    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID, null);
+
+    assertEquals("bounce", model.getMessageKind());
+    String json = JsonMapper.builder().build().writeValueAsString(model);
+    assertTrue(json.contains("\"message_kind\":\"bounce\""), json);
+    assertTrue(json.contains("\"bounced_recipients\":[\"gone@prospect.example\"]"), json);
+
+    Email unknown = buildEmail(EMAIL_ID);
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(unknown);
+    String unknownJson = JsonMapper.builder().build().writeValueAsString(emailMcpTool.getEmailById(EMAIL_ID, null));
+    assertFalse(unknownJson.contains("message_kind"), unknownJson);
+    assertFalse(unknownJson.contains("bounced_recipients"), unknownJson);
+  }
+
+  /** EXO-91995: a search hit and a message of a conversation say who wrote them too. */
+  @Test
+  void searchHitsAndConversationsSayWhoWroteTheEmail() throws Exception {
+    EmailSearchResult hit = new EmailSearchResult(42L,
+                                                  MailFolder.INBOX,
+                                                  "Absence",
+                                                  new EmailSender("Bob", "bob@prospect.example", null, null),
+                                                  new Date(),
+                                                  false,
+                                                  false,
+                                                  false,
+                                                  null);
+    hit.setMessageKind(MessageKind.AUTO_REPLY);
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.INBOX), anyInt()))
+                                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(hit),
+                                                                                                                                                                        1));
+    assertEquals("auto_reply", emailMcpTool.searchEmails("absence", null, null, null, null, null, null, null, null, null, null).getResults().get(0).getMessageKind());
+
+    Email bounce = threadMessage("<dsn@mx>", "Mail Delivery System", "mailer-daemon@mx.example", "<p>failed</p>");
+    bounce.setMessageKind(MessageKind.BOUNCE);
+    bounce.setBouncedRecipients(List.of("gone@prospect.example"));
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(bounce));
+    EmailThreadMessageModel message = emailMcpTool.getEmailThread("thread-1", null).get(0);
+    assertEquals("bounce", message.getMessageKind());
+    assertEquals(List.of("gone@prospect.example"), message.getBouncedRecipients());
   }
 
   // --- list_emails ---------------------------------------------------------
