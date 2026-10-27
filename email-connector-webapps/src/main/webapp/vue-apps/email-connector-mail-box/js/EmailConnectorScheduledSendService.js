@@ -52,7 +52,8 @@ export const SCHEDULED_PAGE_SIZE = 20;
  * have gone, and are said as "Couldn't confirm it was sent".
  */
 export const NOT_SENT_REASONS = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE',
-  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED'];
+  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED',
+  'PROVIDER_UNAVAILABLE'];
 
 /**
  * Turns a refused response into an Error carrying the server's message code, when it
