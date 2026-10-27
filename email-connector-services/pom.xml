@@ -66,6 +66,19 @@
       <artifactId>mcp-server-tools</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Documents API (a user's documents attached to a draft an assistant prepares) -->
+    <dependency>
+      <groupId>org.exoplatform.documents</groupId>
+      <artifactId>documents-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- The JCR API the Documents service interface names in its signatures, for the
+         tests that mock it: the platform provides it at runtime. -->
+    <dependency>
+      <groupId>javax.jcr</groupId>
+      <artifactId>jcr</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- Spring Boot 4 moved the @DataJpaTest slice (and TestEntityManager) out of
          spring-boot-test-autoconfigure into their own modules; this starter brings
          them, together with the embedded-database support they rely on. -->

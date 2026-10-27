@@ -152,9 +152,11 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.DocumentRefusedException;
 import org.exoplatform.emailConnector.exception.ExportInterruptedException;
 import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
@@ -168,10 +170,12 @@ import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
 import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailCategoryAdded;
+import org.exoplatform.emailConnector.model.EmailDocumentContent;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
@@ -183,6 +187,7 @@ import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.RawEmailRef;
 import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.model.RefusedDocument;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.MailFolderList;
@@ -222,6 +227,7 @@ import org.exoplatform.emailConnector.notification.plugin.DelegatedNewEmailsNoti
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.provider.EmailDocumentReader;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
@@ -988,8 +994,16 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
 
-  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
-  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
+  /**
+   * The most megabytes the attachments of one outgoing email may weigh together
+   * (SMTP-friendly). The draft tools state it in their refusals and in the
+   * {@code create_email_draft} description, which {@code AiToolDefinitionsTest} holds to
+   * it.
+   */
+  public static final int         MAX_OUTGOING_ATTACHMENTS_MB                                 = 25;
+
+  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email.
+  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = MAX_OUTGOING_ATTACHMENTS_MB * 1024L * 1024;
 
   // The message code a scheduling carrying files not yet stored on the draft is refused with.
   private static final String     ATTACHMENTS_NOT_STORED_CODE                                 =
@@ -1031,6 +1045,15 @@ public class EmailBoxService {
   // with a blank content type reaches the data handler, which is a difference the
   // recipient sees.
   private static final String     DEFAULT_ATTACHMENT_NAME                                     = "attachment";
+
+  /**
+   * The most documents one call may attach to a draft, counted once trimmed and
+   * deduplicated. The draft tools refuse a call over it before saving anything
+   * ({@code EmailMcpTool#requireDraftDocuments}), and their schemas carry it as the
+   * {@code maxItems} of {@code document_ids} in {@code ai-tool-definitions.json}, which
+   * {@code AiToolDefinitionsTest} holds equal to it.
+   */
+  public static final int         MAX_DOCUMENTS_PER_CALL                                      = 20;
 
   private static final String     DEFAULT_ATTACHMENT_MIME_TYPE                                = "application/octet-stream";
 
@@ -1197,6 +1220,11 @@ public class EmailBoxService {
   // context fails to refresh and every test sharing it fails with it.
   @Autowired(required = false)
   private EmailCredentialsResolver emailCredentialsResolver;
+
+  // required = false: the reader exists only where the Documents add-on is on the
+  // classpath; without it every document named for a draft is refused as unavailable.
+  @Autowired(required = false)
+  private EmailDocumentReader     emailDocumentReader;
 
   // Publishes EmailSentEvent after a successful send, so contact collection (and any
   // later consumer) learns who the user writes to without this class knowing about it.
@@ -13319,6 +13347,124 @@ public class EmailBoxService {
     } finally {
       lock.unlock();
     }
+  }
+
+  /**
+   * Attaches documents of the platform's Documents to a draft, read with the user's own
+   * rights, as if the user had attached them in the composer: each one becomes a file
+   * of the draft, which the Email app shows and the send carries.
+   * <p>
+   * A document is refused, and named with the reason, when it is not found, the user
+   * may not open it, it is a folder, it would take the draft over the size a mail may
+   * carry -- counted from what the draft already carries -- or it cannot be read; the
+   * documents beside it are still attached. Without the Documents add-on, every one is
+   * refused as unavailable. An id named twice is attached once.
+   * <p>
+   * A write onto the draft that fails stops the call: that document and the ones after
+   * it are refused as {@link DocumentRefusalReason#FAILED}, since the failed file may be
+   * on the draft anyway and the store that failed would answer the next no better; the
+   * documents before it stay attached.
+   * <p>
+   * Under the draft's lock, as every other write to a draft, and each file steps the
+   * draft's revision, as an attachment made in the composer does.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner, as whom the documents are read
+   * @param documentIds the ids of the documents, as Documents gives them
+   * @return the draft as it now stands and the documents that were not attached, or
+   *         null when the user has no such draft
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws IllegalArgumentException if no draft or no document was named, or more than
+   *           {@value #MAX_DOCUMENTS_PER_CALL} documents were
+   * @throws ScheduledSendConflictException if the draft is scheduled
+   */
+  public DocumentAttachments addDocumentAttachments(String draftLocalId,
+                                                    String username,
+                                                    List<String> documentIds) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    List<String> ids = documentIds == null ? List.of()
+                                           : documentIds.stream()
+                                                        .filter(StringUtils::isNotBlank)
+                                                        .map(String::trim)
+                                                        .distinct()
+                                                        .toList();
+    if (StringUtils.isBlank(draftLocalId) || ids.isEmpty()) {
+      throw new IllegalArgumentException("emailConnector.drafts.attachDocuments.mandatory");
+    }
+    if (ids.size() > MAX_DOCUMENTS_PER_CALL) {
+      throw new IllegalArgumentException("emailConnector.drafts.attachDocuments.tooMany");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      if (emailBoxStorage.getDraftByLocalId(username, draftLocalId) == null) {
+        return null;
+      }
+      requireNotScheduled(username, draftLocalId);
+      List<RefusedDocument> refused = new ArrayList<>();
+      long total = storedAttachmentsSize(username, draftLocalId);
+      for (int index = 0; index < ids.size(); index++) {
+        String documentId = ids.get(index);
+        try {
+          total += attachDocument(draftLocalId, username, documentId, MAX_OUTGOING_ATTACHMENTS_SIZE - total);
+        } catch (DocumentRefusedException e) {
+          refused.add(new RefusedDocument(documentId, e.getDocumentName(), e.getReason()));
+        } catch (RuntimeException e) {
+          // A write that failed part way may have left the file on the draft, and the
+          // store that failed would answer the documents after it no better: this one
+          // and the rest are refused as failed, which tells the caller to read the
+          // draft's attachments before naming any of them again.
+          LOG.warn("The document {} of user {} could not be attached to draft {}", documentId, username, draftLocalId, e);
+          ids.subList(index, ids.size())
+             .forEach(failed -> refused.add(new RefusedDocument(failed, null, DocumentRefusalReason.FAILED)));
+          break;
+        }
+      }
+      LOG.info("Documents for user {}: {} of {} attached to draft {}, {} refused",
+               username,
+               ids.size() - refused.size(),
+               ids.size(),
+               draftLocalId,
+               refused.size());
+      return new DocumentAttachments(emailBoxStorage.getDraftByLocalId(username, draftLocalId), refused);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Reads one document as the user and writes it onto the draft as one of its files.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param documentId the document's id
+   * @param remaining the bytes the draft may still carry
+   * @return the bytes the draft now carries more
+   * @throws DocumentRefusedException when the document cannot be attached
+   * @throws IllegalStateException when the file store wrote nothing
+   */
+  private long attachDocument(String draftLocalId,
+                              String username,
+                              String documentId,
+                              long remaining) throws DocumentRefusedException {
+    if (emailDocumentReader == null) {
+      throw new DocumentRefusedException(DocumentRefusalReason.DOCUMENTS_UNAVAILABLE, null);
+    }
+    EmailDocumentContent document = emailDocumentReader.readDocument(documentId, username, Math.max(remaining, 0));
+    if (document == null || document.getContent() == null) {
+      throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, null);
+    }
+    String name = StringUtils.defaultIfBlank(document.getName(), DEFAULT_ATTACHMENT_NAME);
+    if (emailBoxStorage.copyDraftAttachment(username, draftLocalId, name, document.getMimeType(), document.getContent()) == null) {
+      // The file store wrote nothing: a failed write, which stops the call as one that
+      // throws does.
+      throw new IllegalStateException(String.format("The document %s could not be written onto draft %s", documentId, draftLocalId));
+    }
+    return document.getContent().length;
   }
 
   /**

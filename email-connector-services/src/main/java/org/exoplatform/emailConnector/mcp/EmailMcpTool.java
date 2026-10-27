@@ -54,7 +54,9 @@ import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
+import org.exoplatform.emailConnector.mcp.model.RefusedDocumentModel;
 import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -68,11 +70,13 @@ import org.exoplatform.emailConnector.model.SanitizedEmailBody;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.OwnerCopy;
+import org.exoplatform.emailConnector.model.RefusedDocument;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -137,6 +141,49 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
+
+  /**
+   * Why a document may not be on the draft when attaching failed: the file may be there
+   * anyway, which the draft's attachments in the same answer tell.
+   */
+  private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed, and the file may be on the draft anyway: "
+      + "check the draft's attachments in this answer, and name this document again only if its file is not among them.";
+
+  /**
+   * Why a document may not be on the draft when attaching failed and the draft could not
+   * be read again to say which files it carries.
+   */
+  private static final String           UNKNOWN_DOCUMENT_REFUSAL = "Attaching failed, and the draft could not be read again "
+      + "to say whether the file is on it: ask the user to check the draft in the Email app before naming this document again.";
+
+  /** Why no document is on a draft that was gone when its files were added. */
+  private static final String           GONE_DOCUMENT_REFUSAL = "The draft was no longer found when its files were added: "
+      + "it was sent or deleted meanwhile.";
+
+  /** Why a document named for a draft is not on it, in words the caller can relay. */
+  private static final Map<DocumentRefusalReason, String> DOCUMENT_REFUSALS =
+                                                            Map.of(DocumentRefusalReason.NOT_FOUND,
+                                                                   "No document the user can open has this id.",
+                                                                   DocumentRefusalReason.NO_ACCESS,
+                                                                   "The user cannot open this document.",
+                                                                   DocumentRefusalReason.NOT_A_FILE,
+                                                                   "This is a folder, not a file.",
+                                                                   DocumentRefusalReason.TOO_LARGE,
+                                                                   String.format("The file would take the draft over the %d MB a mail may carry.",
+                                                                                 EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB),
+                                                                   DocumentRefusalReason.UNREADABLE,
+                                                                   "The file could not be read.",
+                                                                   DocumentRefusalReason.DOCUMENTS_UNAVAILABLE,
+                                                                   "Documents are not available on this platform.",
+                                                                   DocumentRefusalReason.FAILED,
+                                                                   FAILED_DOCUMENT_REFUSAL);
+
+  /**
+   * Why no document named for a scheduled draft is on it: the draft was scheduled between
+   * the change and the attachment.
+   */
+  private static final String           SCHEDULED_DOCUMENT_REFUSAL = "The draft is scheduled to be sent, so no file can be "
+      + "added to it here: the user cancels the schedule in the Email app first.";
 
   /**
    * The address of the user's signature logo, as the signature service writes it, with
@@ -976,6 +1023,12 @@ public class EmailMcpTool implements McpToolPlugin {
    * <p>
    * The user's signature is added under the body, as the composer adds it, unless
    * {@code add_signature} is false or the user turned their signature off.
+   * <p>
+   * With {@code document_ids}, documents of the user's Documents, or of a space's, are
+   * attached to the draft as files, read with the user's own rights (see
+   * {@link EmailBoxService#addDocumentAttachments}): a document that is not attached is
+   * named in {@code refused_documents} with the reason, and the draft is saved with the
+   * others -- with the ones attached before a write that failed, when one does.
    *
    * @param to the recipients; for a reply draft, defaults to the original's sender
    * @param subject the subject; for a reply draft, defaults to "Re: " and the original's
@@ -984,11 +1037,14 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param bcc the blind-copied recipients
    * @param emailId the local id of the mail the draft answers, or null for a new mail
    * @param addSignature whether to add the user's signature; null means yes
-   * @return the draft as stored, with its draft_id and the Message-ID it will be sent with
+   * @param documentIds the ids of documents to attach, as Documents gives them
+   * @return the draft as stored, with its draft_id, the Message-ID it will be sent with,
+   *         its files and the documents that were not attached
    * @throws ObjectNotFoundException when {@code email_id} names no mail of the mailbox
    * @throws IllegalAccessException if the user has no usable mailbox
    * @throws IllegalArgumentException when the draft would have no recipient, an entry is
-   *           not a bare address, or the body shows an image or loads remote content
+   *           not a bare address, the body shows an image or loads remote content, or
+   *           more than 20 documents are named
    */
   public EmailDraftModel createEmailDraft(List<String> to,
                                           String subject,
@@ -996,9 +1052,11 @@ public class EmailMcpTool implements McpToolPlugin {
                                           List<String> cc,
                                           List<String> bcc,
                                           Long emailId,
-                                          Boolean addSignature) throws ObjectNotFoundException, IllegalAccessException {
+                                          Boolean addSignature,
+                                          List<String> documentIds) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     requireDraftAddresses(to, cc, bcc);
+    requireDraftDocuments(documentIds);
     Email draft = new Email();
     if (emailId != null) {
       Email original = fetch(mailOf(emailId, null, null), false, true, false);
@@ -1025,7 +1083,7 @@ public class EmailMcpTool implements McpToolPlugin {
     if (saved == null) {
       throw new IllegalStateException("The draft could not be saved: nothing was created.");
     }
-    return toDraftModel(saved, true);
+    return withDocuments(saved, username, documentIds);
   }
 
   /**
@@ -1033,6 +1091,10 @@ public class EmailMcpTool implements McpToolPlugin {
    * replace the stored ones, the others keep what the draft says -- the user's own edits
    * in the Email app included. A list given empty clears it; {@code to} cannot be
    * cleared. The draft's conversation and Message-ID never change.
+   * <p>
+   * {@code document_ids} adds documents to the files the draft already carries, as
+   * create_email_draft attaches them; a document that is not attached is named in
+   * {@code refused_documents}.
    *
    * @param draftId the draft's id, as create_email_draft or list_email_drafts gave it
    * @param to the new recipients, or null to keep them
@@ -1042,12 +1104,14 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param bcc the new blind-copied recipients, or null to keep them
    * @param revision the draft's revision as it was read: a draft saved since -- in the
    *          Email app, say -- is refused rather than written over
+   * @param documentIds the ids of documents to add to the draft's files
    * @return the draft as stored after the change
    * @throws ObjectNotFoundException when the user has no such draft
    * @throws IllegalAccessException if the user has no usable mailbox
    * @throws IllegalArgumentException when {@code revision} is missing or the draft changed
    *           since, the draft is scheduled, was written in a shared mailbox, or would have
-   *           no recipient, or the body loads remote content
+   *           no recipient, the body loads remote content, or more than 20 documents are
+   *           named
    */
   public EmailDraftModel updateEmailDraft(String draftId,
                                           List<String> to,
@@ -1055,9 +1119,11 @@ public class EmailMcpTool implements McpToolPlugin {
                                           String bodyHtml,
                                           List<String> cc,
                                           List<String> bcc,
-                                          Long revision) throws ObjectNotFoundException, IllegalAccessException {
+                                          Long revision,
+                                          List<String> documentIds) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     requireDraftAddresses(to, cc, bcc);
+    requireDraftDocuments(documentIds);
     if (revision == null) {
       throw new IllegalArgumentException("revision is required: read the draft with list_email_drafts and pass its revision. "
           + "Nothing was changed.");
@@ -1094,7 +1160,7 @@ public class EmailMcpTool implements McpToolPlugin {
     if (!holds(saved, draft)) {
       throw changedMeanwhile(draftId);
     }
-    return toDraftModel(saved, true);
+    return withDocuments(saved, username, documentIds);
   }
 
   /**
@@ -1142,15 +1208,19 @@ public class EmailMcpTool implements McpToolPlugin {
    * sent mail keeps the draft's Message-ID and, for a reply draft, its conversation.
    * <p>
    * The approval card is drawn from the arguments, so they must say what goes out:
-   * {@code to}, {@code cc}, {@code bcc} and {@code subject} must be the draft's own, as
-   * list_email_drafts reads them now. If the user changed any of them since, nothing is
-   * sent and the call must be made again with the draft read anew.
+   * {@code to}, {@code cc}, {@code bcc}, {@code subject} and {@code attachments} must be
+   * the draft's own, as list_email_drafts reads them now -- the files included, since a
+   * draft may carry documents an assistant attached (EXO-91676). If the user changed any
+   * of them since, nothing is sent and the call must be made again with the draft read
+   * anew.
    *
    * @param draftId the draft's id
    * @param to the draft's recipients, as read
    * @param subject the draft's subject, as read
    * @param cc the draft's copied recipients, as read
    * @param bcc the draft's blind-copied recipients, as read
+   * @param attachments the names of the draft's files, as read; null or empty for a draft
+   *          carrying none
    * @return the outcome, in words, with the sent mail's message_id and thread_id
    * @throws ObjectNotFoundException when the user has no such draft
    * @throws IllegalAccessException if the user may not send
@@ -1162,10 +1232,12 @@ public class EmailMcpTool implements McpToolPlugin {
                                List<String> to,
                                String subject,
                                List<String> cc,
-                               List<String> bcc) throws ObjectNotFoundException, IllegalAccessException {
+                               List<String> bcc,
+                               List<String> attachments) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     Email stored = ownDraft(draftId, username, "sent");
     requireDraftSays(stored, to, cc, bcc, subject, "sent");
+    requireDraftFiles(stored, attachments);
     Email sent;
     try {
       // Checked again under the draft's lock on the row that goes out: the user may
@@ -1175,6 +1247,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                row -> {
                                                  requireActionable(row, draftId, "sent");
                                                  requireDraftSays(row, to, cc, bcc, subject, "sent");
+                                                 requireDraftFiles(row, attachments);
                                                });
     } catch (ScheduledSendConflictException e) {
       throw scheduledDraftRefusal(draftId, "sent");
@@ -1941,6 +2014,29 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
+   * Refuse a send whose arguments do not name the files the draft carries, so the
+   * approval card shows every file that leaves: the names, each as many times as the
+   * draft carries it, in any order.
+   *
+   * @param stored the draft as stored
+   * @param attachments the file names given, possibly null for none
+   * @throws IllegalArgumentException naming the draft's files when they differ
+   */
+  private void requireDraftFiles(Email stored, List<String> attachments) {
+    List<String> carried = attachmentNames(stored).stream().map(String::trim).sorted().toList();
+    List<String> given = attachments == null ? List.of()
+                                             : attachments.stream()
+                                                          .filter(StringUtils::isNotBlank)
+                                                          .map(String::trim)
+                                                          .sorted()
+                                                          .toList();
+    if (!carried.equals(given)) {
+      throw new IllegalArgumentException(String.format("Nothing was sent: the draft now carries the files [%s]. Pass exactly those "
+          + "in attachments, and ask the user to approve again with them shown.", String.join(", ", attachmentNames(stored))));
+    }
+  }
+
+  /**
    * Whether the addresses given are the recipients' addresses, as sets of normalised
    * addresses: order, repetition and case do not count.
    *
@@ -2248,6 +2344,18 @@ public class EmailMcpTool implements McpToolPlugin {
    * @return the model
    */
   private EmailDraftModel toDraftModel(Email draft, boolean withHtml) {
+    return toDraftModel(draft, withHtml, null);
+  }
+
+  /**
+   * The draft as the tools answer with it, with the documents a call did not attach.
+   *
+   * @param draft the stored draft
+   * @param withHtml whether to carry the whole HTML body
+   * @param refused the documents not attached, or null
+   * @return the model
+   */
+  private EmailDraftModel toDraftModel(Email draft, boolean withHtml, List<RefusedDocumentModel> refused) {
     return new EmailDraftModel(draft.getDraftLocalId(),
                                addressesOf(draft.getTo()),
                                addressesOf(draft.getCc()),
@@ -2260,7 +2368,106 @@ public class EmailMcpTool implements McpToolPlugin {
                                draft.getThreadId(),
                                StringUtils.isNotBlank(draft.getInReplyTo()),
                                lastModified(draft),
-                               draftsLink());
+                               draftsLink(),
+                               attachmentNames(draft),
+                               refused);
+  }
+
+  /**
+   * Refuses a call naming more documents than one call attaches, before anything is
+   * saved.
+   *
+   * @param documentIds the ids given, possibly null
+   * @throws IllegalArgumentException when there are more than
+   *           {@link EmailBoxService#MAX_DOCUMENTS_PER_CALL} of them, counted as the
+   *           service counts them
+   */
+  private static void requireDraftDocuments(List<String> documentIds) {
+    if (documentIds != null && documentIds.stream()
+                                          .filter(StringUtils::isNotBlank)
+                                          .map(String::trim)
+                                          .distinct()
+                                          .count() > EmailBoxService.MAX_DOCUMENTS_PER_CALL) {
+      throw new IllegalArgumentException(String.format("document_ids names more than %d documents: attach the others with "
+          + "update_email_draft. Nothing was saved.", EmailBoxService.MAX_DOCUMENTS_PER_CALL));
+    }
+  }
+
+  /**
+   * Attaches the documents a call names to the draft it saved, and answers with the
+   * draft as it then stands. Without documents, the saved draft as it is.
+   * <p>
+   * The draft, or its change, is saved by then, so nothing past this point answers with
+   * an error: one would tell the caller the call did nothing, and a caller retrying a
+   * create would make a second draft. A failure to attach is answered as the documents
+   * it may have kept off the draft, with the draft read again, so its attachments say
+   * which files it carries.
+   *
+   * @param saved the draft as the call saved it
+   * @param username the user
+   * @param documentIds the ids of the documents to attach, possibly null or empty
+   * @return the draft, its files and the documents that were not attached
+   */
+  private EmailDraftModel withDocuments(Email saved, String username, List<String> documentIds) {
+    if (documentIds == null || documentIds.stream().noneMatch(StringUtils::isNotBlank)) {
+      return toDraftModel(saved, true);
+    }
+    DocumentAttachments attached;
+    try {
+      attached = emailBoxService.addDocumentAttachments(saved.getDraftLocalId(), username, documentIds);
+    } catch (ScheduledSendConflictException e) {
+      return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
+    } catch (IllegalAccessException | RuntimeException e) {
+      LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
+      Email stored;
+      try {
+        stored = emailBoxService.getDraft(saved.getDraftLocalId(), username);
+      } catch (Exception readFailure) {
+        LOG.debug("Draft {} of user {} could not be read again after its documents failed",
+                  saved.getDraftLocalId(),
+                  username,
+                  readFailure);
+        return toDraftModel(saved, true, refusedAll(documentIds, UNKNOWN_DOCUMENT_REFUSAL));
+      }
+      return stored == null ? toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL))
+                            : toDraftModel(stored, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
+    }
+    if (attached == null || attached.getDraft() == null) {
+      return toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL));
+    }
+    List<RefusedDocumentModel> refused = attached.getRefused()
+                                                 .stream()
+                                                 .map(this::toRefusedDocumentModel)
+                                                 .toList();
+    return toDraftModel(attached.getDraft(), true, refused);
+  }
+
+  /**
+   * Every document a call named, refused for one reason.
+   *
+   * @param documentIds the ids as given
+   * @param reason the reason, in words
+   * @return one refusal per distinct id
+   */
+  private static List<RefusedDocumentModel> refusedAll(List<String> documentIds, String reason) {
+    return documentIds.stream()
+                      .filter(StringUtils::isNotBlank)
+                      .map(String::trim)
+                      .distinct()
+                      .map(documentId -> new RefusedDocumentModel(documentId, null, reason))
+                      .toList();
+  }
+
+  /**
+   * A refused document as the tools report it.
+   *
+   * @param refused the refusal
+   * @return the model
+   */
+  private RefusedDocumentModel toRefusedDocumentModel(RefusedDocument refused) {
+    return new RefusedDocumentModel(refused.getDocumentId(),
+                                    refused.getName(),
+                                    DOCUMENT_REFUSALS.getOrDefault(refused.getReason(), "The document was not attached."));
   }
 
   /**

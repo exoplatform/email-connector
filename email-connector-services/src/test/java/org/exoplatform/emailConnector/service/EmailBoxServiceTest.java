@@ -226,6 +226,12 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
+import org.exoplatform.emailConnector.model.EmailDocumentContent;
+import org.exoplatform.emailConnector.model.RefusedDocument;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
+import org.exoplatform.emailConnector.exception.DocumentRefusedException;
+import org.exoplatform.emailConnector.provider.EmailDocumentReader;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -337,6 +343,10 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private SmtpTransmitter         smtpTransmitter;
+
+  // The Documents reader (EXO-91676), present wherever the Documents add-on is.
+  @MockitoBean
+  private EmailDocumentReader     emailDocumentReader;
 
   // Read receipts, phase 2 (EXO-90435): the durable answer store the sync writes the
   // server's $MDNSent to and a newly cached request reads its answer from.
@@ -8991,6 +9001,222 @@ public class EmailBoxServiceTest {
 
     verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * Documents named for a draft are read AS THE USER and written onto the draft as its
+   * own files, with the name and content type Documents gives them: what the Email app
+   * then shows as chips and the send carries.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void documentsNamedForADraftAreReadAsTheUserAndWrittenOntoIt() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    byte[] brochure = "the brochure".getBytes();
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("brochure.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    brochure));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1"));
+
+    assertNotNull(attached.getDraft());
+    assertTrue(attached.getRefused().isEmpty(), "nothing was refused");
+    verify(emailDocumentReader).readDocument("doc-1", TEST_USER, 25L * 1024 * 1024);
+    verify(emailBoxStorage).copyDraftAttachment(TEST_USER, "draft-1", "brochure.pdf", "application/pdf", brochure);
+  }
+
+  /**
+   * A refused document is named with its reason, and the documents beside it are still
+   * attached: one file the user cannot open must not keep the others off the draft.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aRefusedDocumentIsNamedWithItsReasonAndTheOthersAreStillAttached() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailDocumentReader.readDocument(eq("secret"), eq(TEST_USER), anyLong()))
+                                                                              .thenThrow(new DocumentRefusedException(DocumentRefusalReason.NO_ACCESS,
+                                                                                                                      null));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                             .thenReturn(new EmailDocumentContent("case.pdf",
+                                                                                                                  "application/pdf",
+                                                                                                                  "case".getBytes()));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("secret", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("secret", null, DocumentRefusalReason.NO_ACCESS)), attached.getRefused());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("case.pdf"), eq("application/pdf"), any());
+  }
+
+  /**
+   * The room a document is read into is what the draft can still carry: counted from
+   * the files it already has, and from each document attached before it in the call.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void eachDocumentIsReadIntoTheRoomTheDraftHasLeft() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    long cap = 25L * 1024 * 1024;
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1"))
+                                                                   .thenReturn(List.of(new EmailAttachment(9L, null, null, "big.zip",
+                                                                                                           "application/zip", null,
+                                                                                                           MailFolder.DRAFTS, 99L,
+                                                                                                           cap - 100, null)));
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.txt",
+                                                                                                                    "text/plain",
+                                                                                                                    new byte[60]));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                               .thenThrow(new DocumentRefusedException(DocumentRefusalReason.TOO_LARGE,
+                                                                                                                       "b.txt"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    verify(emailDocumentReader).readDocument("doc-1", TEST_USER, 100L);
+    verify(emailDocumentReader).readDocument("doc-2", TEST_USER, 40L);
+    assertEquals(List.of(new RefusedDocument("doc-2", "b.txt", DocumentRefusalReason.TOO_LARGE)), attached.getRefused());
+  }
+
+  /**
+   * A write the store fails stops the call: that document and the ones after it are
+   * refused as failed -- the file may be on the draft anyway, and a store that failed
+   * once would answer the next no better -- while the ones before it stay attached.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aFailedWriteRefusesThatDocumentAndTheRestAsFailed() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    for (String id : List.of("doc-1", "doc-2", "doc-3")) {
+      when(emailDocumentReader.readDocument(eq(id), eq(TEST_USER), anyLong()))
+                                                                            .thenReturn(new EmailDocumentContent(id + ".pdf",
+                                                                                                                 "application/pdf",
+                                                                                                                 new byte[1]));
+    }
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-2.pdf"), any(), any()))
+                                                                                                        .thenThrow(new IllegalStateException("store down"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2", "doc-3"));
+
+    assertEquals(List.of(new RefusedDocument("doc-2", null, DocumentRefusalReason.FAILED),
+                         new RefusedDocument("doc-3", null, DocumentRefusalReason.FAILED)),
+                 attached.getRefused());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-1.pdf"), any(), any());
+    verify(emailDocumentReader, never()).readDocument(eq("doc-3"), anyString(), anyLong());
+  }
+
+  /**
+   * A file store that writes nothing stops the call as a write that throws does: that
+   * document and the ones after it are refused as failed.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aFileStoreWritingNothingRefusesThatDocumentAndTheRestAsFailed() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    for (String id : List.of("doc-1", "doc-2")) {
+      when(emailDocumentReader.readDocument(eq(id), eq(TEST_USER), anyLong()))
+                                                                            .thenReturn(new EmailDocumentContent(id + ".pdf",
+                                                                                                                 "application/pdf",
+                                                                                                                 new byte[1]));
+    }
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-1.pdf"), any(), any())).thenReturn(null);
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.FAILED),
+                         new RefusedDocument("doc-2", null, DocumentRefusalReason.FAILED)),
+                 attached.getRefused());
+  }
+
+  /**
+   * An id named twice is attached once, and a blank one is ignored.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aDocumentNamedTwiceIsAttachedOnce() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.txt",
+                                                                                                                    "text/plain",
+                                                                                                                    new byte[1]));
+
+    emailBoxService.addDocumentAttachments("draft-1", TEST_USER, java.util.Arrays.asList("doc-1", " doc-1 ", "", null));
+
+    verify(emailDocumentReader).readDocument(eq("doc-1"), eq(TEST_USER), anyLong());
+    verify(emailBoxStorage).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
+  }
+
+  /**
+   * Without the Documents add-on there is no reader: every document is refused as
+   * unavailable, and nothing is written.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void withoutDocumentsEveryDocumentIsRefusedAsUnavailable() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    ReflectionTestUtils.setField(emailBoxService, "emailDocumentReader", null);
+    try {
+      DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1"));
+
+      assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.DOCUMENTS_UNAVAILABLE)),
+                   attached.getRefused());
+      verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), any(), any());
+    } finally {
+      ReflectionTestUtils.setField(emailBoxService, "emailDocumentReader", emailDocumentReader);
+    }
+  }
+
+  /**
+   * More documents than one call attaches are refused before any is read; a call naming
+   * none is refused too.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void tooManyOrNoDocumentsAreRefusedBeforeAnyIsRead() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    List<String> ids = java.util.stream.IntStream.rangeClosed(1, 21).mapToObj(i -> "doc-" + i).toList();
+
+    IllegalArgumentException tooMany = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, ids));
+    assertEquals("emailConnector.drafts.attachDocuments.tooMany", tooMany.getMessage());
+    assertDoesNotThrow(() -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, ids.subList(0, 20)));
+    clearInvocations(emailDocumentReader);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of()));
+    verify(emailDocumentReader, never()).readDocument(anyString(), anyString(), anyLong());
+  }
+
+  /**
+   * A draft the user does not have answers null, and a scheduled one is refused: neither
+   * reads a document.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aMissingOrScheduledDraftReadsNoDocument() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(null);
+    assertNull(emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1")));
+
+    givenTheDraftBeingWrittenInto();
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertThrows(ScheduledSendConflictException.class,
+                 () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1")));
+    verify(emailDocumentReader, never()).readDocument(anyString(), anyString(), anyLong());
   }
 
   /**
