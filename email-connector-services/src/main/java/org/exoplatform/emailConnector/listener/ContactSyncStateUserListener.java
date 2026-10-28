@@ -29,11 +29,13 @@ import org.exoplatform.services.organization.UserEventListener;
 import jakarta.annotation.PostConstruct;
 
 /**
- * Forgets a user's address-book sync state when the user is deleted, and again
- * when a user is created, in case a run still going at the deletion wrote it back:
- * an account that reuses the username never inherits it. The platform removes the
- * user's own settings context with the user, but this state lives in a global
- * context, out of the user's reach, so nothing else removes it.
+ * Forgets a user's address-book sync state when the platform announces the user's
+ * deletion, and again when a user is created, in case a run still going at the
+ * deletion wrote it back: an account created after that run ended never inherits
+ * it. The platform removes the user's own settings context on the same
+ * announcement, but this state lives in a global context, out of the user's reach,
+ * so nothing else removes it. A deletion made without the announcement leaves this
+ * state behind, as it leaves the user's own settings.
  */
 @Component
 public class ContactSyncStateUserListener extends UserEventListener {

@@ -96,7 +96,7 @@ class ContactSyncStateUserListenerTest {
 
   /**
    * A new account starts from no state, even one a run wrote back after an
-   * earlier account with the same username was deleted.
+   * earlier account with the same username was deleted, once that run ended.
    */
   @Test
   void aCreatedUsersSyncStateIsCleared() {

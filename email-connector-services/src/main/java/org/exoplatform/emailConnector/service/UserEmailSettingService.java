@@ -1435,7 +1435,7 @@ public class UserEmailSettingService {
    * deletion's cleanup. Checked after the write, which catches more of those runs
    * than a check before it, but not all of them: the user lookup is cached until
    * the deletion's listeners have all returned. What it misses is cleared when a
-   * user is created, so a later account with the same username never inherits it.
+   * user is created, so an account created after the run ended never inherits it.
    *
    * @param state the state to store
    * @param username the mailbox owner
