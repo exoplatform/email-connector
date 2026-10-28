@@ -61,6 +61,8 @@ import javax.mail.Store;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.MockedStatic;
@@ -560,6 +562,41 @@ public class UserEmailSettingServiceTest {
     assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailConnectorId());
     assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailAddress());
     verifyNoInteractions(emailConnectorService);
+  }
+
+  /**
+   * EXO-91325. A stored value that does not parse as a mail setting -- one the user
+   * can write through the platform's generic settings REST -- is no mailbox, read
+   * through the real parser: social's {@code JsonUtils} throws Jackson's checked
+   * exception for the first four, sneakily, and reads a JSON {@code null} and a
+   * blank value as null.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "not a mail setting", "[\"1\"]", "\"1\"", "{\"emailConnectorId\":", "null", " " })
+  void aStoredValueThatIsNotAMailSettingIsNoStoredMailbox(String stored) {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn(stored);
+
+    assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailConnectorId());
+    assertNull(userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailConnectorId());
+    verifyNoInteractions(emailConnectorService, codecInitializer);
+  }
+
+  /**
+   * EXO-91325. A stored connector id that is not a number is no mailbox: the
+   * readers that parse it with {@code Long.parseLong}, the connector decoration
+   * first, would otherwise fail on it.
+   */
+  @Test
+  void aStoredConnectorIdThatIsNotANumberIsNoStoredMailbox() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn("{\"emailConnectorId\":\"gmail\",\"emailAddress\":\"testEmail\"}");
+
+    assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailConnectorId());
+    assertNull(userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailConnectorId());
+    verifyNoInteractions(emailConnectorService, codecInitializer);
   }
 
   @Test
