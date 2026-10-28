@@ -161,9 +161,11 @@ export function connectThroughProvider(emailConnectorId) {
 
 /**
  * Synchronizes the user's mailbox now. The server runs the synchronization before it
- * answers, so the promise resolves once the run has ended.
+ * answers, so the promise resolves once the run has ended, or at once when a run is
+ * already going on.
  *
- * @returns {Promise} resolves once the synchronization is done
+ * @returns {Promise} resolves once the synchronization is done, or at once when a run
+ *          is already going on
  */
 export function synchronizeEmailBox() {
   return fetch('/email-connector/rest/email-box/synchronization', {
