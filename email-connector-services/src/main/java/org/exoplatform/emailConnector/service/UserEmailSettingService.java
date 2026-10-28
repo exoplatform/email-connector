@@ -126,24 +126,12 @@ public class UserEmailSettingService {
   public static final String        DISCONNECTED_PREFERENCES_KEY                       = "disconnectedEmailPreferences";
 
   /**
-   * The address-book sync's own key, deliberately NOT a field of
-   * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
-   * on every status update, so sharing it would let the two syncs overwrite each
-   * other's fields. Earlier versions kept the state under this key in the user's
-   * own context; that copy is never read, only removed.
+   * Where earlier versions kept the address-book sync state, in the user's own
+   * context: that copy is never read, since the user can write it, only removed.
+   * The state now lives under {@code CONTACT_SYNC_STATE_SCOPE}, in the global
+   * context.
    */
   public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
-
-  /**
-   * Where the address-book sync state lives, one entry per username in the global
-   * context, never the user's own. The state names the address the sync calls
-   * with the user's credentials, and a user can write any key of their own
-   * context through the generic settings REST, which checks the context but not
-   * the scope. A scope of its own, not a context id: the settings cache keys a
-   * global entry by scope and key only, so a context id would share cache entries
-   * with every other global key of the scope.
-   */
-  private static final Scope        CONTACT_SYNC_STATE_SCOPE                           = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
 
   /**
    * The vCard file import's own key, apart from both other documents for the
@@ -159,6 +147,17 @@ public class UserEmailSettingService {
    * queue usually stays empty for months.
    */
   public static final String        CONTACT_PUBLISH_QUEUE_KEY                          = "emailContactPublishQueue";
+
+  /**
+   * Where the address-book sync state lives, one entry per username in the global
+   * context, never the user's own. The state names the address the sync calls
+   * with the user's credentials, and a user can write any key of their own
+   * context through the generic settings REST, which checks the context but not
+   * the scope. A scope of its own, not a context id: the settings cache keys a
+   * global entry by scope and key only, so a context id would share cache entries
+   * with every other global key of the scope.
+   */
+  private static final Scope        CONTACT_SYNC_STATE_SCOPE                           = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
 
   private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
                                                                                        "User %s is not allowed to connect email setting";
