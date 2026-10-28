@@ -1430,10 +1430,12 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Stores where the address-book sync got to, unless its user no longer exists.
-   * The check runs after the write, not before: the platform removes a user before
-   * the deletion's cleanup runs, so a run still going at that moment either finds
-   * the user gone here or wrote before that cleanup removed the entry.
+   * Stores where the address-book sync got to, and removes it again when its user
+   * no longer exists: a run still going when its user was deleted writes after the
+   * deletion's cleanup. Checked after the write, which catches more of those runs
+   * than a check before it, but not all of them: the user lookup is cached until
+   * the deletion's listeners have all returned. What it misses is cleared when a
+   * user is created, so a later account with the same username never inherits it.
    *
    * @param state the state to store
    * @param username the mailbox owner

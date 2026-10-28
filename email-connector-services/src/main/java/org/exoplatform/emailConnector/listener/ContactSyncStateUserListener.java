@@ -29,7 +29,9 @@ import org.exoplatform.services.organization.UserEventListener;
 import jakarta.annotation.PostConstruct;
 
 /**
- * Forgets a deleted user's address-book sync state. The platform removes the
+ * Forgets a user's address-book sync state when the user is deleted, and again
+ * when a user is created, in case a run still going at the deletion wrote it back:
+ * an account that reuses the username never inherits it. The platform removes the
  * user's own settings context with the user, but this state lives in a global
  * context, out of the user's reach, so nothing else removes it.
  */
@@ -50,16 +52,27 @@ public class ContactSyncStateUserListener extends UserEventListener {
   }
 
   @Override
+  public void postSave(User user, boolean isNew) {
+    if (isNew) {
+      clear(user);
+    }
+  }
+
+  @Override
   public void postDelete(User user) {
+    clear(user);
+  }
+
+  private void clear(User user) {
     if (user == null) {
       return;
     }
     try {
       userEmailSettingService.clearContactSyncState(user.getUserName());
     } catch (Exception e) {
-      // The platform also catches a listener's failure, so the deletion goes on
-      // either way; this names what was left behind: one settings row.
-      LOG.warn("The address book sync state of deleted user {} could not be removed", user.getUserName(), e);
+      // The platform also catches a listener's failure, so the user change goes
+      // on either way; this names what was left behind: one settings row.
+      LOG.warn("The address book sync state of user {} could not be removed", user.getUserName(), e);
     }
   }
 }

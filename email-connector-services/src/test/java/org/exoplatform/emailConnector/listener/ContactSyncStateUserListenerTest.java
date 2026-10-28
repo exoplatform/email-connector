@@ -95,6 +95,28 @@ class ContactSyncStateUserListenerTest {
   }
 
   /**
+   * A new account starts from no state, even one a run wrote back after an
+   * earlier account with the same username was deleted.
+   */
+  @Test
+  void aCreatedUsersSyncStateIsCleared() {
+    listener.postSave(new UserImpl("alice"), true);
+
+    verify(userEmailSettingService).clearContactSyncState("alice");
+    verifyNoMoreInteractions(userEmailSettingService);
+  }
+
+  /**
+   * Saving an existing user keeps their state.
+   */
+  @Test
+  void anUpdatedUsersSyncStateIsKept() {
+    listener.postSave(new UserImpl("alice"), false);
+
+    verifyNoInteractions(userEmailSettingService);
+  }
+
+  /**
    * No user, nothing to clear.
    */
   @Test

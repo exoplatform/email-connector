@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -61,6 +62,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -858,7 +860,11 @@ public class UserEmailSettingServiceTest {
 
     userEmailSettingService.setContactSyncState(new ContactSyncState(), "deleted-user");
 
-    verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, "deleted-user");
+    // Checked after the write: a check before it would miss a deletion during it.
+    InOrder inOrder = inOrder(settingService, userHandler);
+    inOrder.verify(settingService).set(eq(Context.GLOBAL), eq(CONTACT_SYNC_STATE_SCOPE), eq("deleted-user"), any(SettingValue.class));
+    inOrder.verify(userHandler).findUserByName("deleted-user", UserStatus.ANY);
+    inOrder.verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, "deleted-user");
   }
 
   @Test
