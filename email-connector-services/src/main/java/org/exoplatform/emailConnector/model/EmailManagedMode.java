@@ -29,7 +29,9 @@ import java.util.List;
  * applies to <b>the caller</b>: the designation exists and the caller is in none
  * of the excluded groups. It governs the automatic attachment at login, and a
  * governed caller can neither disconnect, edit their connection nor connect another
- * connector (EXO-90836).
+ * connector through this add-on's paths (EXO-90836). Portal's generic settings
+ * REST can still write the caller's own {@code userEmailSetting} value; closing
+ * that is portal's.
  *
  * @param connectorId the connector the instance chose, null when managed mode is
  *          off
