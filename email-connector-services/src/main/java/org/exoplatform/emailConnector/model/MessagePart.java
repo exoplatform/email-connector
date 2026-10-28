@@ -21,8 +21,8 @@ import java.util.List;
 
 /**
  * One MIME part of a message as read from the server, with the addresses its message
- * says it is from: every {@code From} address and the {@code Sender}, as the server
- * reads the message's header.
+ * says it is from: every address of its {@code From} header, as the server reads it.
+ * The {@code Sender} is not one.
  *
  * @param content the decoded bytes, capped by the reader
  * @param authors the {@code From} addresses, bare, possibly empty

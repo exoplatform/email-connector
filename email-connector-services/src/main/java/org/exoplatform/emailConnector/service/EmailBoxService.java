@@ -7177,8 +7177,11 @@ public class EmailBoxService {
 
   /**
    * The bare addresses a message says it is from: every {@code From} address. The
-   * {@code Sender} is not one: DMARC authenticates the {@code From} domain only. A header
-   * that cannot be parsed adds nothing.
+   * {@code Sender} is not one: DMARC authenticates the {@code From} domain only. Read
+   * from the {@code From} header itself, since {@code getFrom()} answers the
+   * {@code Sender} (the envelope's sender on IMAP) when there is no {@code From}: a
+   * message with no {@code From} has no author. A header that cannot be parsed adds
+   * nothing.
    *
    * @param message the message, as the server reads it
    * @return the addresses, possibly empty
@@ -7186,7 +7189,8 @@ public class EmailBoxService {
   static List<String> authorsOf(Message message) {
     List<String> authors = new ArrayList<>();
     try {
-      Address[] from = message.getFrom();
+      String[] headers = message.getHeader("From");
+      Address[] from = headers == null || headers.length == 0 ? null : InternetAddress.parseHeader(String.join(",", headers), true);
       if (from != null) {
         for (Address address : from) {
           if (address instanceof InternetAddress internetAddress && StringUtils.isNotBlank(internetAddress.getAddress())) {
