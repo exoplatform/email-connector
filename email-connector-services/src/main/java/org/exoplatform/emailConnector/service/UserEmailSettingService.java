@@ -27,6 +27,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import javax.mail.Authenticator;
@@ -69,6 +70,8 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsExcept
 import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.services.organization.OrganizationService;
+import org.exoplatform.services.organization.UserStatus;
 import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
@@ -163,6 +166,9 @@ public class UserEmailSettingService {
   private static final Log          LOG                                                =
                                         ExoLogger.getLogger(UserEmailSettingService.class);
 
+  /** The users whose legacy sync-state copy this node already removed, so it is removed once. */
+  private final Set<String>         legacyContactSyncStateRemoved = ConcurrentHashMap.newKeySet();
+
   /** Whose account each store was connected for; weak, so a closed store is forgotten with it. */
   private final Map<Store, ConnectedAccount> connectedAccounts = Collections.synchronizedMap(new WeakHashMap<>());
 
@@ -189,6 +195,9 @@ public class UserEmailSettingService {
 
   @Autowired
   private EmailManagedModeService   emailManagedModeService;
+
+  @Autowired
+  private OrganizationService       organizationService;
 
   // required = false, same reason as EmailBoxService's own guard: the resolver
   // needs ConnectorCredentialsService, a bean of another WAR, so it is undefined
@@ -1421,7 +1430,10 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Stores where the address-book sync got to.
+   * Stores where the address-book sync got to, unless its user no longer exists.
+   * The check runs after the write, not before: the platform removes a user before
+   * the deletion's cleanup runs, so a run still going at that moment either finds
+   * the user gone here or wrote before that cleanup removed the entry.
    *
    * @param state the state to store
    * @param username the mailbox owner
@@ -1431,7 +1443,13 @@ public class UserEmailSettingService {
                        CONTACT_SYNC_STATE_SCOPE,
                        username,
                        SettingValue.create(JsonUtils.toJsonString(state)));
-    removeLegacyContactSyncState(username);
+    if (!userExists(username)) {
+      settingService.remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
+      return;
+    }
+    if (!legacyContactSyncStateRemoved.contains(username)) {
+      removeLegacyContactSyncState(username);
+    }
   }
 
   /**
@@ -1454,6 +1472,18 @@ public class UserEmailSettingService {
    */
   private void removeLegacyContactSyncState(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+    legacyContactSyncStateRemoved.add(username);
+  }
+
+  private boolean userExists(String username) {
+    try {
+      return organizationService.getUserHandler().findUserByName(username, UserStatus.ANY) != null;
+    } catch (Exception e) {
+      // Unknown is not gone: keeping the state costs a stale row at worst,
+      // dropping it a full pass over the address book.
+      LOG.warn("Could not check whether user {} still exists, keeping their contact sync state", username, e);
+      return true;
+    }
   }
 
   /**

@@ -96,6 +96,10 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
+import org.exoplatform.services.organization.OrganizationService;
+import org.exoplatform.services.organization.UserHandler;
+import org.exoplatform.services.organization.UserStatus;
+import org.exoplatform.services.organization.impl.UserImpl;
 import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 
 import io.meeds.social.translation.service.TranslationService;
@@ -138,6 +142,12 @@ public class UserEmailSettingServiceTest {
   @MockitoBean
   private EmailManagedModeService   emailManagedModeService;
 
+  @MockitoBean
+  private OrganizationService       organizationService;
+
+  @MockitoBean
+  private UserHandler               userHandler;
+
   @Autowired
   private UserEmailSettingService   userEmailSettingService;
 
@@ -151,6 +161,12 @@ public class UserEmailSettingServiceTest {
   void managedModeGovernsNobodyByDefault() {
     when(emailManagedModeService.checkUserMayChangeConnection(anyString(), any())).thenReturn(null);
     when(emailManagedModeService.designatedConnectorFor(anyString())).thenReturn(null);
+  }
+
+  @BeforeEach
+  void everyUserExists() throws Exception {
+    lenient().when(organizationService.getUserHandler()).thenReturn(userHandler);
+    lenient().when(userHandler.findUserByName(anyString(), eq(UserStatus.ANY))).thenAnswer(invocation -> new UserImpl(invocation.getArgument(0)));
   }
 
   @Test
@@ -810,12 +826,55 @@ public class UserEmailSettingServiceTest {
   }
 
   @Test
-  void writingTheSyncStateDropsTheCopyEarlierVersionsKeptInTheUsersContext() {
+  void writingTheSyncStateDropsTheCopyEarlierVersionsKeptInTheUsersContextOnce() {
+    // Its own user: the service outlives each test, and so does what it removed.
+    String username = "legacy-writer";
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+
+    verify(settingService, times(1)).remove(Context.USER.id(username),
+                                            UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                            UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  }
+
+  @Test
+  void resettingTheSyncStateDropsTheLegacyCopyEvenWhenAWriteAlreadyDid() {
+    String username = "legacy-resetter";
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+
+    userEmailSettingService.clearContactSyncState(username);
+
+    verify(settingService, times(2)).remove(Context.USER.id(username),
+                                            UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                            UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  }
+
+  @Test
+  void aSyncStateWrittenAfterItsUserWasDeletedIsRemovedAgain() throws Exception {
+    // A run still going when its user was deleted writes after the deletion's
+    // cleanup removed the entry; the platform removed the user first.
+    when(userHandler.findUserByName("deleted-user", UserStatus.ANY)).thenReturn(null);
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), "deleted-user");
+
+    verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, "deleted-user");
+  }
+
+  @Test
+  void theSyncStateOfAnExistingUserIsKept() {
     userEmailSettingService.setContactSyncState(new ContactSyncState(), TEST_USER);
 
-    verify(settingService).remove(Context.USER.id(TEST_USER),
-                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
-                                  UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+    verify(settingService, never()).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
+  }
+
+  @Test
+  void theSyncStateIsKeptWhenItsUserCannotBeLookedUp() throws Exception {
+    when(userHandler.findUserByName(TEST_USER, UserStatus.ANY)).thenThrow(new IllegalStateException("directory down"));
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), TEST_USER);
+
+    verify(settingService, never()).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
   }
 
   @Test
