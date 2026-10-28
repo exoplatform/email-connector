@@ -26,6 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     app-name="contacts"
     v-model="contactsDrawer"
     right
+    full-app-left-class="grey-lighten1-background-opacity-5"
     :loading="loading"
     :use-filter="canSearch"
     :filter-placeholder="$t('emailConnector.contacts.filter.placeholder')"
