@@ -185,11 +185,14 @@ describe('what a scheduled mail says and offers in its state (EXO-90434)', () =>
       color: 'error--text',
     });
     expect(line({ status: 'FAILED', lastError: 'SOMETHING_NEW' }).reasonKey).toBe('emailConnector.mailBox.scheduled.error.unknown');
+    expect(line({ status: 'FAILED', lastError: 'PROVIDER_UNAVAILABLE' }).reasonKey)
+      .toBe('emailConnector.mailBox.scheduled.error.PROVIDER_UNAVAILABLE');
     expect(line({ status: 'UNCERTAIN', lastError: 'UNCONFIRMED' })).toEqual({ key: 'emailConnector.mailBox.scheduled.uncertain', color: 'warning--text' });
   });
 
   it('translates every reason code the backend lists', () => {
-    const reasons = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE', 'DISCONNECTED', 'REFUSED', 'INTERNAL'];
+    const reasons = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE', 'DISCONNECTED', 'REFUSED', 'INTERNAL',
+      'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED', 'PROVIDER_UNAVAILABLE'];
     expect(emailConnectorMailBoxService.NOT_SENT_REASONS).toEqual(reasons);
     // The two others mean "may have gone", never "not sent".
     ['INTERRUPTED', 'UNCONFIRMED'].forEach(reason => expect(reasons).not.toContain(reason));
@@ -249,16 +252,21 @@ describe('the Scheduled view among the folders (EXO-90434)', () => {
 
   it('shows it with its count in the 3-dots menu, and no multi-selection when it is listed', () => {
     const mountMenu = currentFolder => shallowMount(EmailConnectorMailBoxDrawerActionMenuItems, {
-      propsData: { availableFolders: FOLDERS, currentFolder },
+      propsData: {
+        availableFolders: FOLDERS,
+        currentFolder,
+        folderCounts: { DRAFTS: { count: 2, unread: false }, SCHEDULED: { count: 3, unread: false, attention: true } },
+      },
       mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
     });
     const menu = mountMenu('INBOX');
     expect(menu.vm.visibleFolders.map(folder => [folder.key, folder.count, folder.attention])).toEqual([
-      ['INBOX', 0, false], ['DRAFTS', 0, false], ['SCHEDULED', 3, true], ['CUSTOM:4', 0, false], ['CUSTOM:5', 0, false]]);
+      ['INBOX', 0, false], ['DRAFTS', 2, false], ['SCHEDULED', 3, true], ['CUSTOM:5', 0, false], ['CUSTOM:4', 0, false]]);
     expect(menu.findAll('.folder-menu-count').wrappers.map(count => [count.text(), count.classes().includes('warning--text')]))
-      .toEqual([['3', true]]);
+      .toEqual([['2', false], ['3', true]]);
     expect(menu.text()).toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
     expect(mountMenu('SCHEDULED').text()).not.toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
+    expect(mountMenu('SUGGESTIONS').text()).toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
   });
 });
 
