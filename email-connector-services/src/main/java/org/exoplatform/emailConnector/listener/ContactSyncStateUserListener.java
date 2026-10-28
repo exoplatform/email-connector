@@ -57,7 +57,8 @@ public class ContactSyncStateUserListener extends UserEventListener {
     try {
       userEmailSettingService.clearContactSyncState(user.getUserName());
     } catch (Exception e) {
-      // Never worth failing a user deletion over: what is left is one settings row.
+      // The platform also catches a listener's failure, so the deletion goes on
+      // either way; this names what was left behind: one settings row.
       LOG.warn("The address book sync state of deleted user {} could not be removed", user.getUserName(), e);
     }
   }

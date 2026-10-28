@@ -126,19 +126,21 @@ public class UserEmailSettingService {
    * The address-book sync's own key, deliberately NOT a field of
    * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
    * on every status update, so sharing it would let the two syncs overwrite each
-   * other's fields. It names the global context the state lives in, and the key
-   * of the copy earlier versions kept in the user's own context.
+   * other's fields. Earlier versions kept the state under this key in the user's
+   * own context; that copy is never read, only removed.
    */
   public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
 
   /**
-   * Where the address-book sync state lives, one entry per username: a global
+   * Where the address-book sync state lives, one entry per username in the global
    * context, never the user's own. The state names the address the sync calls
    * with the user's credentials, and a user can write any key of their own
    * context through the generic settings REST, which checks the context but not
-   * the scope.
+   * the scope. A scope of its own, not a context id: the settings cache keys a
+   * global entry by scope and key only, so a context id would share cache entries
+   * with every other global key of the scope.
    */
-  private static final Context      CONTACT_SYNC_STATE_CONTEXT                         = Context.GLOBAL.id(CONTACT_SYNC_STATE_KEY);
+  private static final Scope        CONTACT_SYNC_STATE_SCOPE                           = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
 
   /**
    * The vCard file import's own key, apart from both other documents for the
@@ -1404,7 +1406,7 @@ public class UserEmailSettingService {
    * @return the stored state, or a fresh empty one
    */
   public ContactSyncState getContactSyncState(String username) {
-    SettingValue<?> value = settingService.get(CONTACT_SYNC_STATE_CONTEXT, EMAIL_CONNECTOR_SCOPE, username);
+    SettingValue<?> value = settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
     if (value == null || value.getValue() == null) {
       return new ContactSyncState();
     }
@@ -1425,8 +1427,8 @@ public class UserEmailSettingService {
    * @param username the mailbox owner
    */
   public void setContactSyncState(ContactSyncState state, String username) {
-    settingService.set(CONTACT_SYNC_STATE_CONTEXT,
-                       EMAIL_CONNECTOR_SCOPE,
+    settingService.set(Context.GLOBAL,
+                       CONTACT_SYNC_STATE_SCOPE,
                        username,
                        SettingValue.create(JsonUtils.toJsonString(state)));
     removeLegacyContactSyncState(username);
@@ -1440,7 +1442,7 @@ public class UserEmailSettingService {
    * @param username the mailbox owner
    */
   public void clearContactSyncState(String username) {
-    settingService.remove(CONTACT_SYNC_STATE_CONTEXT, EMAIL_CONNECTOR_SCOPE, username);
+    settingService.remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
     removeLegacyContactSyncState(username);
   }
 

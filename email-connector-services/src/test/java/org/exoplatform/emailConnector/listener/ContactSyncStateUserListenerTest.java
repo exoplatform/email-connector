@@ -16,10 +16,12 @@
  */
 package org.exoplatform.emailConnector.listener;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,8 +30,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
+import org.exoplatform.services.organization.OrganizationService;
 import org.exoplatform.services.organization.User;
+import org.exoplatform.services.organization.UserHandler;
 import org.exoplatform.services.organization.impl.UserImpl;
+
+import jakarta.annotation.PostConstruct;
 
 /**
  * The glue between a user's deletion and their address-book sync state.
@@ -38,10 +44,31 @@ import org.exoplatform.services.organization.impl.UserImpl;
 class ContactSyncStateUserListenerTest {
 
   @Mock
+  private OrganizationService          organizationService;
+
+  @Mock
+  private UserHandler                  userHandler;
+
+  @Mock
   private UserEmailSettingService      userEmailSettingService;
 
   @InjectMocks
   private ContactSyncStateUserListener listener;
+
+  /**
+   * A listener nobody registers clears nothing: the registration is what makes
+   * the platform call it when a user is deleted.
+   */
+  @Test
+  void registersItselfForUserEvents() throws Exception {
+    when(organizationService.getUserHandler()).thenReturn(userHandler);
+
+    listener.init();
+
+    verify(userHandler).addUserEventListener(listener);
+    // The container calls init: without the annotation the listener is never registered.
+    assertTrue(ContactSyncStateUserListener.class.getMethod("init").isAnnotationPresent(PostConstruct.class));
+  }
 
   /**
    * The deleted user's state is cleared, and no one else's.
@@ -55,10 +82,11 @@ class ContactSyncStateUserListenerTest {
   }
 
   /**
-   * A failure to clear never fails the deletion.
+   * A failure to clear does not escape the listener. The platform would catch it
+   * too, so the deletion goes on either way.
    */
   @Test
-  void aFailureToClearDoesNotFailTheDeletion() {
+  void aFailureToClearDoesNotEscapeTheListener() {
     doThrow(new IllegalStateException("database down")).when(userEmailSettingService).clearContactSyncState("alice");
 
     listener.postDelete(new UserImpl("alice"));

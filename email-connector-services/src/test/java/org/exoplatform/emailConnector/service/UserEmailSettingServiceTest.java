@@ -108,8 +108,8 @@ public class UserEmailSettingServiceTest {
 
   private static final String       TEST_USER = "testuser";
 
-  private static final Context      CONTACT_SYNC_STATE_CONTEXT =
-                                                               Context.GLOBAL.id(UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  /** Where the stored states are: renaming it orphans every one of them. */
+  private static final Scope        CONTACT_SYNC_STATE_SCOPE  = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
 
   @MockitoBean
   private SettingService            settingService;
@@ -802,8 +802,8 @@ public class UserEmailSettingServiceTest {
 
     userEmailSettingService.setContactSyncState(state, TEST_USER);
 
-    verify(settingService).set(eq(CONTACT_SYNC_STATE_CONTEXT),
-                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(CONTACT_SYNC_STATE_SCOPE),
                                eq(TEST_USER),
                                any(SettingValue.class));
     verify(settingService, never()).set(eq(Context.USER.id(TEST_USER)), any(Scope.class), anyString(), any(SettingValue.class));
@@ -845,7 +845,7 @@ public class UserEmailSettingServiceTest {
     stored.setAddressBookHref("https://mail.example.com/dav/testuser/default/");
     stored.setConfiguredUrl("https://mail.example.com");
     stored.setCtag("ctag-1");
-    when(settingService.get(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER))
+    when(settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER))
         .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(stored)));
 
     ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
@@ -859,7 +859,7 @@ public class UserEmailSettingServiceTest {
   void clearingTheSyncStateRemovesBothCopies() {
     userEmailSettingService.clearContactSyncState(TEST_USER);
 
-    verify(settingService).remove(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER);
+    verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
     verify(settingService).remove(Context.USER.id(TEST_USER),
                                   UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                                   UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
@@ -867,7 +867,7 @@ public class UserEmailSettingServiceTest {
 
   @Test
   void anAbsentSyncStateReadsAsNeverHavingRun() {
-    when(settingService.get(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER)).thenReturn(null);
+    when(settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER)).thenReturn(null);
 
     ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
 
