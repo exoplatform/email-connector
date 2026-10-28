@@ -18394,24 +18394,29 @@ public class EmailBoxServiceTest {
 
   /**
    * The addresses a message says it is from, which decide whether a calendar change is
-   * its organiser's: every From address, never the Sender, which DMARC does not
-   * authenticate; a header that cannot be read adds nothing.
+   * its organiser's: every address of its From header, never the Sender, which DMARC
+   * does not authenticate -- not even when there is no From, where javax.mail's
+   * getFrom() answers the Sender; a header that cannot be read adds nothing.
    *
    * @throws Exception never
    */
   @Test
   void aMessagesAuthorsAreItsFromAddressesOnly() throws Exception {
-    MimeMessage message = mock(MimeMessage.class);
-    when(message.getFrom()).thenReturn(new Address[] { new InternetAddress("Calendar <calendar@google.com>"),
-        new InternetAddress("olivia@partner.example") });
-    lenient().when(message.getSender()).thenReturn(new InternetAddress("Olivia <olivia@partner.example>"));
-
+    MimeMessage message = new MimeMessage((Session) null);
+    message.addHeader("From", "Calendar <calendar@google.com>, olivia@partner.example");
+    message.setSender(new InternetAddress("Olivia <olivia@partner.example>"));
     assertEquals(List.of("calendar@google.com", "olivia@partner.example"), EmailBoxService.authorsOf(message));
 
-    when(message.getFrom()).thenThrow(new MessagingException("unparsable"));
-    assertEquals(List.of(), EmailBoxService.authorsOf(message));
+    MimeMessage senderOnly = new MimeMessage((Session) null);
+    senderOnly.setSender(new InternetAddress("olivia@partner.example"));
+    assertEquals("olivia@partner.example", ((InternetAddress) senderOnly.getFrom()[0]).getAddress(), "getFrom() answers the Sender");
+    assertEquals(List.of(), EmailBoxService.authorsOf(senderOnly), "a message with no From has no author");
+
+    MimeMessage unparsable = new MimeMessage((Session) null);
+    unparsable.addHeader("From", "Calendar <calendar@google.com");
+    assertEquals(List.of(), EmailBoxService.authorsOf(unparsable));
     Message plain = mock(Message.class);
-    when(plain.getFrom()).thenReturn(null);
+    when(plain.getHeader("From")).thenReturn(null);
     assertEquals(List.of(), EmailBoxService.authorsOf(plain), "a message saying nothing has no author");
   }
 
@@ -18459,7 +18464,7 @@ public class EmailBoxServiceTest {
     verify(calendar, times(2)).getInputStream();
     // The same read carries the message's authors.
     when(calendar.getSize()).thenReturn(10);
-    when(message.getFrom()).thenReturn(new Address[] { new InternetAddress("olivia@partner.example") });
+    when(message.getHeader("From")).thenReturn(new String[] { "olivia@partner.example" });
     assertEquals(List.of("olivia@partner.example"), emailBoxService.readMessagePartAndAuthors(TEST_USER, email, "2", 100).authors());
 
     assertNull(emailBoxService.readMessagePart(TEST_USER, email, "7", 100), "a part the message does not have");

@@ -125,8 +125,8 @@ class CalendarInvitationServiceTest {
 
   private Email                   email;
 
-  /** The From and Sender addresses the server reads on the message, beside the stored From. */
-  private List<String>            authors     = List.of();
+  /** The From addresses the server reads on the message; null for the stored From's. */
+  private List<String>            authors;
 
   /**
    * The user's mailbox address, and a received invitation from Google in their inbox.
@@ -720,8 +720,8 @@ class CalendarInvitationServiceTest {
     ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
     givenTheLanding(landing, CalendarLanding.UPDATED, "/portal/dw/agenda?eventId=77");
 
-    // The stored From is the organiser's, in another case; the server read none.
-    email.setSender(new EmailSender("Olivia", "Olivia@Partner.Example", null, null));
+    // The From the server read is the organiser's, in another case.
+    authors = List.of("Olivia@Partner.Example");
     CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
     assertFalse(update.isOrganizerUnverified());
     assertTrue(update.isNewerRevision());
@@ -729,7 +729,7 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarLanding.UPDATED, service.addToCalendar(EMAIL_ID, USER).getLanding());
     assertTrue(landing.getValue().fromOrganizer(), "the verdict travels with the landing");
 
-    // The From the server read is hers.
+    // The From the server read is hers, whatever the sync stored.
     email.setSender(new EmailSender("Calendar", "calendar-notification@google.com", null, null));
     authors = List.of("OLIVIA@partner.example");
     givenTheCalendarPart("allday-cancel.ics");
@@ -788,6 +788,64 @@ class CalendarInvitationServiceTest {
     givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
     assertEquals(CalendarLanding.LANDED, service.addToCalendar(EMAIL_ID, USER).getLanding());
     assertFalse(landing.getValue().fromOrganizer(), "the add-on must not change a copy on its strength");
+  }
+
+  /**
+   * A mail with no From is nobody's, whatever its Sender: javax.mail's getFrom() answers
+   * the Sender there, and the sync stored it as the From, so neither the server read nor
+   * the stored From may stand for one. The update and the cancellation are refused.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWithNoFromIsNotTheOrganisersWhateverItsSender() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
+    MimeMessage message = new MimeMessage((javax.mail.Session) null);
+    message.setSender(new InternetAddress("olivia@partner.example"));
+    email.setSender(new EmailSender("Olivia", ((InternetAddress) message.getFrom()[0]).getAddress(), null, null));
+    authors = EmailBoxService.authorsOf(message);
+    assertEquals(List.of(), authors);
+
+    CalendarInvitation update = service.getInvitation(EMAIL_ID, USER);
+    assertTrue(update.isOrganizerUnverified());
+    assertFalse(update.isLandable());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    givenTheCalendarPart("allday-cancel.ics");
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isRemovable());
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
+  }
+
+  /**
+   * A From that matches the ORGANIZER only once lower-cased beyond ASCII is not the
+   * organiser's: the Kelvin sign is not {@code k}, nor {@code İ} an {@code i}. ASCII
+   * case still does not count.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aFromMatchingTheOrganiserOnlyBeyondAsciiCaseIsNotHers() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("mailto:olivia@partner.example", "mailto:kate@partner.example"));
+
+    authors = List.of("\u212Aate@partner.example");
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isOrganizerUnverified(), "the Kelvin sign is not k");
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+    authors = List.of("KATE@partner.example");
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isOrganizerUnverified(), "ASCII case aside");
+
+    givenTheCalendarPart("allday-cancel.ics");
+    authors = List.of("ol\u0130via@partner.example");
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isRemovable(), "İ is not i");
+    assertEquals(CalendarInvitationService.UNVERIFIED,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
   }
 
   /**
@@ -1549,7 +1607,20 @@ class CalendarInvitationServiceTest {
    */
   private void givenTheCalendarPartText(String icalendar) throws Exception {
     lenient().when(emailBoxService.readMessagePartAndAuthors(eq(USER), any(), eq("1.3"), anyLong()))
-             .thenAnswer(invocation -> new MessagePart(icalendar.getBytes(StandardCharsets.UTF_8), authors));
+             .thenAnswer(invocation -> new MessagePart(icalendar.getBytes(StandardCharsets.UTF_8), authorsRead()));
+  }
+
+  /**
+   * The From addresses the server reads: the ones a test set, the stored From's
+   * otherwise -- a message's From as the sync stored it.
+   *
+   * @return the addresses
+   */
+  private List<String> authorsRead() {
+    if (authors != null) {
+      return authors;
+    }
+    return email.getSender() == null ? List.of() : List.of(email.getSender().getAddress());
   }
 
   /**

@@ -19,8 +19,6 @@ package org.exoplatform.emailConnector.service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -54,6 +52,7 @@ import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.mcp.EmailAddressRules;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarInvitationAnswer;
 import org.exoplatform.emailConnector.model.CalendarInvitationPerson;
@@ -143,7 +142,7 @@ import io.meeds.social.util.JsonUtils;
  * nothing. A mail that would change an event the calendar holds -- a cancellation, or a
  * revision whose SEQUENCE is higher than the held copy's -- is offered and landed only
  * when its {@code From} -- one address, as the mail server reads the message -- is the
- * ORGANIZER's address, compared on the bare address, case aside. Neither the
+ * ORGANIZER's address, compared on the bare address, ASCII case aside. Neither the
  * {@code Sender} nor the ORGANIZER's SENT-BY counts: SENT-BY is read from the same object
  * the check verifies, and the {@code Sender} is not what DMARC authenticates. Otherwise the card says it is not from its
  * organiser ({@link #UNVERIFIED}), offers no update and no removal, and the landing is
@@ -586,7 +585,7 @@ public class CalendarInvitationService {
     if (invitation.getAttendeeAddress() == null) {
       invitation.setAttendeeAddress(mailboxAddress);
     }
-    parsed = parsed.withFromOrganizer(fromOrganizer(email, read.authors(), invitation));
+    parsed = parsed.withFromOrganizer(fromOrganizer(read.authors(), invitation));
     if (invitation.getRespondent() == null && CalendarInvitationUtils.METHOD_COUNTER.equals(invitation.getMethod())) {
       invitation.setRespondent(proposer(email, invitation));
     }
@@ -649,36 +648,34 @@ public class CalendarInvitationService {
 
   /**
    * Whether a mail is from the organiser of the event it carries: its {@code From} is
-   * one address, the ORGANIZER's, compared on the bare address, case aside. The
+   * one address, the ORGANIZER's, compared on the bare address, ASCII case aside. The
    * {@code Sender} and the ORGANIZER's SENT-BY do not count: SENT-BY is read from the
-   * object this verifies, and DMARC authenticates the {@code From} domain only. The
-   * {@code From} the server read wins; the one the sync stored stands in when the server
-   * read none.
+   * object this verifies, and DMARC authenticates the {@code From} domain only. Only the
+   * {@code From} the server read counts: the one the sync stored was read through
+   * {@code getFrom()}, which answers the {@code Sender} when there is no {@code From}.
    *
-   * @param email the message, for the {@code From} the sync stored
    * @param from the {@code From} addresses the server read
    * @param invitation the invitation, for its ORGANIZER
    * @return false when the invitation names no organiser, or the {@code From} names
-   *         several addresses or another one
+   *         no address, several addresses or another one
    */
-  static boolean fromOrganizer(Email email, List<String> from, CalendarInvitation invitation) {
+  static boolean fromOrganizer(List<String> from, CalendarInvitation invitation) {
     String organizer = bareAddress(organizerAddressOf(invitation));
-    if (organizer == null) {
+    if (organizer == null || from == null) {
       return false;
     }
-    List<String> candidates = from == null || from.isEmpty()
-                                                             ? email.getSender() == null ? List.of()
-                                                                                         : Collections.singletonList(email.getSender()
-                                                                                                                         .getAddress())
-                                                             : from;
-    Set<String> addresses = candidates.stream()
+    Set<String> addresses = from.stream()
                                       .map(CalendarInvitationService::bareAddress)
                                       .collect(Collectors.toCollection(HashSet::new));
     return addresses.size() == 1 && addresses.contains(organizer);
   }
 
   /**
-   * An address as it is compared: trimmed, without a {@code mailto:} scheme, lower case.
+   * An address as it is compared: trimmed, without a {@code mailto:} scheme, its ASCII
+   * letters lower-cased and every other character kept
+   * ({@link EmailAddressRules#normalisedAddress}): a full lower-casing turns some
+   * non-ASCII letters into ASCII ones (the Kelvin sign into {@code k}), so a look-alike
+   * would compare equal to the organiser's address.
    *
    * @param address the address
    * @return the bare address, or null when blank
@@ -688,7 +685,7 @@ public class CalendarInvitationService {
     if (bare != null && StringUtils.startsWithIgnoreCase(bare, "mailto:")) {
       bare = StringUtils.trimToNull(bare.substring("mailto:".length()));
     }
-    return bare == null ? null : bare.toLowerCase(Locale.ROOT);
+    return bare == null ? null : EmailAddressRules.normalisedAddress(bare);
   }
 
   /**
