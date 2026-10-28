@@ -126,9 +126,19 @@ public class UserEmailSettingService {
    * The address-book sync's own key, deliberately NOT a field of
    * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
    * on every status update, so sharing it would let the two syncs overwrite each
-   * other's fields.
+   * other's fields. It names the global context the state lives in, and the key
+   * of the copy earlier versions kept in the user's own context.
    */
   public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
+
+  /**
+   * Where the address-book sync state lives, one entry per username: a global
+   * context, never the user's own. The state names the address the sync calls
+   * with the user's credentials, and a user can write any key of their own
+   * context through the generic settings REST, which checks the context but not
+   * the scope.
+   */
+  private static final Context      CONTACT_SYNC_STATE_CONTEXT                         = Context.GLOBAL.id(CONTACT_SYNC_STATE_KEY);
 
   /**
    * The vCard file import's own key, apart from both other documents for the
@@ -1394,7 +1404,7 @@ public class UserEmailSettingService {
    * @return the stored state, or a fresh empty one
    */
   public ContactSyncState getContactSyncState(String username) {
-    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+    SettingValue<?> value = settingService.get(CONTACT_SYNC_STATE_CONTEXT, EMAIL_CONNECTOR_SCOPE, username);
     if (value == null || value.getValue() == null) {
       return new ContactSyncState();
     }
@@ -1415,10 +1425,11 @@ public class UserEmailSettingService {
    * @param username the mailbox owner
    */
   public void setContactSyncState(ContactSyncState state, String username) {
-    settingService.set(Context.USER.id(username),
+    settingService.set(CONTACT_SYNC_STATE_CONTEXT,
                        EMAIL_CONNECTOR_SCOPE,
-                       CONTACT_SYNC_STATE_KEY,
+                       username,
                        SettingValue.create(JsonUtils.toJsonString(state)));
+    removeLegacyContactSyncState(username);
   }
 
   /**
@@ -1429,6 +1440,17 @@ public class UserEmailSettingService {
    * @param username the mailbox owner
    */
   public void clearContactSyncState(String username) {
+    settingService.remove(CONTACT_SYNC_STATE_CONTEXT, EMAIL_CONNECTOR_SCOPE, username);
+    removeLegacyContactSyncState(username);
+  }
+
+  /**
+   * Drops the copy earlier versions kept in the user's own context. It is never
+   * read: the user could have written it.
+   *
+   * @param username the mailbox owner
+   */
+  private void removeLegacyContactSyncState(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
   }
 

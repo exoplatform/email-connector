@@ -108,6 +108,9 @@ public class UserEmailSettingServiceTest {
 
   private static final String       TEST_USER = "testuser";
 
+  private static final Context      CONTACT_SYNC_STATE_CONTEXT =
+                                                               Context.GLOBAL.id(UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+
   @MockitoBean
   private SettingService            settingService;
 
@@ -787,25 +790,84 @@ public class UserEmailSettingServiceTest {
   }
 
   @Test
-  void theSyncStateLivesUnderItsOwnKey() {
+  void theSyncStateLivesUnderItsOwnKeyInAGlobalContext() {
     // Not inside userEmailSetting: the mailbox sync rewrites that whole document on
     // every status update, so sharing the key would have the two syncs overwriting
-    // each other's fields.
+    // each other's fields. Not in the user's own context either: the user can write
+    // it through the generic settings REST, and the state names the address the
+    // sync calls with the user's credentials.
     ContactSyncState state = new ContactSyncState();
     state.setCtag("ctag-1");
     state.setStatus(SyncStatus.SUCCESS);
 
     userEmailSettingService.setContactSyncState(state, TEST_USER);
 
-    verify(settingService).set(any(Context.class),
-                               any(Scope.class),
-                               eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY),
+    verify(settingService).set(eq(CONTACT_SYNC_STATE_CONTEXT),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(TEST_USER),
                                any(SettingValue.class));
+    verify(settingService, never()).set(eq(Context.USER.id(TEST_USER)), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  @Test
+  void writingTheSyncStateDropsTheCopyEarlierVersionsKeptInTheUsersContext() {
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), TEST_USER);
+
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  }
+
+  @Test
+  void aSyncStateTheUserWroteInTheirOwnContextIsNeverRead() {
+    // What a user can PUT through the generic settings REST: their own context, any
+    // scope, any key. Were it read, the next sync would reuse this address book
+    // and send the user's credentials to it.
+    ContactSyncState forged = new ContactSyncState();
+    forged.setAddressBookHref("https://attacker.example.net/collect/");
+    forged.setConfiguredUrl("https://mail.example.com");
+    forged.setCtag("ctag-forged");
+    lenient().when(settingService.get(Context.USER.id(TEST_USER),
+                                      UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                      UserEmailSettingService.CONTACT_SYNC_STATE_KEY))
+             .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(forged)));
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertNull(state.getAddressBookHref());
+    assertNull(state.getConfiguredUrl());
+    assertNull(state.getCtag());
+  }
+
+  @Test
+  void theSyncStateIsReadBackFromTheGlobalContext() {
+    ContactSyncState stored = new ContactSyncState();
+    stored.setAddressBookHref("https://mail.example.com/dav/testuser/default/");
+    stored.setConfiguredUrl("https://mail.example.com");
+    stored.setCtag("ctag-1");
+    when(settingService.get(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER))
+        .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(stored)));
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertEquals("https://mail.example.com/dav/testuser/default/", state.getAddressBookHref());
+    assertEquals("https://mail.example.com", state.getConfiguredUrl());
+    assertEquals("ctag-1", state.getCtag());
+  }
+
+  @Test
+  void clearingTheSyncStateRemovesBothCopies() {
+    userEmailSettingService.clearContactSyncState(TEST_USER);
+
+    verify(settingService).remove(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER);
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
   }
 
   @Test
   void anAbsentSyncStateReadsAsNeverHavingRun() {
-    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY))).thenReturn(null);
+    when(settingService.get(CONTACT_SYNC_STATE_CONTEXT, UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, TEST_USER)).thenReturn(null);
 
     ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
 
