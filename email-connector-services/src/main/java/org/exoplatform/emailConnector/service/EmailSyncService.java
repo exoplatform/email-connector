@@ -411,7 +411,11 @@ public class EmailSyncService {
         Date lastSyncDate = lastSyncStart == null || lastSyncStart <= 0 ? null : new Date(lastSyncStart);
         emailSyncStateStorage.upsert(userId, lastSyncDate, now);
         created++;
-      } catch (RuntimeException | LinkageError e) {
+      } catch (Exception | LinkageError e) {
+        // Exception, not RuntimeException: the settings read already takes an
+        // unparseable stored value as no mailbox (EXO-91325), and this keeps any
+        // other checked exception a user's read throws sneakily from ending the
+        // recovery every dispatch of this node waits on.
         LOG.warn("Could not reconcile the sync state of user {}; their mailbox is registered again at the next connect",
                  userId,
                  e);
