@@ -33,6 +33,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -360,6 +361,34 @@ public class EmailSyncServiceTest {
     assertDoesNotThrow(() -> emailSyncService.dispatchDueSyncs());
 
     verify(emailSyncStateStorage).upsert(eq(BOB), isNull(), any(Date.class));
+  }
+
+  /**
+   * EXO-91325. A user's settings read that fails with a checked exception, thrown
+   * sneakily, neither stops the reconciliation of everyone else nor the recovery
+   * itself: the first tick goes on to dispatch, and the second does not recover
+   * again. No read throws one today -- the settings read takes an unparseable
+   * stored value as no mailbox, pinned in {@code UserEmailSettingServiceTest} --
+   * so the read is stubbed to throw one, an {@code IOException} as Jackson's
+   * {@code JsonProcessingException} is.
+   */
+  @Test
+  void reconciliationSkipsAUserWhoseReadThrowsACheckedException() {
+    ReflectionTestUtils.setField(emailSyncService, "recovered", false);
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+                                                                                                                                            .thenReturn(List.of(Context.USER.id("broken"),
+                                                                                                                                                                Context.USER.id(BOB)));
+    when(userEmailSettingService.getUserEmailSetting("broken")).thenAnswer(invocation -> {
+      throw new IOException("stored setting is not JSON");
+    });
+    when(userEmailSettingService.getUserEmailSetting(BOB)).thenReturn(new UserEmailSetting("1", "b@x", "p", null, null, 0, 0L, null, null, "c", true));
+
+    assertDoesNotThrow(() -> emailSyncService.dispatchDueSyncs());
+    emailSyncService.dispatchDueSyncs();
+
+    verify(emailSyncStateStorage).upsert(eq(BOB), isNull(), any(Date.class));
+    verify(emailSyncStateStorage, times(2)).findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt());
+    verify(emailSyncStateStorage, times(1)).releaseClaimsOf(EmailConnectorUtils.getSyncNodeName());
   }
 
   /**
