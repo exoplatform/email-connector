@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Locale;
+import java.util.function.Consumer;
 
 import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.Test;
@@ -1003,6 +1004,154 @@ public class EmailConnectorServiceTest {
     assertEquals(0,
                  events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
                  "a save carrying no provider configuration keeps the managed refusals");
+  }
+
+  /**
+   * EXO-92306. The administration drawer posts the stored configuration back with every
+   * save, the secret left blank: an edit of the name and the icon alone, posted that way,
+   * keeps the managed refusals. The stored configuration is read before the write
+   * replaces it.
+   */
+  @Test
+  @SneakyThrows
+  void anEditPostingTheStoredConfigurationBackKeepsTheRefusals() {
+    grantAdministration();
+    EmailConnector stored = storedBluemindConnector();
+    EmailConnector posted = postedBluemindConnector();
+    posted.setName("renamed");
+    posted.setIcon("fa-inbox");
+    posted.setWebmailUrl("https://webmail.example.com");
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    assertEquals(0,
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
+                 "the configuration posted back unchanged is not a change of authentication");
+    InOrder inOrder = inOrder(providerConfigStorage);
+    inOrder.verify(providerConfigStorage).readWithoutSecrets(argThat(context -> context.getConnectorId() == stored.getId()
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+    inOrder.verify(providerConfigStorage).store(any(), any());
+  }
+
+  /**
+   * EXO-92306. Each change of the stored configuration forgets the managed refusals: a
+   * value changed (a text field, a choice), a secret typed again; and, for a provider
+   * whose descriptor has optional fields, a value blanked or left out (the storage
+   * removes it) or given to a field that held none. The BlueMind descriptor has no
+   * optional field, and the real storage's validation, which runs first, refuses those
+   * last three on it ({@code MISSING_FIELD}, {@code UNKNOWN_FIELD}): with the storage
+   * mocked they reach the comparison here, standing for an optional field of another
+   * provider.
+   */
+  @Test
+  @SneakyThrows
+  void eachChangeOfTheProviderConfigurationForgetsTheRefusals() {
+    grantAdministration();
+    storedBluemindConnector();
+    List<Map<String, String>> changes = List.of(Map.of("apiUrl", "https://other.example.com",
+                                                       "technicalLogin", "admin",
+                                                       "targetLoginField", "username"),
+                                                Map.of("apiUrl", "https://bm.example.com",
+                                                       "technicalLogin", "admin",
+                                                       "targetLoginField", "email"),
+                                                Map.of("apiUrl", "https://bm.example.com",
+                                                       "technicalLogin", " ",
+                                                       "targetLoginField", "username"),
+                                                Map.of("apiUrl", "https://bm.example.com",
+                                                       "targetLoginField", "username"),
+                                                Map.of("apiUrl", "https://bm.example.com",
+                                                       "technicalLogin", "admin",
+                                                       "targetLoginField", "username",
+                                                       "technicalSecret", "typed-again"),
+                                                Map.of("apiUrl", "https://bm.example.com",
+                                                       "technicalLogin", "admin",
+                                                       "targetLoginField", "username",
+                                                       "newField", "set"));
+    for (Map<String, String> change : changes) {
+      events.clear();
+      EmailConnector posted = postedBluemindConnector();
+      posted.setProviderConfig(change);
+
+      emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+      assertEquals(List.of(7L),
+                   events.stream(EmailConnectorAuthenticationChangedEvent.class)
+                         .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
+                         .toList(),
+                   "a change of the provider configuration forgets the refusals: " + change.keySet());
+      assertEquals(0, events.stream(EmailConnectorProviderChangedEvent.class).count(), "nobody is disconnected");
+    }
+  }
+
+  /**
+   * EXO-92306. A change of the IMAP or SMTP host or port, or of the SMTP security type,
+   * forgets the managed refusals; a value that only differs by surrounding whitespace, or
+   * a blank one where none was stored, does not.
+   */
+  @Test
+  @SneakyThrows
+  void eachMailServerChangeForgetsTheRefusals() {
+    grantAdministration();
+    EmailConnector stored = storedBluemindConnector();
+    List<Consumer<EmailConnector>> changes = List.of(posted -> posted.setImapUrl("imap.other.local"),
+                                                     posted -> posted.setImapPort("143"),
+                                                     posted -> posted.setSmtpUrl("smtp.other.local"),
+                                                     posted -> posted.setSmtpPort("465"),
+                                                     posted -> posted.setSmtpSecurityType("SSL"));
+    for (int i = 0; i < changes.size(); i++) {
+      events.clear();
+      EmailConnector posted = postedBluemindConnector();
+      changes.get(i).accept(posted);
+
+      emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+      assertEquals(List.of(7L),
+                   events.stream(EmailConnectorAuthenticationChangedEvent.class)
+                         .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
+                         .toList(),
+                   "mail server change #" + i + " forgets the refusals");
+    }
+
+    events.clear();
+    // A row saved before the server fields were trimmed, and one with no security type.
+    stored.setImapUrl(" testImapUrl ");
+    stored.setSmtpSecurityType(null);
+    EmailConnector padded = postedBluemindConnector();
+    padded.setImapUrl("  testImapUrl  ");
+    padded.setSmtpPort(" 9000");
+    padded.setSmtpSecurityType("");
+    emailConnectorService.updateEmailConnector(padded, TEST_USER);
+    assertEquals(0,
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
+                 "the server fields are compared as the storage writes them, trimmed");
+  }
+
+  /**
+   * The connector the EXO-92306 tests edit: id 7 on the BlueMind provider, with its
+   * non-secret configuration and its secret stored.
+   */
+  private EmailConnector storedBluemindConnector() {
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("apiUrl", "https://bm.example.com",
+                                                                            "technicalLogin", "admin",
+                                                                            "targetLoginField", "username"));
+    when(providerConfigStorage.readStoredSecretKeys(any())).thenReturn(Set.of("technicalSecret"));
+    return stored;
+  }
+
+  /** What the drawer posts for that connector when nothing is changed: the stored configuration, the secret blank. */
+  private EmailConnector postedBluemindConnector() {
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("apiUrl", "https://bm.example.com",
+                                    "technicalLogin", "admin",
+                                    "targetLoginField", "username",
+                                    "technicalSecret", ""));
+    return posted;
   }
 
   /** The same write on the update path, against the id the drawer already knows. */
