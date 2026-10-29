@@ -26,7 +26,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
-import org.apache.commons.collections4.SetUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -870,8 +869,9 @@ public class EmailConnectorService {
    * Whether a posted provider configuration differs from the one stored for the
    * connector's provider, read as the storage would write it: an empty map writes
    * nothing; a blank value removes its entry, so it equals an absent one; a key the
-   * map leaves out is removed too; a secret already stored is never read back, so a
-   * secret typed again counts as a change and a blank one keeps it.
+   * map leaves out is removed too. The stored values are read without their secrets,
+   * so a secret typed again differs from the absent stored one and counts as a change,
+   * and a blank one, which the storage keeps, does not.
    *
    * @param previousEmailConnector the connector as it was stored, for its id and provider
    * @param postedConfig what the drawer posted, possibly null
@@ -882,20 +882,16 @@ public class EmailConnectorService {
       return false;
     }
     Map<String, String> storedValues = Map.of();
-    Set<String> storedSecretKeys = Set.of();
     if (StringUtils.isNotBlank(previousEmailConnector.getAuthProviderName())) {
       ConnectorCredentialsContext context = providerConfigContext(previousEmailConnector.getId(),
                                                                   previousEmailConnector.getAuthProviderName());
       storedValues = MapUtils.emptyIfNull(providerConfigStorage.readWithoutSecrets(context));
-      storedSecretKeys = SetUtils.emptyIfNull(providerConfigStorage.readStoredSecretKeys(context));
     }
     Set<String> keys = new HashSet<>(postedConfig.keySet());
     keys.addAll(storedValues.keySet());
     for (String key : keys) {
       String postedValue = StringUtils.isBlank(postedConfig.get(key)) ? null : postedConfig.get(key);
-      boolean changed = storedSecretKeys.contains(key) ? postedValue != null
-                                                       : !StringUtils.equals(postedValue, storedValues.get(key));
-      if (changed) {
+      if (!StringUtils.equals(postedValue, storedValues.get(key))) {
         return true;
       }
     }
