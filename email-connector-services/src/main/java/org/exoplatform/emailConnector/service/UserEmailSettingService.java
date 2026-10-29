@@ -27,6 +27,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import javax.mail.Authenticator;
@@ -69,6 +70,8 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsExcept
 import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.services.organization.OrganizationService;
+import org.exoplatform.services.organization.UserStatus;
 import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
@@ -123,10 +126,10 @@ public class UserEmailSettingService {
   public static final String        DISCONNECTED_PREFERENCES_KEY                       = "disconnectedEmailPreferences";
 
   /**
-   * The address-book sync's own key, deliberately NOT a field of
-   * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
-   * on every status update, so sharing it would let the two syncs overwrite each
-   * other's fields.
+   * Where earlier versions kept the address-book sync state, in the user's own
+   * context: that copy is never read, since the user can write it, only removed.
+   * The state now lives under {@code CONTACT_SYNC_STATE_SCOPE}, in the global
+   * context.
    */
   public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
 
@@ -145,11 +148,25 @@ public class UserEmailSettingService {
    */
   public static final String        CONTACT_PUBLISH_QUEUE_KEY                          = "emailContactPublishQueue";
 
+  /**
+   * Where the address-book sync state lives, one entry per username in the global
+   * context, never the user's own. The state names the address the sync calls
+   * with the user's credentials, and a user can write any key of their own
+   * context through the generic settings REST, which checks the context but not
+   * the scope. A scope of its own, not a context id: the settings cache keys a
+   * global entry by scope and key only, so a context id would share cache entries
+   * with every other global key of the scope.
+   */
+  private static final Scope        CONTACT_SYNC_STATE_SCOPE                           = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
+
   private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
                                                                                        "User %s is not allowed to connect email setting";
 
   private static final Log          LOG                                                =
                                         ExoLogger.getLogger(UserEmailSettingService.class);
+
+  /** The users whose legacy sync-state copy this node already removed, so it is removed once. */
+  private final Set<String>         legacyContactSyncStateRemoved = ConcurrentHashMap.newKeySet();
 
   /** Whose account each store was connected for; weak, so a closed store is forgotten with it. */
   private final Map<Store, ConnectedAccount> connectedAccounts = Collections.synchronizedMap(new WeakHashMap<>());
@@ -177,6 +194,9 @@ public class UserEmailSettingService {
 
   @Autowired
   private EmailManagedModeService   emailManagedModeService;
+
+  @Autowired
+  private OrganizationService       organizationService;
 
   // required = false, same reason as EmailBoxService's own guard: the resolver
   // needs ConnectorCredentialsService, a bean of another WAR, so it is undefined
@@ -1394,7 +1414,7 @@ public class UserEmailSettingService {
    * @return the stored state, or a fresh empty one
    */
   public ContactSyncState getContactSyncState(String username) {
-    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+    SettingValue<?> value = settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
     if (value == null || value.getValue() == null) {
       return new ContactSyncState();
     }
@@ -1409,16 +1429,28 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Stores where the address-book sync got to.
+   * Stores where the address-book sync got to, and removes it again when its user
+   * no longer exists: a run still going when its user was deleted writes after the
+   * deletion's cleanup. Checked after the write, which catches more of those runs
+   * than a check before it, but not all of them: the user lookup is cached until
+   * the deletion's listeners have all returned. What it misses is cleared when a
+   * user is created, so an account created after the run ended never inherits it.
    *
    * @param state the state to store
    * @param username the mailbox owner
    */
   public void setContactSyncState(ContactSyncState state, String username) {
-    settingService.set(Context.USER.id(username),
-                       EMAIL_CONNECTOR_SCOPE,
-                       CONTACT_SYNC_STATE_KEY,
+    settingService.set(Context.GLOBAL,
+                       CONTACT_SYNC_STATE_SCOPE,
+                       username,
                        SettingValue.create(JsonUtils.toJsonString(state)));
+    if (!userExists(username)) {
+      settingService.remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
+      return;
+    }
+    if (!legacyContactSyncStateRemoved.contains(username)) {
+      removeLegacyContactSyncState(username);
+    }
   }
 
   /**
@@ -1429,7 +1461,30 @@ public class UserEmailSettingService {
    * @param username the mailbox owner
    */
   public void clearContactSyncState(String username) {
+    settingService.remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, username);
+    removeLegacyContactSyncState(username);
+  }
+
+  /**
+   * Drops the copy earlier versions kept in the user's own context. It is never
+   * read: the user could have written it.
+   *
+   * @param username the mailbox owner
+   */
+  private void removeLegacyContactSyncState(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+    legacyContactSyncStateRemoved.add(username);
+  }
+
+  private boolean userExists(String username) {
+    try {
+      return organizationService.getUserHandler().findUserByName(username, UserStatus.ANY) != null;
+    } catch (Exception e) {
+      // Unknown is not gone: keeping the state costs a stale row at worst,
+      // dropping it a full pass over the address book.
+      LOG.warn("Could not check whether user {} still exists, keeping their contact sync state", username, e);
+      return true;
+    }
   }
 
   /**
