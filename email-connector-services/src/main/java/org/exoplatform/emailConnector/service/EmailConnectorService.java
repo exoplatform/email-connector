@@ -868,8 +868,10 @@ public class EmailConnectorService {
   /**
    * Whether a posted provider configuration differs from the one stored for the
    * connector's provider, read as the storage would write it: an empty map writes
-   * nothing; a blank value removes its entry, so it equals an absent one; a key the
-   * map leaves out is removed too. The stored values are read without their secrets,
+   * nothing; an optional value left blank or out of the map is removed, so it equals an
+   * absent one, and a required one refuses the whole store before any event; a secret
+   * left blank or out is kept while every text value is unchanged. The stored values
+   * are read without their secrets,
    * so a secret typed again differs from the absent stored one and counts as a change,
    * and a blank one, which the storage keeps, does not.
    *
