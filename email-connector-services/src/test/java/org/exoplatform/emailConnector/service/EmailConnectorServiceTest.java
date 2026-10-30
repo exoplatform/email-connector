@@ -1085,8 +1085,8 @@ public class EmailConnectorServiceTest {
 
   /**
    * EXO-92306. A change of the IMAP or SMTP host or port, or of the SMTP security type,
-   * forgets the managed refusals; a value that only differs by surrounding whitespace, or
-   * a blank one where none was stored, does not.
+   * forgets the managed refusals, the security type the drawer gives a row that has none
+   * included; a value that only differs by surrounding whitespace does not.
    */
   @Test
   @SneakyThrows
@@ -1113,17 +1113,26 @@ public class EmailConnectorServiceTest {
     }
 
     events.clear();
-    // A row saved before the server fields were trimmed, and one with no security type.
+    // A row saved before the server fields were trimmed.
     stored.setImapUrl(" testImapUrl ");
-    stored.setSmtpSecurityType(null);
     EmailConnector padded = postedBluemindConnector();
     padded.setImapUrl("  testImapUrl  ");
     padded.setSmtpPort(" 9000");
-    padded.setSmtpSecurityType("");
     emailConnectorService.updateEmailConnector(padded, TEST_USER);
     assertEquals(0,
                  events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
                  "the server fields are compared as the storage writes them, trimmed");
+
+    events.clear();
+    // A row with no security type: the drawer opens it with 'starttls' and posts that
+    // back, so its first save stores a security type and forgets the refusals once.
+    stored.setSmtpSecurityType(null);
+    EmailConnector defaulted = postedBluemindConnector();
+    defaulted.setSmtpSecurityType("starttls");
+    emailConnectorService.updateEmailConnector(defaulted, TEST_USER);
+    assertEquals(1,
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
+                 "the drawer's default security type is stored by the first save, a change");
   }
 
   /**
