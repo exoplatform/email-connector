@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -61,6 +62,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -96,6 +98,10 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
+import org.exoplatform.services.organization.OrganizationService;
+import org.exoplatform.services.organization.UserHandler;
+import org.exoplatform.services.organization.UserStatus;
+import org.exoplatform.services.organization.impl.UserImpl;
 import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 
 import io.meeds.social.translation.service.TranslationService;
@@ -107,6 +113,9 @@ import lombok.SneakyThrows;
 public class UserEmailSettingServiceTest {
 
   private static final String       TEST_USER = "testuser";
+
+  /** Where the stored states are: renaming it orphans every one of them. */
+  private static final Scope        CONTACT_SYNC_STATE_SCOPE  = Scope.APPLICATION.id("EMAIL_CONTACT_SYNC_STATE");
 
   @MockitoBean
   private SettingService            settingService;
@@ -135,6 +144,12 @@ public class UserEmailSettingServiceTest {
   @MockitoBean
   private EmailManagedModeService   emailManagedModeService;
 
+  @MockitoBean
+  private OrganizationService       organizationService;
+
+  @MockitoBean
+  private UserHandler               userHandler;
+
   @Autowired
   private UserEmailSettingService   userEmailSettingService;
 
@@ -148,6 +163,12 @@ public class UserEmailSettingServiceTest {
   void managedModeGovernsNobodyByDefault() {
     when(emailManagedModeService.checkUserMayChangeConnection(anyString(), any())).thenReturn(null);
     when(emailManagedModeService.designatedConnectorFor(anyString())).thenReturn(null);
+  }
+
+  @BeforeEach
+  void everyUserExists() throws Exception {
+    lenient().when(organizationService.getUserHandler()).thenReturn(userHandler);
+    lenient().when(userHandler.findUserByName(anyString(), eq(UserStatus.ANY))).thenAnswer(invocation -> new UserImpl(invocation.getArgument(0)));
   }
 
   @Test
@@ -787,25 +808,131 @@ public class UserEmailSettingServiceTest {
   }
 
   @Test
-  void theSyncStateLivesUnderItsOwnKey() {
+  void theSyncStateLivesUnderItsOwnKeyInAGlobalContext() {
     // Not inside userEmailSetting: the mailbox sync rewrites that whole document on
     // every status update, so sharing the key would have the two syncs overwriting
-    // each other's fields.
+    // each other's fields. Not in the user's own context either: the user can write
+    // it through the generic settings REST, and the state names the address the
+    // sync calls with the user's credentials.
     ContactSyncState state = new ContactSyncState();
     state.setCtag("ctag-1");
     state.setStatus(SyncStatus.SUCCESS);
 
     userEmailSettingService.setContactSyncState(state, TEST_USER);
 
-    verify(settingService).set(any(Context.class),
-                               any(Scope.class),
-                               eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY),
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(CONTACT_SYNC_STATE_SCOPE),
+                               eq(TEST_USER),
                                any(SettingValue.class));
+    verify(settingService, never()).set(eq(Context.USER.id(TEST_USER)), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  @Test
+  void writingTheSyncStateDropsTheCopyEarlierVersionsKeptInTheUsersContextOnce() {
+    // Its own user: the service outlives each test, and so does what it removed.
+    String username = "legacy-writer";
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+
+    verify(settingService, times(1)).remove(Context.USER.id(username),
+                                            UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                            UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  }
+
+  @Test
+  void resettingTheSyncStateDropsTheLegacyCopyEvenWhenAWriteAlreadyDid() {
+    String username = "legacy-resetter";
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+
+    userEmailSettingService.clearContactSyncState(username);
+
+    verify(settingService, times(2)).remove(Context.USER.id(username),
+                                            UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                            UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
+  }
+
+  @Test
+  void aSyncStateWrittenAfterItsUserWasDeletedIsRemovedAgain() throws Exception {
+    // A run still going when its user was deleted writes after the deletion's
+    // cleanup removed the entry; the platform removed the user first.
+    when(userHandler.findUserByName("deleted-user", UserStatus.ANY)).thenReturn(null);
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), "deleted-user");
+
+    // Checked after the write: a check before it would miss a deletion during it.
+    InOrder inOrder = inOrder(settingService, userHandler);
+    inOrder.verify(settingService).set(eq(Context.GLOBAL), eq(CONTACT_SYNC_STATE_SCOPE), eq("deleted-user"), any(SettingValue.class));
+    inOrder.verify(userHandler).findUserByName("deleted-user", UserStatus.ANY);
+    inOrder.verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, "deleted-user");
+  }
+
+  @Test
+  void theSyncStateOfAnExistingUserIsKept() {
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), TEST_USER);
+
+    verify(settingService, never()).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
+  }
+
+  @Test
+  void theSyncStateIsKeptWhenItsUserCannotBeLookedUp() throws Exception {
+    when(userHandler.findUserByName(TEST_USER, UserStatus.ANY)).thenThrow(new IllegalStateException("directory down"));
+
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), TEST_USER);
+
+    verify(settingService, never()).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
+  }
+
+  @Test
+  void aSyncStateTheUserWroteInTheirOwnContextIsNeverRead() {
+    // What a user can PUT through the generic settings REST: their own context, any
+    // scope, any key. Were it read, the next sync would reuse this address book
+    // and send the user's credentials to it.
+    ContactSyncState forged = new ContactSyncState();
+    forged.setAddressBookHref("https://attacker.example.net/collect/");
+    forged.setConfiguredUrl("https://mail.example.com");
+    forged.setCtag("ctag-forged");
+    lenient().when(settingService.get(Context.USER.id(TEST_USER),
+                                      UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                      UserEmailSettingService.CONTACT_SYNC_STATE_KEY))
+             .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(forged)));
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertNull(state.getAddressBookHref());
+    assertNull(state.getConfiguredUrl());
+    assertNull(state.getCtag());
+  }
+
+  @Test
+  void theSyncStateIsReadBackFromTheGlobalContext() {
+    ContactSyncState stored = new ContactSyncState();
+    stored.setAddressBookHref("https://mail.example.com/dav/testuser/default/");
+    stored.setConfiguredUrl("https://mail.example.com");
+    stored.setCtag("ctag-1");
+    when(settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER))
+        .thenAnswer(invocation -> SettingValue.create(JsonUtils.toJsonString(stored)));
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertEquals("https://mail.example.com/dav/testuser/default/", state.getAddressBookHref());
+    assertEquals("https://mail.example.com", state.getConfiguredUrl());
+    assertEquals("ctag-1", state.getCtag());
+  }
+
+  @Test
+  void clearingTheSyncStateRemovesBothCopies() {
+    userEmailSettingService.clearContactSyncState(TEST_USER);
+
+    verify(settingService).remove(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER);
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.CONTACT_SYNC_STATE_KEY);
   }
 
   @Test
   void anAbsentSyncStateReadsAsNeverHavingRun() {
-    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY))).thenReturn(null);
+    when(settingService.get(Context.GLOBAL, CONTACT_SYNC_STATE_SCOPE, TEST_USER)).thenReturn(null);
 
     ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
 
