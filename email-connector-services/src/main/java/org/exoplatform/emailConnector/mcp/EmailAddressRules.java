@@ -27,7 +27,7 @@ import org.apache.commons.lang3.StringUtils;
  * approvals ({@link EmailGrantConstraintEvaluator}) check addresses with the
  * same rules, so the check and the send never read one entry two ways.
  */
-final class EmailAddressRules {
+public final class EmailAddressRules {
 
   /**
    * Utility class: every member is static.
@@ -54,13 +54,15 @@ final class EmailAddressRules {
    * lower-cased, every other character kept as written. A full lower-casing
    * turns some non-ASCII letters into ASCII ones (the Kelvin sign into
    * {@code k}), so an address given by an agent would compare equal to another
-   * one, the one actually sent.
+   * one, the one actually sent. Public: every check that compares a received
+   * sender with an address it trusts -- the organiser of a calendar invitation
+   * included -- compares them this way.
    *
    * @param address the address, possibly null
    * @return the address, trimmed, its ASCII letters lower-cased; empty for a
    *         blank one
    */
-  static String normalisedAddress(String address) {
+  public static String normalisedAddress(String address) {
     String value = StringUtils.trimToEmpty(address);
     StringBuilder normalised = new StringBuilder(value.length());
     for (char character : value.toCharArray()) {
