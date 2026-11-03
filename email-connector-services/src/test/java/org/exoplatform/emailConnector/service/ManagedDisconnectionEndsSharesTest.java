@@ -66,6 +66,7 @@ import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
+import org.exoplatform.services.organization.OrganizationService;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.web.security.codec.CodecInitializer;
 
@@ -154,6 +155,9 @@ class ManagedDisconnectionEndsSharesTest {
 
   @MockitoBean
   private ExoFeatureService                featureService;
+
+  @MockitoBean
+  private OrganizationService              organizationService;
 
   /**
    * The JPA slice of the delegation table.
