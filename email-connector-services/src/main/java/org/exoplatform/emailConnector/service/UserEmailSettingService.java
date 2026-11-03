@@ -849,8 +849,10 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Forgets the managed refusals recorded on a connector whose provider, or whose provider
-   * configuration, an administrator just changed (EXO-91017). The refusal was the answer
+   * Forgets the managed refusals recorded on a connector whose mail server settings an
+   * administrator just changed - its provider, a value of its provider configuration, a
+   * secret typed again, its IMAP or SMTP host or port, or its SMTP security type
+   * (EXO-91017, EXO-92306). The refusal was the answer
    * of the authentication now replaced: the users it names are offered the connection
    * again instead of waiting for their next login to retry it. A refusal recorded on
    * another connector, or one that cannot be read, is left alone.

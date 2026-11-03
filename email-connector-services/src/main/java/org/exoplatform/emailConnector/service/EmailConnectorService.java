@@ -18,9 +18,11 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
@@ -806,6 +808,10 @@ public class EmailConnectorService {
     if (!emailConnector.isActive()) {
       emailManagedModeService.checkConnectorNotManaged(previousEmailConnector.getId());
     }
+    // Judged before the configuration write below replaces the stored one it compares with.
+    boolean authenticationChanged = isProviderChange(previousEmailConnector, emailConnector)
+        || isMailServerChange(previousEmailConnector, emailConnector)
+        || isProviderConfigChange(previousEmailConnector, emailConnector.getProviderConfig());
     // The configuration is written before the row. When the provider changes, its keys
     // carry the new provider's name, so the configuration the connector still uses is
     // untouched: a failed configuration write leaves the connector as it was, and a
@@ -827,12 +833,71 @@ public class EmailConnectorService {
       // authentication changed for all of them.
       eventPublisher.publishEvent(new EmailConnectorProviderChangedEvent(previousEmailConnector.getId()));
     }
-    if (isProviderChange(previousEmailConnector, emailConnector) || MapUtils.isNotEmpty(emailConnector.getProviderConfig())) {
-      // The users managed mode could not connect were refused by the authentication
-      // this save replaces - another provider, or another technical account: they are
-      // offered the connection again.
+    if (authenticationChanged) {
+      // The users managed mode could not connect were refused by the mail server
+      // settings this save replaces - another provider, another technical account, a
+      // secret typed again, another host, port or security: they are offered the
+      // connection again. An edit of the name, the icon or the webmail address leaves
+      // the refusals in place: the drawer posts the stored configuration back with
+      // every save, so a configuration being present does not mean it changed.
       eventPublisher.publishEvent(new EmailConnectorAuthenticationChangedEvent(previousEmailConnector.getId()));
     }
+  }
+
+  /**
+   * Whether an edit changes where the connector's mailboxes are reached: the IMAP or
+   * SMTP host or port, or the SMTP security type. Compared as the storage writes them,
+   * trimmed, with a blank value the same as none.
+   *
+   * @param previousEmailConnector the connector as it was stored
+   * @param emailConnector the connector as posted, its server fields already trimmed
+   * @return true when one of those fields changes
+   */
+  private static boolean isMailServerChange(EmailConnector previousEmailConnector, EmailConnector emailConnector) {
+    return isServerValueChange(previousEmailConnector.getImapUrl(), emailConnector.getImapUrl())
+        || isServerValueChange(previousEmailConnector.getImapPort(), emailConnector.getImapPort())
+        || isServerValueChange(previousEmailConnector.getSmtpUrl(), emailConnector.getSmtpUrl())
+        || isServerValueChange(previousEmailConnector.getSmtpPort(), emailConnector.getSmtpPort())
+        || isServerValueChange(previousEmailConnector.getSmtpSecurityType(), emailConnector.getSmtpSecurityType());
+  }
+
+  private static boolean isServerValueChange(String storedValue, String postedValue) {
+    return !StringUtils.equals(StringUtils.trimToNull(storedValue), StringUtils.trimToNull(postedValue));
+  }
+
+  /**
+   * Whether a posted provider configuration differs from the one stored for the
+   * connector's provider, read as the storage would write it: an empty map writes
+   * nothing; an optional value left blank or out of the map is removed, so it equals an
+   * absent one, and a required one refuses the whole store before any event; a secret
+   * left blank or out is kept while every text value is unchanged. The stored values
+   * are read without their secrets,
+   * so a secret typed again differs from the absent stored one and counts as a change,
+   * and a blank one, which the storage keeps, does not.
+   *
+   * @param previousEmailConnector the connector as it was stored, for its id and provider
+   * @param postedConfig what the drawer posted, possibly null
+   * @return true when storing the posted configuration changes what is stored
+   */
+  private boolean isProviderConfigChange(EmailConnector previousEmailConnector, Map<String, String> postedConfig) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(postedConfig)) {
+      return false;
+    }
+    Map<String, String> storedValues = Map.of();
+    if (StringUtils.isNotBlank(previousEmailConnector.getAuthProviderName())) {
+      ConnectorCredentialsContext context = providerConfigContext(previousEmailConnector.getId(),
+                                                                  previousEmailConnector.getAuthProviderName());
+      storedValues = MapUtils.emptyIfNull(providerConfigStorage.readWithoutSecrets(context));
+    }
+    Set<String> keys = new HashSet<>(postedConfig.keySet());
+    keys.addAll(storedValues.keySet());
+    for (String key : keys) {
+      String postedValue = StringUtils.isBlank(postedConfig.get(key)) ? null : postedConfig.get(key);
+      if (!StringUtils.equals(postedValue, storedValues.get(key))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
