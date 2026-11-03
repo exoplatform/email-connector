@@ -767,21 +767,24 @@ public class UserEmailSettingService {
    * is a database read that credentials never need. Nothing may cache on top of
    * this read: it would be a second cache over one value, with its own invalidation
    * lifecycle.
+   * <p>
+   * A stored value that is not a mail setting reads as no configured mailbox, never
+   * as a failure: the value is the user's own, and their settings context is also
+   * writable through the platform's generic settings REST, around every check this
+   * service makes on save (EXO-91325).
    *
    * @param username the eXo login
    * @return the stored setting, or an empty one when the user has no configured
-   *         mailbox
+   *         mailbox, or a stored value that does not read as one
    */
   public UserEmailSetting getStoredUserEmailSetting(String username) {
     SettingValue<?> userEmailSettingValue = settingService.get(Context.USER.id(username),
                                                                EMAIL_CONNECTOR_SCOPE,
                                                                USER_EMAIL_SETTING_KEY);
-    if (userEmailSettingValue == null) {
-      return new UserEmailSetting();
-    }
-    UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
-                                                                       UserEmailSetting.class);
-    if (storedUserEmailSetting.getEmailConnectorId() == null) {
+    UserEmailSetting storedUserEmailSetting = userEmailSettingValue == null ? null
+                                                                            : parseStoredUserEmailSetting(userEmailSettingValue.getValue(),
+                                                                                                          username);
+    if (storedUserEmailSetting == null) {
       return new UserEmailSetting();
     }
     String storedPassword = storedUserEmailSetting.getEmailPassword();
@@ -1656,5 +1659,54 @@ public class UserEmailSettingService {
       return null;
     }
     return entity.getEmailPassword();
+  }
+
+  /**
+   * The stored document, when it names a connector every reader can parse.
+   * <p>
+   * The parse failure is caught as {@code Exception}, not {@code RuntimeException}:
+   * social's {@code JsonUtils} lets Jackson's checked exception out sneakily, past
+   * any caller's {@code RuntimeException} guard. Its message is logged at DEBUG
+   * only, since Jackson quotes the source, which may carry the encoded password.
+   *
+   * @param value the stored value
+   * @param username the eXo login, for the log line
+   * @return the parsed document, or null when it names no connector or does not read
+   *         as a mail setting at all
+   */
+  private UserEmailSetting parseStoredUserEmailSetting(Object value, String username) {
+    UserEmailSetting stored;
+    try {
+      stored = value == null ? null : JsonUtils.fromJsonString(value.toString(), UserEmailSetting.class);
+    } catch (Exception e) {
+      LOG.warn("The stored mail setting of user {} is unreadable ({}); read as no configured mailbox",
+               username,
+               e.getClass().getSimpleName());
+      LOG.debug("The stored mail setting of user {} is unreadable", username, e);
+      return null;
+    }
+    if (stored == null || stored.getEmailConnectorId() == null) {
+      return null;
+    }
+    if (!isConnectorId(stored.getEmailConnectorId())) {
+      LOG.warn("The stored mail setting of user {} names no connector id; read as no configured mailbox", username);
+      return null;
+    }
+    return stored;
+  }
+
+  /**
+   * Whether a stored connector id is one the readers' {@code Long.parseLong} accepts.
+   *
+   * @param value the stored connector id
+   * @return true when it parses as a long
+   */
+  private static boolean isConnectorId(String value) {
+    try {
+      Long.parseLong(value);
+      return true;
+    } catch (NumberFormatException e) {
+      return false;
+    }
   }
 }
