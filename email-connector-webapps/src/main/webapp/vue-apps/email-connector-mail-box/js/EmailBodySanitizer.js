@@ -48,19 +48,30 @@ const FORBIDDEN_TAGS = [
  * Attributes removed on top of the profile's own list: the ones that make a request
  * or name a target on their own, which no formatting needs, and `rel`, whose
  * `opener` link type would hand the tab a link opens a handle on the reader's page,
- * where the frame's base otherwise opens every link without one.
+ * where the frame's base otherwise opens every link without one. Then the attributes
+ * DOMPurify's default allow-list gained after 2.3.8: no mail needs them, and some act
+ * on another element by its id (`popovertarget`, `commandfor`).
  */
-const FORBIDDEN_ATTRIBUTES = ['action', 'formaction', 'ping', 'srcdoc', 'poster', 'background', 'usemap', 'ismap', 'autofocus', 'open', 'rel'];
+const FORBIDDEN_ATTRIBUTES = [
+  'action', 'formaction', 'ping', 'srcdoc', 'poster', 'background', 'usemap', 'ismap', 'autofocus', 'open', 'rel',
+  'command', 'commandfor', 'exportparts', 'inert', 'part', 'popover', 'popovertarget', 'popovertargetaction', 'wrap',
+  'amplitude', 'dominant-baseline', 'exponent', 'intercept', 'mask-type', 'pointer-events', 'slope', 'tablevalues',
+  'text-orientation', 'vector-effect', 'columnalign', 'columnspacing',
+];
 
 /**
  * The purifier's settings. The HTML profile alone: no SVG and no MathML, which carry
  * their own script surfaces and which mail does not use. The whole document is kept
  * so that a style sheet the sender put in the head survives; the reader takes it from
- * there. Data attributes are dropped: the frame runs nothing that would read them.
+ * there. Data attributes are dropped: the frame runs nothing that would read them, and
+ * so is an attribute value holding `/>`, as DOMPurify dropped it up to 2.3.8. Links keep
+ * the URI schemes DOMPurify allowed up to 2.3.8: it later added `sms:` and `matrix:`.
  */
 const CONFIG = {
   USE_PROFILES: { html: true },
   WHOLE_DOCUMENT: true,
+  ALLOW_SELF_CLOSE_IN_ATTR: false,
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i,
   FORBID_TAGS: FORBIDDEN_TAGS,
   FORBID_ATTR: FORBIDDEN_ATTRIBUTES,
   ALLOW_DATA_ATTR: false,
