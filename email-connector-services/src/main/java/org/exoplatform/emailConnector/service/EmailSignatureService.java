@@ -517,9 +517,11 @@ public class EmailSignatureService {
    * Sanitizes the user's own markup with the platform's OWASP-backed
    * sanitizer — the one that actually strips scripts, not the link-transform
    * facade. Applied at save, and again on every read: the stored document is
-   * not trusted to have come through the save. The sanitizer gives its own
-   * output back unchanged, so markup sanitized at save reads back as stored,
-   * with no entity encoded twice.
+   * not trusted to have come through the save. Sanitizing already sanitized
+   * markup again encodes no entity twice and lets nothing back in. It can still
+   * change it: a link's own {@code rel} value gives way to the one the
+   * sanitizer sets, and a change of the sanitizer's policy or of its allowed
+   * iframe hosts applies on read.
    *
    * @param customHtml the markup as submitted or stored, may be null
    * @return the sanitized markup, or null when there was none

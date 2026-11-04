@@ -298,13 +298,14 @@ class EmailSignatureServiceTest {
   }
 
   /**
-   * Markup sanitized at save reads back exactly as stored: sanitizing it again
-   * on read encodes no entity twice, ampersands, at signs, quotes and a link's
-   * query included.
+   * Sanitizing on read encodes no entity of markup sanitized at save twice:
+   * ampersands, at signs, quotes and a link's query come back as stored. This
+   * markup, whose link carries no {@code rel} of its own, reads back unchanged;
+   * a link's own {@code rel} value would give way to the sanitizer's.
    */
   @Test
   @SneakyThrows
-  void aSanitizedSignatureReadsBackUnchanged() {
+  void aSanitizedSignatureIsNotEncodedTwiceOnRead() {
     String submitted = "<p>Ada &amp; Co &lt;3 — ada@example.com</p>"
         + "<p><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\">site</a> \"q\" 'a' = +</p>";
     emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(true, submitted, null, false, null));
@@ -314,7 +315,7 @@ class EmailSignatureServiceTest {
 
     String readHtml = emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
 
-    assertEquals(storedHtml, readHtml, "the markup sanitized at save reads back unchanged");
+    assertEquals(storedHtml, readHtml, "this markup sanitized at save reads back unchanged");
     assertFalse(readHtml.contains("&amp;amp;"), "no ampersand encoded twice");
     assertFalse(readHtml.contains("&amp;#"), "no numeric entity encoded twice");
   }
