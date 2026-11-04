@@ -493,6 +493,29 @@ class EmailSignatureServiceTest {
   }
 
   /**
+   * When the file store fails to answer for the stored image id, the check
+   * fails closed: the signature carries the company logo, the named file's
+   * bytes are not fetched, and neither removing the image nor disconnecting
+   * the mailbox deletes that file.
+   */
+  @Test
+  @SneakyThrows
+  void aStoredIdWhoseCheckFailsIsNeitherServedNorDeleted() {
+    givenACompanyLogo("company logo bytes");
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    when(fileService.getFileInfo(42L)).thenThrow(new IllegalStateException("file store unavailable"));
+
+    EmailSignatureLogo logo = emailSignatureService.getSignatureLogo(TEST_USER);
+    emailSignatureService.deleteSignatureLogo(TEST_USER);
+    emailSignatureService.deleteEmailSignature(TEST_USER);
+
+    assertEquals("company logo bytes", new String(logo.bytes(), StandardCharsets.UTF_8),
+                 "the company logo stands in for an image that cannot be checked");
+    verify(fileService, never()).getFile(42L);
+    verify(fileService, never()).deleteFile(42L);
+  }
+
+  /**
    * The signature the settings screen and the composer read reports the user's
    * own image as theirs, versioned by its file id.
    */
