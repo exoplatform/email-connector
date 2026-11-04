@@ -60,6 +60,7 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.EmailSignatureSetting;
 import org.exoplatform.portal.branding.BrandingService;
 import org.exoplatform.portal.branding.model.Logo;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -67,6 +68,8 @@ import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
+
+import io.meeds.social.util.JsonUtils;
 
 import lombok.SneakyThrows;
 
@@ -274,6 +277,46 @@ class EmailSignatureServiceTest {
     assertTrue(storedJson.contains("fine"), "the honest part of the markup survives");
     assertFalse(storedJson.contains("<script>"), "the script does not");
     assertFalse(storedJson.contains("alert(1)"), "not even as text");
+  }
+
+  /**
+   * The custom markup is sanitized when read, whatever the stored document
+   * holds: markup that did not come through the save loses its script and its
+   * event handler before the composer or the settings screen gets it.
+   */
+  @Test
+  void aStoredCustomSignatureIsSanitizedWhenRead() {
+    givenAStoredSetting("{\"enabled\":true,\"customHtml\":\"<p>fine</p><script>alert(1)</script><img src=x onerror=alert(2)>\"}");
+
+    String customHtml = emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
+
+    assertTrue(customHtml.contains("fine"), "the honest part of the markup survives");
+    assertFalse(customHtml.contains("<script"), "the script does not");
+    assertFalse(customHtml.contains("alert(1)"), "not even as text");
+    assertFalse(customHtml.contains("onerror"), "nor the event handler");
+    assertFalse(customHtml.contains("alert(2)"), "nor its code");
+  }
+
+  /**
+   * Markup sanitized at save reads back exactly as stored: sanitizing it again
+   * on read encodes no entity twice, ampersands, at signs, quotes and a link's
+   * query included.
+   */
+  @Test
+  @SneakyThrows
+  void aSanitizedSignatureReadsBackUnchanged() {
+    String submitted = "<p>Ada &amp; Co &lt;3 — ada@example.com</p>"
+        + "<p><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\">site</a> \"q\" 'a' = +</p>";
+    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(true, submitted, null, false, null));
+    String storedJson = storedSignatureJson();
+    String storedHtml = JsonUtils.fromJsonString(storedJson, EmailSignatureSetting.class).getCustomHtml();
+    givenAStoredSetting(storedJson);
+
+    String readHtml = emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
+
+    assertEquals(storedHtml, readHtml, "the markup sanitized at save reads back unchanged");
+    assertFalse(readHtml.contains("&amp;amp;"), "no ampersand encoded twice");
+    assertFalse(readHtml.contains("&amp;#"), "no numeric entity encoded twice");
   }
 
   /**

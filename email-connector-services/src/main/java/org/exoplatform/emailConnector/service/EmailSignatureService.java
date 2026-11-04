@@ -137,7 +137,8 @@ public class EmailSignatureService {
   /**
    * The caller's signature as the settings screen and the composer consume it:
    * the stored preference plus the default computed from the profile as it
-   * stands right now.
+   * stands right now. The custom markup is sanitized on the way out as it is on
+   * the way in.
    *
    * @param username the signature's owner
    * @return the signature, never null
@@ -146,7 +147,7 @@ public class EmailSignatureService {
     EmailSignatureSetting setting = getStoredSetting(username);
     Long logoFileId = ownLogoFileId(username, setting);
     return new EmailSignature(setting.getEnabled(),
-                              setting.getCustomHtml(),
+                              sanitize(setting.getCustomHtml()),
                               buildDefaultSignature(username, logoFileId),
                               logoFileId != null,
                               logoImage(logoFileId));
@@ -515,10 +516,12 @@ public class EmailSignatureService {
   /**
    * Sanitizes the user's own markup with the platform's OWASP-backed
    * sanitizer — the one that actually strips scripts, not the link-transform
-   * facade. Sanitized at SAVE so the stored document is already safe for every
-   * render that follows.
+   * facade. Applied at save, and again on every read: the stored document is
+   * not trusted to have come through the save. The sanitizer gives its own
+   * output back unchanged, so markup sanitized at save reads back as stored,
+   * with no entity encoded twice.
    *
-   * @param customHtml the markup as the user submitted it, may be null
+   * @param customHtml the markup as submitted or stored, may be null
    * @return the sanitized markup, or null when there was none
    */
   private String sanitize(String customHtml) {
