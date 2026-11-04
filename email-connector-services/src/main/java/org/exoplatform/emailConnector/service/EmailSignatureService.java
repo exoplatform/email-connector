@@ -577,14 +577,14 @@ public class EmailSignatureService {
    * preference — or null when the preference names no file, or names any file
    * other than the one this service wrote as that user's signature image.
    * <p>
-   * The file store keeps no owner of its own, and the add-on's namespace is
-   * shared with the contact photos, the connector illustrations and the draft
-   * attachments, which are stored with no updater and under any name. So a
-   * file counts as the user's image only
-   * when all three hold: the add-on's namespace, the signature image's name,
-   * and this user as its updater, which {@link #writeLogoFile} records. A file
-   * with no updater cannot be tied to anyone and is never treated as an image
-   * of this user: it is neither served nor deleted.
+   * The add-on's namespace is shared with the contact photos and the connector
+   * illustrations, stored under names of their own, and with the draft
+   * attachments, stored under the attachment's name, all with no updater. The
+   * store enforces no owner, so a file counts as the user's image only when all
+   * three hold: the add-on's namespace, the signature image's name, and this
+   * user as its updater, which {@link #writeLogoFile} records. A file with no
+   * updater cannot be tied to anyone and is never treated as an image of this
+   * user: it is neither served nor deleted.
    *
    * @param username the signature's owner
    * @param setting the stored preference
