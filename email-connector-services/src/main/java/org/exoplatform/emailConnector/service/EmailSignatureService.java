@@ -31,6 +31,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.HTMLSanitizer;
@@ -64,6 +65,11 @@ import io.meeds.social.util.JsonUtils;
  * {@link #getSignatureLogo}) — a platform URL is behind a login and a
  * {@code data:} URI is stripped by Gmail and Outlook, so embedding the bytes as
  * a {@code cid:} part is the only form an external recipient renders.
+ * <p>
+ * The stored preference names the user's image by its file id, and that id is
+ * honoured only for a file this service wrote as that user's signature image
+ * (see {@code ownLogoFileId}): any other id is ignored on every path that reads,
+ * sends or deletes the image.
  * <p>
  * Storage is a settings document of its own — see
  * {@link org.exoplatform.emailConnector.model.EmailSignatureSetting} for why it
@@ -138,11 +144,12 @@ public class EmailSignatureService {
    */
   public EmailSignature getEmailSignature(String username) {
     EmailSignatureSetting setting = getStoredSetting(username);
+    Long logoFileId = ownLogoFileId(username, setting);
     return new EmailSignature(setting.getEnabled(),
                               setting.getCustomHtml(),
-                              buildDefaultSignature(username, setting),
-                              setting.getLogoFileId() != null,
-                              logoImage(setting));
+                              buildDefaultSignature(username, logoFileId),
+                              logoFileId != null,
+                              logoImage(logoFileId));
   }
 
   /**
@@ -173,7 +180,8 @@ public class EmailSignatureService {
    * platform's cropper, stored as a file of the add-on's own namespace. Always
    * a fresh file, never an update in place — the file id doubles as the cache
    * version of the image URL, so replacing bytes under a stable id would leave
-   * every browser showing the old picture.
+   * every browser showing the old picture. The replaced file is deleted only
+   * when it is the user's own signature image.
    *
    * @param username the signature's owner
    * @param uploadId the upload id the crop drawer produced
@@ -188,19 +196,20 @@ public class EmailSignatureService {
     if (StringUtils.isBlank(mimeType) || !mimeType.toLowerCase().startsWith("image/")) {
       throw new IllegalArgumentException(LOGO_NOT_AN_IMAGE_MESSAGE);
     }
-    Long storedFileId = writeLogoFile(uploadResource, mimeType);
+    Long storedFileId = writeLogoFile(username, uploadResource, mimeType);
     if (storedFileId == null) {
       throw new IllegalStateException(String.format("The signature image of user %s could not be written", username));
     }
     EmailSignatureSetting setting = getStoredSetting(username);
-    deleteLogoFile(setting.getLogoFileId());
+    deleteLogoFile(ownLogoFileId(username, setting));
     setting.setLogoFileId(storedFileId);
     storeSetting(username, setting);
   }
 
   /**
    * Puts the signature image back to the company logo, deleting the user's own
-   * file.
+   * file. A stored id that names any other file is forgotten, and that file is
+   * left as it is.
    *
    * @param username the signature's owner
    */
@@ -209,15 +218,15 @@ public class EmailSignatureService {
     if (setting.getLogoFileId() == null) {
       return;
     }
-    deleteLogoFile(setting.getLogoFileId());
+    deleteLogoFile(ownLogoFileId(username, setting));
     setting.setLogoFileId(null);
     storeSetting(username, setting);
   }
 
   /**
    * The image the caller's signature carries — their own uploaded file when
-   * they set one, the platform's branding logo otherwise, and null when neither
-   * has any bytes. This is what the send path embeds as a
+   * the stored id names one, the platform's branding logo otherwise, and null
+   * when neither has any bytes. This is what the send path embeds as a
    * {@code multipart/related} part: the ONLY form of the image every recipient
    * can render, since a platform URL answers a login page to anyone outside and
    * a {@code data:} URI is stripped by Gmail and Outlook.
@@ -226,10 +235,10 @@ public class EmailSignatureService {
    * @return the image, or null when there is none to embed
    */
   public EmailSignatureLogo getSignatureLogo(String username) {
-    EmailSignatureSetting setting = getStoredSetting(username);
-    if (setting.getLogoFileId() != null) {
+    Long logoFileId = ownLogoFileId(username, getStoredSetting(username));
+    if (logoFileId != null) {
       try {
-        FileItem fileItem = fileService.getFile(setting.getLogoFileId());
+        FileItem fileItem = fileService.getFile(logoFileId);
         if (fileItem != null && fileItem.getAsByte() != null) {
           String mimeType = fileItem.getFileInfo() == null ? null : fileItem.getFileInfo().getMimetype();
           return new EmailSignatureLogo(fileItem.getAsByte(),
@@ -251,13 +260,14 @@ public class EmailSignatureService {
    * Forgets everything the signature stored for this user — the preference
    * document and their own image file. What disconnecting the mailbox implies:
    * the signature belongs to the mail account's composer, and a preference
-   * about an account that no longer exists is a leak, not a memory.
+   * about an account that no longer exists is a leak, not a memory. Only the
+   * user's own signature image is deleted, never another file the stored id
+   * names.
    *
    * @param username the signature's owner
    */
   public void deleteEmailSignature(String username) {
-    EmailSignatureSetting setting = getStoredSetting(username);
-    deleteLogoFile(setting.getLogoFileId());
+    deleteLogoFile(ownLogoFileId(username, getStoredSetting(username)));
     settingService.remove(Context.USER.id(username), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, EMAIL_SIGNATURE_KEY);
   }
 
@@ -277,10 +287,11 @@ public class EmailSignatureService {
    * something to insert when the user has deleted it and wants it back.
    *
    * @param username the user the signature is for
-   * @param setting the user's stored signature settings
+   * @param logoFileId the user's own signature image file id, or null when the
+   *          signature carries the company logo
    * @return the composed markup, or an empty string when the profile says nothing
    */
-  private String buildDefaultSignature(String username, EmailSignatureSetting setting) {
+  private String buildDefaultSignature(String username, Long logoFileId) {
     Identity identity = identityManager == null ? null : identityManager.getOrCreateUserIdentity(username);
     Profile profile = identity == null ? null : identity.getProfile();
     if (profile == null) {
@@ -296,7 +307,7 @@ public class EmailSignatureService {
     // up and move, resize, or delete outright -- which is the only way to put it
     // beside the name instead of under it, and the only way to have a signature with
     // no picture at all. Put it back with the drawer's insert action.
-    String logo = block(logoImage(setting));
+    String logo = block(logoImage(logoFileId));
     return StringUtils.defaultString(who) + StringUtils.defaultString(reach) + StringUtils.defaultString(where)
         + StringUtils.defaultString(logo);
   }
@@ -375,13 +386,14 @@ public class EmailSignatureService {
    * part. The version parameter is the custom file's id or the branding's own
    * update time, so replacing the image is a new URL rather than a stale cache.
    *
-   * @param setting the stored preference, carrying the custom file id if any
+   * @param logoFileId the user's own signature image file id, or null when the
+   *          signature carries the company logo
    * @return the {@code <img>} markup, or null when there is no image to show
    */
-  private String logoImage(EmailSignatureSetting setting) {
+  private String logoImage(Long logoFileId) {
     long version;
-    if (setting.getLogoFileId() != null) {
-      version = setting.getLogoFileId();
+    if (logoFileId != null) {
+      version = logoFileId;
     } else {
       Logo companyLogo = brandingService.getLogo();
       if (companyLogo == null || companyLogo.getData() == null || companyLogo.getData().length == 0) {
@@ -558,14 +570,65 @@ public class EmailSignatureService {
   }
 
   /**
-   * Writes an uploaded image into the add-on's file namespace, following the
-   * contact-photo shape.
+   * The id of the user's own signature image, read from their stored
+   * preference — or null when the preference names no file, or names any file
+   * other than the one this service wrote as that user's signature image.
+   * <p>
+   * The file store keeps no owner of its own, and the add-on's namespace is
+   * shared with the contact photos, the connector illustrations and the draft
+   * attachments, which are stored with no updater and under any name. So a
+   * file counts as the user's image only
+   * when all three hold: the add-on's namespace, the signature image's name,
+   * and this user as its updater, which {@link #writeLogoFile} records. A file
+   * with no updater cannot be tied to anyone and is never treated as an image
+   * of this user: it is neither served nor deleted.
    *
+   * @param username the signature's owner
+   * @param setting the stored preference
+   * @return the file id when it names the user's own signature image, else null
+   */
+  private Long ownLogoFileId(String username, EmailSignatureSetting setting) {
+    Long logoFileId = setting.getLogoFileId();
+    if (logoFileId == null || logoFileId <= 0) {
+      return null;
+    }
+    FileInfo fileInfo;
+    try {
+      fileInfo = fileService.getFileInfo(logoFileId);
+    } catch (Exception e) {
+      LOG.warn("The signature image file {} of user {} could not be checked; it is ignored", logoFileId, username, e);
+      return null;
+    }
+    if (fileInfo == null) {
+      LOG.debug("The signature image file {} of user {} no longer exists; it is ignored", logoFileId, username);
+      return null;
+    }
+    boolean signatureImageShape = EmailConnectorStorage.NAME_SPACE.equals(fileInfo.getNameSpace())
+        && SIGNATURE_LOGO_FILE_NAME.equals(fileInfo.getName());
+    if (signatureImageShape && username.equals(fileInfo.getUpdater())) {
+      return logoFileId;
+    }
+    if (signatureImageShape && fileInfo.getUpdater() == null) {
+      LOG.debug("The signature image file {} of user {} records no owner; it is ignored", logoFileId, username);
+    } else {
+      LOG.warn("The file {} named in the signature of user {} is not that user's signature image; it is ignored",
+               logoFileId,
+               username);
+    }
+    return null;
+  }
+
+  /**
+   * Writes an uploaded image into the add-on's file namespace, following the
+   * contact-photo shape, with the user recorded as the file's updater: that is
+   * what {@link #ownLogoFileId} recognises the user's own image by.
+   *
+   * @param username the signature's owner
    * @param uploadResource the upload to consume
    * @param mimeType its content type, already checked to be an image
    * @return the stored file id, or null when the file store wrote nothing
    */
-  private Long writeLogoFile(UploadResource uploadResource, String mimeType) {
+  private Long writeLogoFile(String username, UploadResource uploadResource, String mimeType) {
     try {
       byte[] bytes = IOUtil.getFileContentAsBytes(uploadResource.getStoreLocation());
       FileItem fileItem = new FileItem(null,
@@ -574,7 +637,7 @@ public class EmailSignatureService {
                                        EmailConnectorStorage.NAME_SPACE,
                                        bytes.length,
                                        new Date(),
-                                       null,
+                                       username,
                                        false,
                                        new ByteArrayInputStream(bytes));
       FileItem stored = fileService.writeFile(fileItem);
@@ -588,6 +651,7 @@ public class EmailSignatureService {
   /**
    * Deletes a stored signature image file, tolerating a file that is already
    * gone — the cleanup of a replaced or reset image must never fail its caller.
+   * Callers pass only an id {@link #ownLogoFileId} returned.
    *
    * @param logoFileId the file id, ignored when null or unset
    */

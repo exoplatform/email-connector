@@ -37,10 +37,14 @@ import java.nio.file.Path;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -331,6 +335,7 @@ class EmailSignatureServiceTest {
                  "with nothing stored, the branding logo is the image");
 
     givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
     when(fileService.getFile(42L)).thenReturn(fileItemOf(42L, "my own logo", "image/jpeg"));
     EmailSignatureLogo customLogo = emailSignatureService.getSignatureLogo(TEST_USER);
     assertEquals("my own logo", new String(customLogo.bytes(), StandardCharsets.UTF_8), "the custom file wins");
@@ -350,6 +355,7 @@ class EmailSignatureServiceTest {
   @SneakyThrows
   void aCroppedUploadReplacesTheSignatureImage(@TempDir Path tempDir) {
     givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
     givenAnUpload("up1", tempDir, "cropped bytes", "image/png");
     when(fileService.writeFile(any(FileItem.class))).thenReturn(fileItemOf(43L, "cropped bytes", "image/png"));
 
@@ -387,10 +393,182 @@ class EmailSignatureServiceTest {
   @Test
   void disconnectingTheMailboxDeletesTheSignatureAndItsImageFile() {
     givenAStoredSetting("{\"enabled\":true,\"customHtml\":\"<p>mine</p>\",\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
 
     emailSignatureService.deleteEmailSignature(TEST_USER);
 
     verify(fileService).deleteFile(42L);
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  EmailSignatureService.EMAIL_SIGNATURE_KEY);
+  }
+
+  /**
+   * The files a stored image id may name that are not the user's own signature
+   * image: another user's image, an image that records no owner, a file of
+   * another namespace, a file of another name in the add-on's namespace, and a
+   * file that no longer exists.
+   *
+   * @return one row per such file: its description and its file info (null for
+   *         the file that no longer exists)
+   */
+  static Stream<Arguments> filesThatAreNotTheUsersOwnImage() {
+    return Stream.of(Arguments.of("another user's signature image",
+                                  fileInfoOf(42L, "emailConnector", "signature-logo", "mary")),
+                     Arguments.of("a signature-shaped file that records no owner",
+                                  fileInfoOf(42L, "emailConnector", "signature-logo", null)),
+                     Arguments.of("a file of another namespace",
+                                  fileInfoOf(42L, "otherModule", "signature-logo", TEST_USER)),
+                     Arguments.of("another file of the add-on's namespace",
+                                  fileInfoOf(42L, "emailConnector", "contact-photo", TEST_USER)),
+                     Arguments.of("a file that no longer exists", null));
+  }
+
+  /**
+   * A stored image id that does not name the user's own signature image is
+   * never read: the signature carries the company logo, and the named file's
+   * bytes are not even fetched. Each row kills the mutant that drops one of the
+   * three conditions, or accepts a file with no recorded owner.
+   *
+   * @param description what the stored id names
+   * @param fileInfo that file's info, as the file store answers it
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("filesThatAreNotTheUsersOwnImage")
+  @SneakyThrows
+  void aStoredIdThatIsNotTheUsersOwnImageIsNeverServed(String description, FileInfo fileInfo) {
+    givenACompanyLogo("company logo bytes");
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    when(fileService.getFileInfo(42L)).thenReturn(fileInfo);
+
+    EmailSignatureLogo logo = emailSignatureService.getSignatureLogo(TEST_USER);
+
+    assertEquals("company logo bytes", new String(logo.bytes(), StandardCharsets.UTF_8),
+                 "the company logo stands in for " + description);
+    verify(fileService, never()).getFile(42L);
+  }
+
+  /**
+   * The signature the settings screen and the composer read reports the user's
+   * own image as theirs, versioned by its file id.
+   */
+  @Test
+  void theUsersOwnImageIsReportedAsTheCustomImage() {
+    givenAProfile(profile -> profile.setProperty(Profile.FULL_NAME, "Ada"));
+    givenACompanyLogo("company logo bytes");
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
+
+    EmailSignature signature = emailSignatureService.getEmailSignature(TEST_USER);
+
+    assertTrue(signature.isCustomLogo(), "the user's own image is reported as theirs");
+    assertTrue(signature.getLogoHtml().contains("?v=42"), "and its file id versions the image address");
+  }
+
+  /**
+   * A stored image id that names another user's image is neither reported as
+   * the user's own image nor used as the image address's version: the
+   * signature reads as the company logo's.
+   */
+  @Test
+  void aRefusedIdIsNeitherTheCustomImageNorItsVersion() {
+    givenAProfile(profile -> profile.setProperty(Profile.FULL_NAME, "Ada"));
+    givenACompanyLogo("company logo bytes");
+    when(brandingService.getLastUpdatedTime()).thenReturn(7L);
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenAnotherUsersImage(42L);
+
+    EmailSignature signature = emailSignatureService.getEmailSignature(TEST_USER);
+
+    assertFalse(signature.isCustomLogo(), "another user's image is not reported as the user's own");
+    assertTrue(signature.getLogoHtml().contains("?v=7"), "the image address carries the company logo's version");
+    assertFalse(signature.getLogoHtml().contains("?v=42"), "never the refused file id");
+    assertFalse(signature.getDefaultHtml().contains("?v=42"), "in the default signature either");
+  }
+
+  /**
+   * The image an upload writes records its user as the file's updater, in the
+   * add-on's namespace and under the signature image's name: the three marks
+   * every later read, send and delete recognises the user's own image by.
+   */
+  @Test
+  @SneakyThrows
+  void theWrittenImageCarriesItsOwner(@TempDir Path tempDir) {
+    givenAnUpload("up3", tempDir, "cropped bytes", "image/png");
+    when(fileService.writeFile(any(FileItem.class))).thenReturn(fileItemOf(43L, "cropped bytes", "image/png"));
+
+    emailSignatureService.saveSignatureLogo(TEST_USER, "up3");
+
+    ArgumentCaptor<FileItem> written = ArgumentCaptor.forClass(FileItem.class);
+    verify(fileService).writeFile(written.capture());
+    FileInfo writtenInfo = written.getValue().getFileInfo();
+    assertEquals(TEST_USER, writtenInfo.getUpdater(), "the user is recorded as the image's owner");
+    assertEquals("emailConnector", writtenInfo.getNameSpace(), "in the add-on's namespace");
+    assertEquals("signature-logo", writtenInfo.getName(), "under the signature image's name");
+  }
+
+  /**
+   * Replacing the image never deletes a file the stored id names that is not
+   * the user's own image; the fresh file's id takes the stored id's place.
+   */
+  @Test
+  @SneakyThrows
+  void replacingTheImageKeepsAFileItDoesNotOwn(@TempDir Path tempDir) {
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenAnotherUsersImage(42L);
+    givenAnUpload("up4", tempDir, "cropped bytes", "image/png");
+    when(fileService.writeFile(any(FileItem.class))).thenReturn(fileItemOf(43L, "cropped bytes", "image/png"));
+
+    emailSignatureService.saveSignatureLogo(TEST_USER, "up4");
+
+    verify(fileService, never()).deleteFile(42L);
+    String storedJson = storedSignatureJson();
+    assertTrue(storedJson.contains("43"), "the fresh file's id is stored");
+    assertFalse(storedJson.contains("42"), "in place of the refused one");
+  }
+
+  /**
+   * Removing the image deletes the user's own file and forgets its id.
+   */
+  @Test
+  void removingTheImageDeletesTheUsersOwnFile() {
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
+
+    emailSignatureService.deleteSignatureLogo(TEST_USER);
+
+    verify(fileService).deleteFile(42L);
+    assertFalse(storedSignatureJson().contains("42"), "the id is forgotten");
+  }
+
+  /**
+   * Removing the image never deletes a file the stored id names that is not
+   * the user's own image, and forgets that id all the same.
+   */
+  @Test
+  void removingTheImageKeepsAFileItDoesNotOwnAndForgetsTheId() {
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenAnotherUsersImage(42L);
+
+    emailSignatureService.deleteSignatureLogo(TEST_USER);
+
+    verify(fileService, never()).deleteFile(42L);
+    assertFalse(storedSignatureJson().contains("42"), "the refused id is forgotten");
+  }
+
+  /**
+   * The mailbox-disconnect cleanup, which the connector-wide disconnection and
+   * cleanup run per user too, never deletes a file the stored id names that is
+   * not the user's own image; the stored document still goes.
+   */
+  @Test
+  void disconnectingTheMailboxKeepsAFileItDoesNotOwn() {
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenAnotherUsersImage(42L);
+
+    emailSignatureService.deleteEmailSignature(TEST_USER);
+
+    verify(fileService, never()).deleteFile(42L);
     verify(settingService).remove(Context.USER.id(TEST_USER),
                                   UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                                   EmailSignatureService.EMAIL_SIGNATURE_KEY);
@@ -489,5 +667,51 @@ class EmailSignatureServiceTest {
     FileInfo fileInfo = fileItem.getFileInfo();
     fileInfo.setId(fileId);
     return fileItem;
+  }
+
+  /**
+   * The file store's answer for a file that is the test user's own signature
+   * image.
+   *
+   * @param fileId the stored file's id
+   */
+  private void givenTheUsersOwnImage(long fileId) {
+    when(fileService.getFileInfo(fileId)).thenReturn(fileInfoOf(fileId, "emailConnector", "signature-logo", TEST_USER));
+  }
+
+  /**
+   * The file store's answer for a file that is another user's signature image.
+   *
+   * @param fileId the stored file's id
+   */
+  private void givenAnotherUsersImage(long fileId) {
+    when(fileService.getFileInfo(fileId)).thenReturn(fileInfoOf(fileId, "emailConnector", "signature-logo", "mary"));
+  }
+
+  /**
+   * A stored file's info.
+   *
+   * @param fileId the file's id
+   * @param nameSpace its namespace
+   * @param name its name
+   * @param updater the user recorded as its updater, null for none
+   * @return the file info
+   */
+  private static FileInfo fileInfoOf(long fileId, String nameSpace, String name, String updater) {
+    return new FileInfo(fileId, name, "image/png", nameSpace, 3, new Date(), updater, "checksum", false);
+  }
+
+  /**
+   * The signature document the service stored, as JSON.
+   *
+   * @return the stored document
+   */
+  private String storedSignatureJson() {
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id(TEST_USER)),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailSignatureService.EMAIL_SIGNATURE_KEY),
+                               stored.capture());
+    return stored.getValue().getValue().toString();
   }
 }
