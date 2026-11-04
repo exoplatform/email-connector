@@ -76,6 +76,14 @@ const HTML_ESCAPES = {
   '\'': '&#39;',
 };
 
+/**
+ * The HTML comment markers a mail client such as Outlook writes around the rules of a
+ * style sheet. The CSS parser skips them, but the purifier reads a sheet holding one
+ * as markup and drops the whole sheet.
+ */
+const STYLE_COMMENT_MARKER = /<!--|-->/;
+const STYLE_COMMENT_MARKERS = /<!--|-->/g;
+
 let purifier = null;
 
 /**
@@ -163,6 +171,31 @@ function escapeHtml(text) {
 }
 
 /**
+ * The received body with the comment markers removed from the text of each of its
+ * style sheets, so that the purifier keeps the rules wrapped in them. Only the
+ * markers go: the purifier still drops a sheet holding anything else that reads as
+ * markup. A body none of whose sheets holds a marker is returned as received.
+ *
+ * @param {string} html the body as it was received
+ * @returns {string} the body to purify
+ */
+function withoutStyleCommentMarkers(html) {
+  if (!STYLE_COMMENT_MARKER.test(html)) {
+    return html;
+  }
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const sheets = Array.from(doc.querySelectorAll('style'))
+    .filter(sheet => STYLE_COMMENT_MARKER.test(sheet.textContent));
+  if (!sheets.length) {
+    return html;
+  }
+  sheets.forEach(sheet => {
+    sheet.textContent = sheet.textContent.replace(STYLE_COMMENT_MARKERS, '');
+  });
+  return doc.documentElement.outerHTML;
+}
+
+/**
  * Purifies a received HTML body against the allow-list above, and cuts the result
  * into the sender's style sheets, the document-level attributes and the body markup.
  * <p>
@@ -187,7 +220,7 @@ export function sanitizeMailBody(html, factory) {
   if (!instance) {
     return { styles: '', htmlAttributes: '', bodyAttributes: '', body: escapeHtml(source) };
   }
-  const clean = instance.sanitize(source, CONFIG);
+  const clean = instance.sanitize(withoutStyleCommentMarkers(source), CONFIG);
   const doc = new DOMParser().parseFromString(clean, 'text/html');
   const styles = Array.from(doc.querySelectorAll('head > style'))
     .map(sheet => sheet.textContent)
