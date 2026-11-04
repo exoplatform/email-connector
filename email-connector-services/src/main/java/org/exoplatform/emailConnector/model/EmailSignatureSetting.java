@@ -41,7 +41,8 @@ public class EmailSignatureSetting {
   private Boolean enabled;
 
   /**
-   * The signature as the user rewrote it, already sanitized at save. Null means
+   * The signature as the user rewrote it, sanitized at save and again on every
+   * read by {@code EmailSignatureService}. Null means
    * "never customised": the computed default is used, and keeps following the
    * profile as it changes — which is why null is stored rather than a copy of
    * the default at the time of the first visit.
