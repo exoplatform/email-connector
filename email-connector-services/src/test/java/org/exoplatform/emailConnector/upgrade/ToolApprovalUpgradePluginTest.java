@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.upgrade;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -99,6 +100,17 @@ class ToolApprovalUpgradePluginTest {
     verify(mcpServerToolService).updateToolDefinition(eq("remove_email_category"), any(), any(), any(), eq(true), eq(false));
   }
 
+  /**
+   * A plugin that returns is recorded as done, and a run-once plugin never runs
+   * again: without the tool service it must throw, so that it is attempted
+   * again rather than leaving the tools ungated for good.
+   */
+  @Test
+  void throwsWhenTheToolServiceIsMissing() {
+    ToolApprovalUpgradePlugin plugin = newPluginWithService(null, "mark_read");
+    assertThrows(IllegalStateException.class, () -> plugin.processUpgrade("7.3.0-M18", "7.3.0"));
+  }
+
   @Test
   void readsItsToolNamesFromTheValuesParam() {
     assertEquals(List.of("mark_read", "mark_unread", "remove_email_category"),
@@ -106,6 +118,10 @@ class ToolApprovalUpgradePluginTest {
   }
 
   private ToolApprovalUpgradePlugin newPlugin(String... toolNames) {
+    return newPluginWithService(mcpServerToolService, toolNames);
+  }
+
+  private ToolApprovalUpgradePlugin newPluginWithService(McpServerToolService toolService, String... toolNames) {
     InitParams initParams = new InitParams();
     ValueParam groupId = new ValueParam();
     groupId.setName(UpgradeProductPlugin.PRODUCT_GROUP_ID);
@@ -115,7 +131,7 @@ class ToolApprovalUpgradePluginTest {
     names.setName(ToolApprovalUpgradePlugin.TOOL_NAMES_PARAM);
     names.setValues(new ArrayList<>(List.of(toolNames)));
     initParams.addParameter(names);
-    return new ToolApprovalUpgradePlugin(initParams, mcpServerToolService);
+    return new ToolApprovalUpgradePlugin(initParams, () -> toolService);
   }
 
 }

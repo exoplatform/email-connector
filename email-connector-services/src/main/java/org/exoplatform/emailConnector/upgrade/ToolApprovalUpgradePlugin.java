@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.upgrade;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 import org.exoplatform.commons.upgrade.UpgradeProductPlugin;
 import org.exoplatform.container.ExoContainerContext;
@@ -50,35 +51,38 @@ public class ToolApprovalUpgradePlugin extends UpgradeProductPlugin {
 
   private static final Log     LOG              = ExoLogger.getLogger(ToolApprovalUpgradePlugin.class);
 
-  private final List<String>   toolNames;
+  private final List<String>                   toolNames;
 
-  private McpServerToolService mcpServerToolService;
+  private final Supplier<McpServerToolService> toolServiceLookup;
 
   /**
    * @param initParams the plugin's declared parameters, the tool names among
    *          them
    */
   public ToolApprovalUpgradePlugin(InitParams initParams) {
-    super(initParams);
-    ValuesParam toolNamesParam = initParams.getValuesParam(TOOL_NAMES_PARAM);
-    this.toolNames = toolNamesParam == null ? List.of() : List.copyOf(toolNamesParam.getValues());
+    this(initParams, () -> ExoContainerContext.getService(McpServerToolService.class));
   }
 
   /**
    * @param initParams the plugin's declared parameters
-   * @param mcpServerToolService the MCP server's tool service
+   * @param toolServiceLookup finds the MCP server's tool service, null when
+   *          there is none
    */
-  ToolApprovalUpgradePlugin(InitParams initParams, McpServerToolService mcpServerToolService) {
-    this(initParams);
-    this.mcpServerToolService = mcpServerToolService;
+  ToolApprovalUpgradePlugin(InitParams initParams, Supplier<McpServerToolService> toolServiceLookup) {
+    super(initParams);
+    ValuesParam toolNamesParam = initParams.getValuesParam(TOOL_NAMES_PARAM);
+    this.toolNames = toolNamesParam == null ? List.of() : List.copyOf(toolNamesParam.getValues());
+    this.toolServiceLookup = toolServiceLookup;
   }
 
   @Override
   public void processUpgrade(String oldVersion, String newVersion) {
-    McpServerToolService toolService = getMcpServerToolService();
+    McpServerToolService toolService = toolServiceLookup.get();
     if (toolService == null) {
-      LOG.warn("No MCP server tool service: the approval flag of tools {} is left unchanged", toolNames);
-      return;
+      // A plugin that returns is recorded as done and, run once, never runs
+      // again: a throw keeps it pending
+      throw new IllegalStateException("No MCP server tool service: the approval flag of tools " + toolNames
+          + " is left unchanged, and the upgrade stays pending");
     }
     for (String toolName : toolNames) {
       SimpleToolDefinition toolDefinition = toolService.getToolDefinition(toolName);
@@ -101,13 +105,6 @@ public class ToolApprovalUpgradePlugin extends UpgradeProductPlugin {
    */
   List<String> getToolNames() {
     return toolNames;
-  }
-
-  private McpServerToolService getMcpServerToolService() {
-    if (mcpServerToolService == null) {
-      mcpServerToolService = ExoContainerContext.getService(McpServerToolService.class);
-    }
-    return mcpServerToolService;
   }
 
 }
