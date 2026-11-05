@@ -120,9 +120,9 @@ import io.meeds.social.util.JsonUtils;
  * a COUNTER, a REFRESH or a DECLINECOUNTER is shown as what it is, someone's answer, and
  * is never answered either.
  * <p>
- * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
- * The add-on that holds the user's calendar, when one is installed, is handed the
- * invitation ({@link InvitationLandingService}, EXO-90848): answered, after the REPLY
+ * Nothing lands in a calendar here. The add-on that holds the user's calendar, when
+ * one is installed, is handed the invitation ({@link InvitationLandingService},
+ * EXO-90848): answered, after the REPLY
  * left; added as it is on the user's click, answer or not; removed on their click when
  * its organiser cancelled it. For the user's own mailbox only: a shared mailbox's
  * invitation is its owner's event, and nothing here acts for anybody but the user who
