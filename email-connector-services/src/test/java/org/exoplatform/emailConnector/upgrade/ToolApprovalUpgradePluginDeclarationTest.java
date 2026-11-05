@@ -62,6 +62,8 @@ class ToolApprovalUpgradePluginDeclarationTest {
 
   private static ToolApprovalUpgradePlugin declaredPlugin;
 
+  private static String                    declaredProfiles;
+
   @BeforeAll
   static void readDeclaredPlugin() throws Exception {
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -76,6 +78,7 @@ class ToolApprovalUpgradePluginDeclarationTest {
       }
     }
     assertNotNull(declaration, PLUGIN_NAME + " must be declared in " + CONFIGURATION.toAbsolutePath());
+    declaredProfiles = declaration.getAttribute("profiles");
     declaredPlugin = new ToolApprovalUpgradePlugin(initParams(declaration));
   }
 
@@ -111,6 +114,16 @@ class ToolApprovalUpgradePluginDeclarationTest {
   void runsAfterTheMcpServerToolServiceExists() {
     assertTrue(declaredPlugin.isAsyncUpgradeExecution(),
                "The plugin must run asynchronously, once the Spring contexts started");
+  }
+
+  /**
+   * The plugin uses the MCP server's classes, which an instance without that
+   * add-on lacks: it is declared under the add-on's profile, as the add-on's
+   * other MCP classes are.
+   */
+  @Test
+  void isDeclaredUnderTheMcpServerProfile() {
+    assertEquals("mcp-server", declaredProfiles);
   }
 
   @Test
