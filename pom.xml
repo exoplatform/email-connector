@@ -28,6 +28,8 @@
     <!-- 3rd party libraries versions -->
     <org.exoplatform.commons-exo.version>7.3.x-maintenance-SNAPSHOT</org.exoplatform.commons-exo.version>
     <io.meeds.mcp-server.version>7.3.x-maintenance-SNAPSHOT</io.meeds.mcp-server.version>
+    <!-- The agenda add-on, into which a mail's invitation is landed (AgendaInvitationCalendarPlugin); provided, never shipped -->
+    <addon.exo.agenda.version>7.3.x-maintenance-SNAPSHOT</addon.exo.agenda.version>
     <!-- vCard parsing for the CardDAV address book sync -->
     <ez-vcard.version>0.12.1</ez-vcard.version>
     <!-- iCalendar parsing of the invitations a mail carries: the version the agenda
@@ -50,6 +52,14 @@
         <groupId>io.meeds.mcp-server</groupId>
         <artifactId>mcp-server</artifactId>
         <version>${io.meeds.mcp-server.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- Import versions from the agenda add-on (its landing service, used by AgendaInvitationCalendarPlugin) -->
+      <dependency>
+        <groupId>org.exoplatform.agenda</groupId>
+        <artifactId>agenda-parent</artifactId>
+        <version>${addon.exo.agenda.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
