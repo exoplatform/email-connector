@@ -30,10 +30,12 @@ import org.exoplatform.emailConnector.model.LandedInvitation;
  * invitation in the calendar does not get it twice. The same add-on removes the
  * event when its organiser cancelled it.
  * <p>
- * This add-on depends on no calendar: it asks every bean of this type in the platform
- * at the moment of the click, and asks nobody when there is none. Implementers are
- * ordinary Spring {@code @Service} beans in their own add-on's context, non-final, with
- * a bean name of their own; they are found by type across add-ons.
+ * This add-on needs no calendar: it asks every bean of this type in the platform at the
+ * moment of the click, and asks nobody when there is none. Implementers are ordinary
+ * Spring {@code @Service} beans, non-final, with a bean name of their own, found by type
+ * across add-ons: in their own add-on's context, or in this one for agenda
+ * ({@link AgendaInvitationCalendarPlugin}, created only where agenda is installed, since
+ * agenda does not depend on this add-on).
  * <p>
  * <b>What an implementer is handed is the sender's content.</b> The iCalendar object
  * came in a mail from outside: its UID, its links, its organiser and attendees are

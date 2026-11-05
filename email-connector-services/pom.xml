@@ -26,6 +26,19 @@
       <artifactId>ical4j</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Provided, not shipped: the agenda add-on puts its jars in the server's lib folder.
+         Only AgendaInvitationCalendarPlugin names its types, and that bean is conditional
+         on them, so this add-on starts on a server without agenda. -->
+    <dependency>
+      <groupId>org.exoplatform.agenda</groupId>
+      <artifactId>agenda-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.exoplatform.agenda</groupId>
+      <artifactId>agenda-services</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>io.meeds.social</groupId>
       <artifactId>social-component-service</artifactId>
