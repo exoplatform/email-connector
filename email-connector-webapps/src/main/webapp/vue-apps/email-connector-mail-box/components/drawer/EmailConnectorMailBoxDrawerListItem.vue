@@ -58,8 +58,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="text-no-wrap mt-3">{{ movingLeft && $t('emailConnector.mailBox.list.drawer.detail.archive.label') || $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}</span>
       </v-card>
     </div>
+    <!-- The horizontal pan is the swipe's (v-touch listens passively, so it cannot
+         cancel the browser's): touch-action leaves the browser the vertical scroll and
+         the zoom only. -->
     <div
       class="d-flex"
+      style="touch-action: pan-y pinch-zoom;"
       v-touch="{
         start: moveStart,
         end: moveEnd,
@@ -737,12 +741,17 @@ export default {
     },
     /**
      * The row's inline style: faded while its message is on its way into the mirror or
-     * being dragged.
+     * being dragged, and clipped while it is swiped. The drawer's content scrolls
+     * sideways (ExoDrawer's overflow-x-auto), so the swiped content, translated past the
+     * row's edge, would otherwise widen the whole list.
      *
      * @returns {Object} the style
      */
     rowStyle() {
       const style = {};
+      if (this.absolute) {
+        style.overflow = 'hidden';
+      }
       if (this.email.refreshPending) {
         style.pointerEvents = 'none';
         style.opacity = 0.6;
