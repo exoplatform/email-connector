@@ -113,7 +113,7 @@ class ToolApprovalUpgradePluginDeclarationTest {
   @Test
   void runsAfterTheMcpServerToolServiceExists() {
     assertTrue(declaredPlugin.isAsyncUpgradeExecution(),
-               "The plugin must run asynchronously, once the Spring contexts started");
+               "The plugin must run asynchronously, after the portal container has started");
   }
 
   /**

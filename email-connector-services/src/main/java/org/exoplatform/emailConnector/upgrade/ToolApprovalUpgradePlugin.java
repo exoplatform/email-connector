@@ -41,8 +41,9 @@ import io.meeds.mcp.server.service.McpServerToolService;
  * A tool already gated is left alone, and a tool the server does not know is
  * skipped.
  * <p>
- * Declared asynchronous: the MCP server's tool service is a Spring bean, which
- * the Kernel holds only once every add-on's Spring context has started.
+ * Declared asynchronous, so it runs after the portal container has started
+ * rather than during the Kernel's start, where looking the MCP server's tool
+ * service up would build that Spring bean ahead of the add-ons' startup order.
  */
 public class ToolApprovalUpgradePlugin extends UpgradeProductPlugin {
 
