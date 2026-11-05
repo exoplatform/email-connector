@@ -656,9 +656,9 @@ public class EmailSignatureService {
   /**
    * Deletes a stored signature image file, tolerating a file that is already
    * gone — the cleanup of a replaced or reset image must never fail its caller.
-   * Callers pass only an id {@link #ownLogoFileId} returned.
    *
-   * @param logoFileId the file id, ignored when null or unset
+   * @param logoFileId an id {@link #ownLogoFileId} returned; null, or, as
+   *          defence in depth on a delete path, an id below 1 is ignored
    */
   private void deleteLogoFile(Long logoFileId) {
     if (logoFileId == null || logoFileId <= 0) {

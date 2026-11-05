@@ -50,8 +50,10 @@ public class EmailSignatureSetting {
   private String  customHtml;
 
   /**
-   * The stored file behind the user's own signature image, when they replaced
-   * the company logo with one. Null means the branding logo is the image.
+   * The file id the preference names as the signature image. It is honoured
+   * only after {@code EmailSignatureService} checks that the file is the user's
+   * own signature image, and is never read directly to serve, send or delete a
+   * file. Null means the branding logo is the image.
    */
   private Long    logoFileId;
 }
