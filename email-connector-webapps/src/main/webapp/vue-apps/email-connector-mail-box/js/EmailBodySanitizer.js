@@ -88,12 +88,15 @@ const HTML_ESCAPES = {
 };
 
 /**
- * The HTML comment markers a mail client such as Outlook writes around the rules of a
- * style sheet. The CSS parser skips them, but the purifier reads a sheet holding one
- * as markup and drops the whole sheet.
+ * The markers a mail client writes around the rules of a style sheet: the HTML comment
+ * markers of Outlook and the CDATA markers of XHTML templates. The CSS parser skips
+ * them, but the purifier reads a sheet holding one as markup and drops the whole sheet.
  */
-const STYLE_COMMENT_MARKER = /<!--|-->/;
-const STYLE_COMMENT_MARKERS = /<!--|-->/g;
+const STYLE_MARKER = /<!--|-->|<!\[CDATA\[|\]\]>/;
+const STYLE_MARKERS = /<!--|-->|<!\[CDATA\[|\]\]>/g;
+
+/** The end tag of a style sheet: its text never holds one. */
+const STYLE_END_TAG = /<\/style/i;
 
 let purifier = null;
 
@@ -182,26 +185,31 @@ function escapeHtml(text) {
 }
 
 /**
- * The received body with the comment markers removed from the text of each of its
- * style sheets, so that the purifier keeps the rules wrapped in them. Only the
+ * The received body with the comment and CDATA markers removed from the text of each
+ * of its style sheets, so that the purifier keeps the rules wrapped in them. Only the
  * markers go: the purifier still drops a sheet holding anything else that reads as
- * markup. A body none of whose sheets holds a marker is returned as received.
+ * markup, and a sheet whose text would close it once its markers are removed keeps
+ * its received text, which never closes it. A body none of whose sheets holds a
+ * marker is returned as received.
  *
  * @param {string} html the body as it was received
  * @returns {string} the body to purify
  */
-function withoutStyleCommentMarkers(html) {
-  if (!STYLE_COMMENT_MARKER.test(html)) {
+function withoutStyleMarkers(html) {
+  if (!STYLE_MARKER.test(html)) {
     return html;
   }
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const sheets = Array.from(doc.querySelectorAll('style'))
-    .filter(sheet => STYLE_COMMENT_MARKER.test(sheet.textContent));
+    .filter(sheet => STYLE_MARKER.test(sheet.textContent));
   if (!sheets.length) {
     return html;
   }
   sheets.forEach(sheet => {
-    sheet.textContent = sheet.textContent.replace(STYLE_COMMENT_MARKERS, '');
+    const rules = sheet.textContent.replace(STYLE_MARKERS, '');
+    if (!STYLE_END_TAG.test(rules)) {
+      sheet.textContent = rules;
+    }
   });
   return doc.documentElement.outerHTML;
 }
@@ -231,7 +239,7 @@ export function sanitizeMailBody(html, factory) {
   if (!instance) {
     return { styles: '', htmlAttributes: '', bodyAttributes: '', body: escapeHtml(source) };
   }
-  const clean = instance.sanitize(withoutStyleCommentMarkers(source), CONFIG);
+  const clean = instance.sanitize(withoutStyleMarkers(source), CONFIG);
   const doc = new DOMParser().parseFromString(clean, 'text/html');
   const styles = Array.from(doc.querySelectorAll('head > style'))
     .map(sheet => sheet.textContent)
