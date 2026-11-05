@@ -57,6 +57,10 @@ class AiToolDefinitionsTest {
                                                             "forward_email",
                                                             "archive_email",
                                                             "delete_email",
+                                                            "mark_read",
+                                                            "mark_unread",
+                                                            "add_email_category",
+                                                            "remove_email_category",
                                                             "create_contact");
 
   /**

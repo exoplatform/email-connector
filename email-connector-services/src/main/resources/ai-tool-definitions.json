@@ -185,6 +185,7 @@
         },
         "required": []
       },
+      "require_approval": true,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -205,6 +206,7 @@
         },
         "required": []
       },
+      "require_approval": true,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -378,7 +380,7 @@
         },
         "required": ["category_id"]
       },
-      "require_approval": false,
+      "require_approval": true,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -399,7 +401,7 @@
         },
         "required": ["category_id"]
       },
-      "require_approval": false,
+      "require_approval": true,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
