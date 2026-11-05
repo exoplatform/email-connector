@@ -756,6 +756,44 @@
         </value-param>
       </init-params>
     </component-plugin>
+    <!-- The MCP server keeps the tool definitions it saved over the shipped ones, so the
+         approval these tools now require (EXO-92488) reaches only a fresh install without
+         this plugin, which sets that one flag on the saved definitions. Asynchronous: it runs
+         on its own thread, launched once the portal container has started.
+         Run once, at the first version change after it ships: execute.once alone gives the
+         single run, and a target version would also skip every instance whose previous
+         version ranks at or after it, as one upgraded from that release would. Under the
+         mcp-server profile, as the add-on's other MCP classes: the plugin needs its classes. -->
+    <component-plugin profiles="mcp-server">
+      <name>EmailToolApprovalUpgradePlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>org.exoplatform.emailConnector.upgrade.ToolApprovalUpgradePlugin</type>
+      <description>Requires the user's approval for the assistant's mailbox write tools on existing instances</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <value>org.exoplatform.platform</value>
+        </value-param>
+        <value-param>
+          <name>plugin.upgrade.execute.once</name>
+          <value>true</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <value>11</value>
+        </value-param>
+        <value-param>
+          <name>plugin.upgrade.async.execution</name>
+          <value>true</value>
+        </value-param>
+        <values-param>
+          <name>tool.names</name>
+          <value>mark_read</value>
+          <value>mark_unread</value>
+          <value>remove_email_category</value>
+        </values-param>
+      </init-params>
+    </component-plugin>
   </external-component-plugins>
 
   <!-- Contributes mail to the platform's unified search (the global magnifying

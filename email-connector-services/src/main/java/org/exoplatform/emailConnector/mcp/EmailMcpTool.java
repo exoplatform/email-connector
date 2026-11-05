@@ -77,8 +77,8 @@ import io.meeds.mcp.server.plugin.McpToolPlugin;
  * MCP tools exposing the Email Connector add-on to the AI agent (EVA). Every
  * method acts as the current user, so the caller only ever touches their own
  * email box -- or, when a tool is given a {@code mailbox}, a mailbox somebody shared
- * with them (EXO-90555), resolved among their own accepted shares and nowhere else. Read/triage tools run without approval; compose (send/reply) and
- * organize (archive/delete) tools are approval-gated: the assistant only DRAFTS
+ * with them (EXO-90555), resolved among their own accepted shares and nowhere else. Read tools run without approval; compose (send/reply),
+ * organize (archive/delete) and read-state (mark read/unread) tools are approval-gated: the assistant only DRAFTS
  * outward-facing actions and must never auto-send nor invent recipients.
  */
 @Service
@@ -341,7 +341,7 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   // ---------------------------------------------------------------------------
-  // Slice 1 - read / triage (no approval)
+  // Slice 1 - read / triage (reads without approval, mark read/unread gated)
   // ---------------------------------------------------------------------------
 
   /**
@@ -970,7 +970,8 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   // ---------------------------------------------------------------------------
-  // Slice 4 - categories / labels (approval-gated for writes)
+  // Slice 4 - categories / labels (remove gated; add ungated, the background
+  // auto-categorizer's one tool, which no one can approve)
   // ---------------------------------------------------------------------------
 
   /**
