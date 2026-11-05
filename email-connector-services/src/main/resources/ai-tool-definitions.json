@@ -380,7 +380,7 @@
         },
         "required": ["category_id"]
       },
-      "require_approval": true,
+      "require_approval": false,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -391,7 +391,7 @@
     {
       "name": "remove_email_category",
       "title": "Remove a category from emails",
-      "description": "Remove a category id from one or more emails of the user's own inbox. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. Emails not currently in the category are skipped. This is a low-risk, reversible label change (use add_email_category to re-apply), so it runs without a confirmation prompt.",
+      "description": "Remove a category id from one or more emails of the user's own inbox. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. Emails not currently in the category are skipped. The user confirms the removal before it runs (use add_email_category to re-apply).",
       "input_schema": {
         "type": "object",
         "properties": {

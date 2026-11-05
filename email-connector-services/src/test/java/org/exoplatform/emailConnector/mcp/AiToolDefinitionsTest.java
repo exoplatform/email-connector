@@ -59,7 +59,6 @@ class AiToolDefinitionsTest {
                                                             "delete_email",
                                                             "mark_read",
                                                             "mark_unread",
-                                                            "add_email_category",
                                                             "remove_email_category",
                                                             "create_contact");
 
@@ -103,6 +102,19 @@ class AiToolDefinitionsTest {
       assertFalse(tool == null || tool.path("require_approval").asBoolean(false),
                   "Read tool " + name + " must not be approval-gated");
     }
+  }
+
+  /**
+   * {@code add_email_category} is the one tool of the mail auto-categorizer,
+   * which runs in the background as the mailbox owner: no chat shows its
+   * approval card and no standing approval covers it, so a gated call would
+   * wait out the approval timeout and apply no category.
+   */
+  @Test
+  void addEmailCategoryStaysUngatedForTheBackgroundCategorizer() throws Exception {
+    JsonNode tool = readDefinitions().get("add_email_category");
+    assertTrue(tool != null && !tool.path("require_approval").asBoolean(true),
+               "add_email_category must carry require_approval: false");
   }
 
   /**

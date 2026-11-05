@@ -756,6 +756,40 @@
         </value-param>
       </init-params>
     </component-plugin>
+    <!-- The MCP server keeps the tool definitions it saved over the shipped ones, so the
+         approval these tools now require (EXO-92488) reaches only a fresh install without
+         this plugin, which sets that one flag on the saved definitions. Asynchronous: the
+         MCP server's tool service is a Spring bean, there only once the contexts started. -->
+    <component-plugin>
+      <name>EmailToolApprovalUpgradePlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>org.exoplatform.emailConnector.upgrade.ToolApprovalUpgradePlugin</type>
+      <description>Requires the user's approval for the assistant's mailbox write tools on existing instances</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <value>org.exoplatform.platform</value>
+        </value-param>
+        <value-param>
+          <name>plugin.upgrade.target.version</name>
+          <value>7.3.0</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <value>11</value>
+        </value-param>
+        <value-param>
+          <name>plugin.upgrade.async.execution</name>
+          <value>true</value>
+        </value-param>
+        <values-param>
+          <name>tool.names</name>
+          <value>mark_read</value>
+          <value>mark_unread</value>
+          <value>remove_email_category</value>
+        </values-param>
+      </init-params>
+    </component-plugin>
   </external-component-plugins>
 
   <!-- Contributes mail to the platform's unified search (the global magnifying
