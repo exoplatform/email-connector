@@ -1378,6 +1378,21 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * EXO-92345 -- a connected mailbox is keyed as a sender is compared: only its ASCII
+   * letters are lower-cased, so a mailbox written with a lookalike letter is not keyed
+   * as the address it imitates.
+   */
+  @Test
+  void theConnectedMailboxesAreKeyedWithTheirAsciiLettersOnlyLowerCased() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("kim"), Context.USER.id("elise")));
+    storedDocument("kim", "{\"emailConnectorId\":\"3\",\"emailAddress\":\"\u212aate@Acme.org\"}");
+    storedDocument("elise", "{\"emailConnectorId\":\"3\",\"emailAddress\":\" \u00c9lise@Acme.org \"}");
+
+    assertEquals(Map.of("\u212aate@acme.org", "kim", "\u00c9lise@acme.org", "elise"), userEmailSettingService.getConnectedMailboxOwners());
+  }
+
+  /**
    * A document that cannot be parsed leaves its user out of the walk; the
    * other users of the connector are still found.
    */

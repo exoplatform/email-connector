@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,6 +139,68 @@ class EmailSenderProfileServiceTest {
     assertSame(bob, service.resolveSenderProfile("BOB.martin@example.ORG"));
     // Equality first, then the case-insensitive prefix, narrowed to the same address.
     assertEquals(List.of("bob.martin@example.org", "bob.martin@example.org*"), queries);
+  }
+
+  /**
+   * EXO-92345 -- an address written with a lookalike letter (the Kelvin sign U+212A for
+   * a K) is not the account's, even when the directory's case-insensitive scan answers
+   * that account for it: the sender does not borrow the user's profile.
+   */
+  @Test
+  void aLookalikeAddressIsNotTheAccounts() {
+    accounts.put("kate@example.org", "kate");
+    enabledUser("kate", "kate-avatar");
+
+    assertNull(service.resolveSenderProfile("\u212aate@example.org"));
+    // The scan did answer kate's account: only the comparison keeps it out.
+    assertEquals(List.of("\u212aate@example.org", "\u212aate@example.org*"), queries);
+  }
+
+  /**
+   * EXO-92345 -- a capital that a case-insensitive comparison takes for an ASCII
+   * letter (the dotted I, which equalsIgnoreCase matches with i) makes another
+   * address: a directory that answers the account for it, as a case-insensitive
+   * collation may, still does not lend the sender that account.
+   */
+  @Test
+  void aDottedCapitalIAddressIsNotTheAccounts() throws Exception {
+    enabledUser("ivan", "ivan-avatar");
+    when(userHandler.findUsersByQuery(any(Query.class))).thenAnswer(invocation -> listOf(user("ivan", "ivan@example.org")));
+
+    assertNull(service.resolveSenderProfile("\u0130van@example.org"));
+  }
+
+  /**
+   * EXO-92345 -- the mail list's avatars are answered by the address as asked, its ASCII
+   * letters only lower-cased: a lookalike of an account, of a connected mailbox or of
+   * a contact is answered neither that account's photo nor that contact's picture,
+   * while the genuine addresses are.
+   */
+  @Test
+  void aLookalikeAddressIsAnsweredNoOnesPicture() {
+    accounts.put("kate@example.org", "kate");
+    enabledUser("kate", "kate-avatar");
+    when(userEmailSettingService.getConnectedMailboxOwners()).thenReturn(Map.of("kara.private@gmail.com", "kara"));
+    enabledUser("kara", "kara-avatar");
+    lenient().when(emailBoxStorage.hasMailFrom(eq("rita"), anyString())).thenReturn(true);
+    // The contact store keys by the fully lower-cased address, under which the lookalike
+    // and the genuine address are one key.
+    lenient().when(emailContactService.getContactPhotoUrls(eq("rita"), any()))
+             .thenAnswer(invocation -> ((Collection<?>) invocation.getArgument(1)).contains("kim@client.org") ? Map.of("kim@client.org",
+                                                                                                                       "kim-contact")
+                                                                                                                : Map.of());
+
+    assertEquals(Map.of("kate@example.org", "kate-avatar", "kara.private@gmail.com", "kara-avatar", "kim@client.org", "kim-contact"),
+                 service.resolveAvatars(List.of("\u212aate@example.org",
+                                                "kate@example.org",
+                                                "\u212aara.private@gmail.com",
+                                                "kara.private@gmail.com",
+                                                "\u212aim@client.org",
+                                                "kim@client.org"),
+                                        "rita"));
+    assertNull(service.resolveSenderProfile("\u212aara.private@gmail.com"));
+    assertNull(service.resolveContactPhotoUrl("rita", "\u212aim@client.org"));
+    assertEquals("kim-contact", service.resolveContactPhotoUrl("rita", "Kim@client.org"));
   }
 
   /** An account found by equality is not asked for again with the wildcard. */

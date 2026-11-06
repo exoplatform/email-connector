@@ -22,7 +22,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -368,7 +367,7 @@ public class EmailSecurityService {
     if (name.indexOf(' ') < 0 || name.contains("@")) {
       return null;
     }
-    String senderDomain = EmailContactUtils.domainOf(senderAddress);
+    String senderDomain = domainOf(senderAddress);
     // Decided before the directory is asked: a sender on the organisation's own domains
     // is never an outsider, whoever they are named after.
     if (organisationDomains(email, null).contains(senderDomain)) {
@@ -427,10 +426,10 @@ public class EmailSecurityService {
    */
   private Set<String> organisationDomains(Email email, String userAddress) {
     Set<String> domains = Arrays.stream(StringUtils.split(System.getProperty(ORGANISATION_DOMAINS_PROPERTY, ""), ", "))
-                                .map(domain -> StringUtils.removeStart(domain.trim().toLowerCase(Locale.ROOT), "@"))
+                                .map(domain -> StringUtils.removeStart(EmailSecurityUtils.comparableAddress(domain), "@"))
                                 .collect(Collectors.toCollection(LinkedHashSet::new));
     for (String address : new String[] { normaliseOrNull(email.getUserEmail()), userAddress }) {
-      String domain = EmailContactUtils.domainOf(address);
+      String domain = domainOf(address);
       if (domain != null && !EmailContactUtils.isFreemailDomain(domain)) {
         domains.add(domain);
       }
@@ -464,13 +463,26 @@ public class EmailSecurityService {
   }
 
   /**
-   * A mail address in its comparable form: trimmed and lower-cased.
+   * A mail address in its comparable form: trimmed, its ASCII letters lower-cased and
+   * every other character kept as written ({@link EmailSecurityUtils#comparableAddress}),
+   * so an address is trusted, or taken for a colleague's, only when it is that address.
    *
    * @param address an address
    * @return the normalised address, or null when blank
    */
   private static String normaliseOrNull(String address) {
-    return StringUtils.isBlank(address) ? null : address.trim().toLowerCase(Locale.ROOT);
+    return StringUtils.isBlank(address) ? null : EmailSecurityUtils.comparableAddress(address);
+  }
+
+  /**
+   * The domain of an address already in its comparable form, as it is: no further
+   * lower-casing, which would merge a lookalike domain into the one it imitates.
+   *
+   * @param address the normalised address, or null
+   * @return the domain, or null when there is none
+   */
+  private static String domainOf(String address) {
+    return StringUtils.trimToNull(StringUtils.substringAfterLast(address, "@"));
   }
 
   /**

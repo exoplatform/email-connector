@@ -9054,8 +9054,9 @@ public class EmailBoxService {
 
   /**
    * Whether a cached message is one the user sent: its From address is the mailbox's
-   * own, both read through {@link EmailContactUtils#normalizeAddress} so case and
-   * surrounding blanks do not make two spellings of one address. A mailbox whose own
+   * own, both read through {@link EmailSecurityUtils#comparableAddress}: surrounding
+   * blanks and the case of ASCII letters do not make two spellings of one address, and
+   * any other difference makes another address. A mailbox whose own
    * address is not usable as a key (blank, no {@code @}) owns nothing, so a restore
    * on it sends everything to the inbox -- the pre-EXO-89942 behaviour, and the safe
    * one: a received mail landing in Sent would be the worse misplacement.
@@ -9069,7 +9070,8 @@ public class EmailBoxService {
     if (ownAddress == null || email == null || email.getSender() == null) {
       return false;
     }
-    return ownAddress.equals(EmailContactUtils.normalizeAddress(email.getSender().getAddress()));
+    return EmailSecurityUtils.comparableAddress(userEmailSetting.getEmailAddress())
+                             .equals(EmailSecurityUtils.comparableAddress(email.getSender().getAddress()));
   }
 
   /**
@@ -9778,7 +9780,7 @@ public class EmailBoxService {
    * into the inbox would show the user, in their inbox, a mail they wrote.
    * <p>
    * "The user sent it" is read off the message's From address against the mailbox's
-   * own, both normalized by {@link EmailContactUtils#normalizeAddress}: the one
+   * own, both read through {@link EmailSecurityUtils#comparableAddress}: the one
    * identity a message keeps across every folder and every client, where the folder
    * it sat in before the delete is not remembered by anything. That is also Gmail's
    * answer -- restoring a conversation there puts the received mail back in the inbox

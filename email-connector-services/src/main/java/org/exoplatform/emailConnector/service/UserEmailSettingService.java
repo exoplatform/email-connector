@@ -65,6 +65,7 @@ import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
@@ -1027,7 +1028,7 @@ public class UserEmailSettingService {
    * no password decode, no connector read. An address two users connected names
    * neither: it is left out rather than guessed.
    *
-   * @return the eXo login by normalized mailbox address; a user whose document cannot
+   * @return the eXo login by mailbox address in its comparable form; a user whose document cannot
    *         be read is logged and left out
    */
   public Map<String, String> getConnectedMailboxOwners() {
@@ -1042,7 +1043,10 @@ public class UserEmailSettingService {
     Set<String> shared = new HashSet<>();
     for (Context context : contexts) {
       String username = context.getId();
-      String address = EmailContactUtils.normalizeAddress(getConnectedStoredEmailAddress(username));
+      String stored = getConnectedStoredEmailAddress(username);
+      // Keyed as a sender is compared (EmailSecurityUtils#comparableAddress), so
+      // only the case of ASCII letters may differ from the mailbox's address.
+      String address = EmailContactUtils.normalizeAddress(stored) == null ? null : EmailSecurityUtils.comparableAddress(stored);
       if (address == null || shared.contains(address)) {
         continue;
       }
