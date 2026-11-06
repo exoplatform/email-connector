@@ -21,6 +21,8 @@ import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
 
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
+
 /**
  * How the email tools read a recipient written by an agent, in one place: the
  * tools refuse what these rules refuse, and the argument limits of standing
@@ -56,19 +58,16 @@ public final class EmailAddressRules {
    * {@code k}), so an address given by an agent would compare equal to another
    * one, the one actually sent. Public: every check that compares a received
    * sender with an address it trusts -- the organiser of a calendar invitation
-   * included -- compares them this way.
+   * included -- compares them this way. The rule is
+   * {@link EmailSecurityUtils#comparableAddress(String)}, shared with the checks on
+   * a received sender.
    *
    * @param address the address, possibly null
    * @return the address, trimmed, its ASCII letters lower-cased; empty for a
    *         blank one
    */
   public static String normalisedAddress(String address) {
-    String value = StringUtils.trimToEmpty(address);
-    StringBuilder normalised = new StringBuilder(value.length());
-    for (char character : value.toCharArray()) {
-      normalised.append(character >= 'A' && character <= 'Z' ? (char) (character + ('a' - 'A')) : character);
-    }
-    return normalised.toString();
+    return EmailSecurityUtils.comparableAddress(address);
   }
 
   /**

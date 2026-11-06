@@ -311,4 +311,20 @@ class EmailSecurityUtilsTest {
   private static String verdict(String header) {
     return EmailSecurityUtils.authenticationFailure(new String[] { header }, "letters@news.example");
   }
+
+  /**
+   * EXO-92345 -- the comparable form of an address lower-cases its ASCII letters only:
+   * every other character is kept as written, so no lookalike becomes the address it
+   * imitates, whether its lower case is an ASCII letter or another non-ASCII one.
+   */
+  @Test
+  void aComparableAddressLowerCasesItsAsciiLettersOnly() {
+    assertEquals("jane.doe@example.com", EmailSecurityUtils.comparableAddress("  Jane.Doe@Example.COM "));
+    assertEquals("", EmailSecurityUtils.comparableAddress(null));
+    assertEquals("", EmailSecurityUtils.comparableAddress("  "));
+    for (String kept : new String[] { "\u212aate@example.com", "\u0130van@example.com", "\u212bsa@example.com",
+        "\u00c5sa@example.com", "\u2126mega@example.com", "\u00c9lise@example.com", "kate@\u212aelvin.example" }) {
+      assertEquals(kept, EmailSecurityUtils.comparableAddress(kept));
+    }
+  }
 }
