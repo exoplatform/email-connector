@@ -6668,6 +6668,29 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-92345 -- a received message whose sender only looks like the user's address,
+   * written with a lookalike letter, is not the user's own: restored, it goes back to
+   * the inbox, where it is read with its warnings, never to Sent.
+   */
+  @Test
+  @SneakyThrows
+  void restoreSendsALookalikeOfTheUsersAddressToTheInbox() {
+    mockFolderRefreshScheduler();
+    IMAPFolder sent = aHiddenFolder(new String[] { "\\Sent" }, "Sent");
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenAMailboxListing(sent, trash);
+    givenTheMailboxOwnsTheAddress("kim@example.org");
+    Message lookalike = givenATrashedMessageFrom(trash, 1212L, "<lookalike@host>", "\u212aim@example.org");
+    Folder inbox = trashStore().getFolder("INBOX");
+
+    RestoreOutcome outcome = emailBoxService.restore(List.of(1212L), TEST_USER, MailFolder.TRASH);
+
+    assertEquals(0, outcome.failures());
+    assertTrue(outcome.restoredToSent().isEmpty());
+    verify(trash).copyMessages(new Message[] { lookalike }, inbox);
+  }
+
+  /**
    * A mailbox with no Sent folder to be found sends the user's own message back to the
    * inbox rather than nowhere, and says so in the answer: nothing went to Sent.
    */

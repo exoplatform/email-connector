@@ -116,13 +116,15 @@ const watched = new Map();
 let observer = null;
 
 /**
- * The address as the server keys it.
+ * The address as the server keys it: trimmed, its ASCII letters lower-cased and every
+ * other character kept as written, so an address that only looks like another one
+ * is never answered that one's picture.
  *
  * @param {string} address - the address
- * @returns {string} the trimmed, lower-cased address, or null when it is not one
+ * @returns {string} the trimmed address, its ASCII letters lower-cased, or null when it is not one
  */
 function keyOf(address) {
-  const key = (address || '').trim().toLowerCase();
+  const key = (address || '').trim().replace(/[A-Z]/g, letter => letter.toLowerCase());
   return key.indexOf('@') > 0 ? key : null;
 }
 
