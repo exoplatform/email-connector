@@ -9780,7 +9780,7 @@ public class EmailBoxService {
    * into the inbox would show the user, in their inbox, a mail they wrote.
    * <p>
    * "The user sent it" is read off the message's From address against the mailbox's
-   * own, both normalized by {@link EmailContactUtils#normalizeAddress}: the one
+   * own, both read through {@link EmailSecurityUtils#comparableAddress}: the one
    * identity a message keeps across every folder and every client, where the folder
    * it sat in before the delete is not remembered by anything. That is also Gmail's
    * answer -- restoring a conversation there puts the received mail back in the inbox
