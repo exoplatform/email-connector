@@ -157,6 +157,20 @@ class EmailSenderProfileServiceTest {
   }
 
   /**
+   * EXO-92345 -- a capital that a case-insensitive comparison takes for an ASCII
+   * letter (the dotted I, which equalsIgnoreCase matches with i) makes another
+   * address: a directory that answers the account for it, as a case-insensitive
+   * collation may, still does not lend the sender that account.
+   */
+  @Test
+  void aDottedCapitalIAddressIsNotTheAccounts() throws Exception {
+    enabledUser("ivan", "ivan-avatar");
+    when(userHandler.findUsersByQuery(any(Query.class))).thenAnswer(invocation -> listOf(user("ivan", "ivan@example.org")));
+
+    assertNull(service.resolveSenderProfile("\u0130van@example.org"));
+  }
+
+  /**
    * EXO-92345 -- the mail list's avatars are answered by the address as asked, its ASCII
    * letters only lower-cased: a lookalike of an account, of a connected mailbox or of
    * a contact is answered neither that account's photo nor that contact's picture,
