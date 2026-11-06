@@ -49,8 +49,11 @@ const FORBIDDEN_TAGS = [
  * or name a target on their own, which no formatting needs, and `rel`, whose
  * `opener` link type would hand the tab a link opens a handle on the reader's page,
  * where the frame's base otherwise opens every link without one. Then the attributes
- * DOMPurify's default allow-list gained after 2.3.8: no mail needs them, and some act
- * on another element by its id (`popovertarget`, `commandfor`).
+ * the HTML profile's allow-list gained after 2.3.8: no mail needs them, and some act
+ * on another element by its id (`popovertarget`, `commandfor`). `wrap` is one of them:
+ * 2.3.8 held it only in its SVG list, which this HTML-only purifier does not apply.
+ * Last, the SVG and MathML attributes DOMPurify added after 2.3.8, which social's
+ * purifiers forbid: the HTML profile never allows them, they are listed for parity.
  */
 const FORBIDDEN_ATTRIBUTES = [
   'action', 'formaction', 'ping', 'srcdoc', 'poster', 'background', 'usemap', 'ismap', 'autofocus', 'open', 'rel',
