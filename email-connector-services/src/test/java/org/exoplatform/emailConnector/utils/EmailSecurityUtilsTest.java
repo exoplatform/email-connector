@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.utils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -323,8 +324,13 @@ class EmailSecurityUtilsTest {
     assertEquals("", EmailSecurityUtils.comparableAddress(null));
     assertEquals("", EmailSecurityUtils.comparableAddress("  "));
     for (String kept : new String[] { "\u212aate@example.com", "\u0130van@example.com", "\u212bsa@example.com",
-        "\u00c5sa@example.com", "\u2126mega@example.com", "\u00c9lise@example.com", "kate@\u212aelvin.example" }) {
+        "\u00c5sa@example.com", "\u2126mega@example.com", "\u00c9lise@example.com", "kate@\u212aelvin.example", "jane@fa\u00df.de",
+        "jane@\u03c3\u03c4\u03b5\u03c6\u03b1\u03bd\u03bf\u03c2.example" }) {
       assertEquals(kept, EmailSecurityUtils.comparableAddress(kept));
     }
+    assertNotEquals(EmailSecurityUtils.comparableAddress("jane@fass.de"),
+                    EmailSecurityUtils.comparableAddress("jane@fa\u00df.de"));
+    assertNotEquals(EmailSecurityUtils.comparableAddress("jane@\u03c3\u03c4\u03b5\u03c6\u03b1\u03bd\u03bf\u03c3.example"),
+                    EmailSecurityUtils.comparableAddress("jane@\u03c3\u03c4\u03b5\u03c6\u03b1\u03bd\u03bf\u03c2.example"));
   }
 }
