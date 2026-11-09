@@ -385,6 +385,17 @@ class EmailSecurityServiceTest {
     Email insider = received("Kim Smith", "kim@Kelvin.example", "<p>Hi</p>");
     service.decorate(insider, USER, false);
     assertTrue(insider.getContent().getSecurityWarnings().isEmpty());
+
+    // A configured domain is read in the same form as the sender's: written with the
+    // Kelvin sign, it names that domain only, never the ASCII one it lower-cases to.
+    System.setProperty(EmailSecurityService.ORGANISATION_DOMAINS_PROPERTY, "Kelvin.example");
+    Email ascii = received("Kim Smith", "kim@kelvin.example", "<p>Urgent</p>");
+    service.decorate(ascii, USER, false);
+    assertEquals(List.of(EmailSecurityWarningType.IMPERSONATION),
+                 ascii.getContent().getSecurityWarnings().stream().map(EmailSecurityWarning::getType).toList());
+    Email configured = received("Kim Smith", "kim@Kelvin.example", "<p>Hi</p>");
+    service.decorate(configured, USER, false);
+    assertTrue(configured.getContent().getSecurityWarnings().isEmpty());
   }
 
   /**
