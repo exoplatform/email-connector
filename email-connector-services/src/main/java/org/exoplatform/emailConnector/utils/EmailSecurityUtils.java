@@ -289,6 +289,25 @@ public final class EmailSecurityUtils {
   }
 
   /**
+   * An address in the form two addresses are compared when one approves or trusts the
+   * other: trimmed, and its ASCII letters lower-cased, every other character kept as
+   * written. A full lower-casing, or {@code equalsIgnoreCase}, turns some non-ASCII
+   * letters into ASCII ones and merges distinct capitals into one lower-case letter, so
+   * two different addresses would compare equal.
+   *
+   * @param address the address, possibly null
+   * @return the address, trimmed, its ASCII letters lower-cased; empty for a blank one
+   */
+  public static String comparableAddress(String address) {
+    String value = StringUtils.trimToEmpty(address);
+    StringBuilder normalised = new StringBuilder(value.length());
+    for (char character : value.toCharArray()) {
+      normalised.append(character >= 'A' && character <= 'Z' ? (char) (character + ('a' - 'A')) : character);
+    }
+    return normalised.toString();
+  }
+
+  /**
    * The first link of a body whose visible text is a web address on another domain
    * than the one it leads to: "www.mybank.com" leading to {@code evil.example}.
    * <p>

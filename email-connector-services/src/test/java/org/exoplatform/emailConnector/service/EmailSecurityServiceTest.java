@@ -345,6 +345,60 @@ class EmailSecurityServiceTest {
   }
 
   /**
+   * EXO-92345 -- an address written with a lookalike letter is not the address it
+   * imitates: it neither borrows the trust given to that sender nor passes for the
+   * colleague whose address it copies. The lookalikes: a letter whose lower case is an
+   * ASCII one (U+212A for K), and signs whose lower case is a non-ASCII letter's
+   * (U+212B for U+00C5, U+2126 for U+03A9).
+   */
+  @Test
+  void aLookalikeAddressIsNeitherTrustedNorTheColleagues() throws Exception {
+    service.trustSender(USER, "kate@shop.example");
+    service.trustSender(USER, "\u00c5sa@shop.example");
+    service.trustSender(USER, "\u03a9mega@shop.example");
+    for (String lookalike : new String[] { "\u212aate@shop.example", "\u212bsa@shop.example", "\u2126mega@shop.example" }) {
+      Email email = received("News", lookalike, TRACKED_BODY);
+      service.decorate(email, USER, false);
+      assertTrue(email.getContent().isRemoteContentBlocked(), lookalike);
+    }
+    for (String trusted : new String[] { "Kate@shop.example", "\u00c5sa@shop.example", "\u03a9mega@shop.example" }) {
+      Email email = received("News", trusted, TRACKED_BODY);
+      service.decorate(email, USER, false);
+      assertFalse(email.getContent().isRemoteContentBlocked(), trusted);
+    }
+
+    directoryHas("Kim Smith", "kim.smith@gmail.com");
+    Email impostor = received("Kim Smith", "\u212aim.smith@gmail.com", "<p>Urgent</p>");
+    service.decorate(impostor, USER, false);
+    assertEquals(List.of(new EmailSecurityWarning(EmailSecurityWarningType.IMPERSONATION, "Kim Smith", "\u212aim.smith@gmail.com")),
+                 impostor.getContent().getSecurityWarnings());
+    Email colleague = received("Kim Smith", "Kim.Smith@gmail.com", "<p>Hi</p>");
+    service.decorate(colleague, USER, false);
+    assertTrue(colleague.getContent().getSecurityWarnings().isEmpty());
+
+    // A lookalike of one of the organisation's domains is not the organisation's.
+    System.setProperty(EmailSecurityService.ORGANISATION_DOMAINS_PROPERTY, "kelvin.example");
+    Email outsider = received("Kim Smith", "kim@\u212aelvin.example", "<p>Urgent</p>");
+    service.decorate(outsider, USER, false);
+    assertEquals(List.of(EmailSecurityWarningType.IMPERSONATION),
+                 outsider.getContent().getSecurityWarnings().stream().map(EmailSecurityWarning::getType).toList());
+    Email insider = received("Kim Smith", "kim@Kelvin.example", "<p>Hi</p>");
+    service.decorate(insider, USER, false);
+    assertTrue(insider.getContent().getSecurityWarnings().isEmpty());
+
+    // A configured domain is read in the same form as the sender's: written with the
+    // Kelvin sign, it names that domain only, never the ASCII one it lower-cases to.
+    System.setProperty(EmailSecurityService.ORGANISATION_DOMAINS_PROPERTY, "Kelvin.example");
+    Email ascii = received("Kim Smith", "kim@kelvin.example", "<p>Urgent</p>");
+    service.decorate(ascii, USER, false);
+    assertEquals(List.of(EmailSecurityWarningType.IMPERSONATION),
+                 ascii.getContent().getSecurityWarnings().stream().map(EmailSecurityWarning::getType).toList());
+    Email configured = received("Kim Smith", "kim@Kelvin.example", "<p>Hi</p>");
+    service.decorate(configured, USER, false);
+    assertTrue(configured.getContent().getSecurityWarnings().isEmpty());
+  }
+
+  /**
    * A free-mail domain is never the organisation's: Jane's colleague registered on the
    * platform with a Gmail address is still impersonated from another Gmail address.
    */
