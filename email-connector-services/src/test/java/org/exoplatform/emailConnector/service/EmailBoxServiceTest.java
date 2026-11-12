@@ -3952,8 +3952,8 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-93774 -- a mail from the user's own mailbox goes out under their profile name,
-   * read by their username: here no platform user holds the connected address, which
-   * left the From with the bare address before.
+   * read by their username: here no platform user holds the connected address, so only
+   * the username lookup names the sender.
    */
   @Test
   @SneakyThrows
