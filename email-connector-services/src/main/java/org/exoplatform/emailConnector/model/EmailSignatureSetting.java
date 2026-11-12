@@ -41,7 +41,8 @@ public class EmailSignatureSetting {
   private Boolean enabled;
 
   /**
-   * The signature as the user rewrote it, already sanitized at save. Null means
+   * The signature as the user rewrote it, sanitized at save and again on every
+   * read by {@code EmailSignatureService}. Null means
    * "never customised": the computed default is used, and keeps following the
    * profile as it changes — which is why null is stored rather than a copy of
    * the default at the time of the first visit.
@@ -49,8 +50,10 @@ public class EmailSignatureSetting {
   private String  customHtml;
 
   /**
-   * The stored file behind the user's own signature image, when they replaced
-   * the company logo with one. Null means the branding logo is the image.
+   * The file id the preference names as the signature image. It is honoured
+   * only after {@code EmailSignatureService} checks that the file is the user's
+   * own signature image, and is never read directly to serve, send or delete a
+   * file. Null means the branding logo is the image.
    */
   private Long    logoFileId;
 }
