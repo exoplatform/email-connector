@@ -241,7 +241,9 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsExcept
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
 
@@ -1181,6 +1183,9 @@ public class EmailBoxService {
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
+
+  @Autowired
+  private IdentityManager         identityManager;
 
   @Autowired
   private EmailSignatureService   emailSignatureService;
@@ -10857,8 +10862,7 @@ public class EmailBoxService {
     String envelopeFrom = identity == null ? null : identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
     MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts, envelopeFrom),
                                                          pinnedMessageId);
-    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-    InternetAddress sender = new InternetAddress(emailAddress, displayName(userProfile != null ? userProfile.getFullName() : null));
+    InternetAddress sender = new InternetAddress(emailAddress, senderDisplayName(username, emailAddress));
     if (identity == null) {
       message.setFrom(sender);
       // Here, for the same reason: one place, so no path can forget it.
@@ -11215,6 +11219,38 @@ public class EmailBoxService {
   }
 
   /**
+   * The name a mail from the sender's own mailbox goes out under, as its From's display
+   * name (EXO-93774): the sender's own profile name, read by their username, so the
+   * name does not depend on the connected address being the one their profile holds;
+   * else the name of the platform user the sending address belongs to; else none, and
+   * the mail leaves under the bare address. A profile that cannot be read is logged and
+   * left to the next source. Cleaned by {@link #displayName(String)}.
+   *
+   * @param username the sender
+   * @param emailAddress the address the mail is sent from
+   * @return the display name, or null for none
+   */
+  String senderDisplayName(String username, String emailAddress) {
+    String name = null;
+    if (StringUtils.isNotBlank(username)) {
+      try {
+        Identity identity = identityManager.getOrCreateUserIdentity(username);
+        Profile profile = identity == null ? null : identity.getProfile();
+        name = profile == null ? null : profile.getFullName();
+      } catch (RuntimeException e) {
+        LOG.warn("Cannot read the profile of sender {}: the mail's From names the address only, unless the address belongs to a user",
+                 username,
+                 e);
+      }
+    }
+    if (StringUtils.isBlank(name)) {
+      Profile byAddress = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+      name = byAddress == null ? null : byAddress.getFullName();
+    }
+    return displayName(name);
+  }
+
+  /**
    * Everything a delivered mail entails once the mail server has accepted it: the
    * {@code SEND_EMAIL} broadcast, the sent-recipients event, the copy in the Sent folder
    * (fenced: a filing failure never makes a delivered mail look undelivered), and the
@@ -11453,17 +11489,12 @@ public class EmailBoxService {
                                                             emailConnector.getAuthProviderName(),
                                                             username);
       String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
-      Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-      InternetAddress sender = new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null);
+      InternetAddress sender = new InternetAddress(emailAddress, senderDisplayName(username, emailAddress));
       if (identity == null) {
         return factory.build(smtpSession(emailConnector, username, true), sender);
       }
       String envelopeFrom = identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
-      InternetAddress delegate = identity.namesTheSender()
-                                                           ? new InternetAddress(emailAddress,
-                                                                                 displayName(userProfile != null ? userProfile.getFullName()
-                                                                                                                 : null))
-                                                           : null;
+      InternetAddress delegate = identity.namesTheSender() ? sender : null;
       MimeMessage message = factory.build(smtpSession(emailConnector, username, true, envelopeFrom),
                                           new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())),
                                           delegate);
@@ -14840,8 +14871,7 @@ public class EmailBoxService {
     // A draft is never transmitted, so this session needs no transport properties at
     // all -- it exists only to give the MimeMessage a context to be built in.
     MimeMessage message = new PinnedMessageIdMimeMessage(Session.getInstance(new Properties()), draft.getMailHeaderId());
-    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-    message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    message.setFrom(new InternetAddress(emailAddress, senderDisplayName(username, emailAddress)));
     // The copy in the server's Drafts folder carries the request too: another client
     // resuming it sends it with the receipt asked for, and this one reads the choice
     // back when it imports the draft (createDraftFromServerMessage).

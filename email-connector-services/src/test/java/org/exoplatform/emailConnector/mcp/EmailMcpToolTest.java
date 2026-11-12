@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
+import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -75,6 +76,7 @@ import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 class EmailMcpToolTest {
@@ -91,6 +93,8 @@ class EmailMcpToolTest {
 
   private EmailDelegationService  emailDelegationService;
 
+  private ReadReceiptService      readReceiptService;
+
   private EmailMcpTool            emailMcpTool;
 
   @BeforeEach
@@ -98,7 +102,9 @@ class EmailMcpToolTest {
     emailBoxService = Mockito.mock(EmailBoxService.class);
     userEmailSettingService = Mockito.mock(UserEmailSettingService.class);
     emailDelegationService = Mockito.mock(EmailDelegationService.class);
-    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService) {
+    readReceiptService = Mockito.mock(ReadReceiptService.class);
+    when(readReceiptService.getSettings(USERNAME)).thenReturn(new ReadReceiptSettings());
+    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService, readReceiptService) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
@@ -473,7 +479,7 @@ class EmailMcpToolTest {
                            "Hi",
                            "<p>Body</p>",
                            List.of("carol@example.com"),
-                           List.of("dan@example.com"), null, null);
+                           List.of("dan@example.com"), null, null, null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -485,9 +491,57 @@ class EmailMcpToolTest {
     assertTrue(sent.getContent().isHtml());
   }
 
+  /** EXO-93774 -- the agent asks for a read receipt: the mail carries the request. */
+  @Test
+  void sendEmailAsksForAReadReceiptWhenTheAgentSaysSo() throws Exception {
+    String answer = emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", null, null, null, null, Boolean.TRUE);
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
+    assertTrue(captor.getValue().isReadReceiptRequested());
+    assertTrue(answer.contains("It asks for a read receipt."), answer);
+  }
+
+  /**
+   * EXO-93774 -- the agent says nothing: the user's own "request by default" decides, as
+   * it does in the composer; an explicit false overrides it.
+   */
+  @Test
+  void sendEmailFollowsTheUsersReadReceiptSettingUnlessTheAgentSays() throws Exception {
+    when(readReceiptService.getSettings(USERNAME)).thenReturn(new ReadReceiptSettings(true, null, false));
+
+    emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", null, null, null, null, null);
+    emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", null, null, null, null, Boolean.FALSE);
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService, times(2)).sendEmail(captor.capture(), eq(USERNAME));
+    assertTrue(captor.getAllValues().get(0).isReadReceiptRequested(), "left out: the user's default");
+    assertFalse(captor.getAllValues().get(1).isReadReceiptRequested(), "false: no request");
+  }
+
+  /** EXO-93774 -- left out, with the user's default off: no request. */
+  @Test
+  void sendEmailAsksForNoReadReceiptByDefault() throws Exception {
+    String answer = emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", null, null, null, null, null);
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
+    assertFalse(captor.getValue().isReadReceiptRequested());
+    assertFalse(answer.contains("read receipt"), answer);
+  }
+
+  /** EXO-93774 -- in the owner's name, no read receipt is asked, and the answer says why. */
+  @Test
+  void readReceiptPhraseSaysWhyAMailInTheOwnersNameAsksForNone() {
+    assertEquals(" It asks for a read receipt.", EmailMcpTool.readReceiptPhrase(true, null, null));
+    assertEquals("", EmailMcpTool.readReceiptPhrase(false, Boolean.FALSE, null));
+    assertTrue(EmailMcpTool.readReceiptPhrase(false, Boolean.TRUE, SendMode.AS).contains("in the owner's name never does"));
+    assertEquals("", EmailMcpTool.readReceiptPhrase(false, null, SendMode.ON_BEHALF));
+  }
+
   @Test
   void sendEmailFailsWithoutRecipient() {
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null, null, null, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null, null, null, null, null));
   }
 
   // --- reply_email ---------------------------------------------------------
@@ -847,7 +901,7 @@ class EmailMcpToolTest {
                                                                   () -> emailMcpTool.getEmailThread("thread-1", nobody),
                                                                   () -> emailMcpTool.markRead(List.of(REMOTE_ID), null, nobody),
                                                                   () -> emailMcpTool.markUnread(List.of(REMOTE_ID), null, nobody),
-                                                                  () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, nobody, null),
+                                                                  () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, nobody, null, null),
                                                                   () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody, null, List.of("bob@acme.com"), null),
                                                                   () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody, null, List.of("bob@acme.com"), List.of(), null),
                                                                   () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), "<p>x</p>", null, nobody, null, null),
@@ -1050,7 +1104,7 @@ class EmailMcpToolTest {
     givenAliceShares();
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FAILED);
 
-    String result = emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, null);
+    String result = emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, null, null);
 
     assertTrue(result.startsWith("Email sent to bob@acme.com") && result.contains("could not be filed"), result);
   }
@@ -1723,7 +1777,7 @@ class EmailMcpToolTest {
    * @return one call per tool, each answering the outcome
    */
   private List<java.util.concurrent.Callable<String>> theFourSendsFromAlicesMailbox(String identity) {
-    return List.of(() -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, identity),
+    return List.of(() -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, identity, null),
                    () -> emailMcpTool.replyEmail(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), identity),
                    () -> emailMcpTool.replyAll(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of("dave@acme.com"), identity),
                    () -> emailMcpTool.forwardEmail(null, List.of("bob@acme.com"), null, null, OWNER_MAILBOX, EMAIL_ID, identity));
@@ -1783,6 +1837,23 @@ class EmailMcpToolTest {
   }
 
   /**
+   * EXO-93774 -- a mail in the owner's name never asks for a read receipt, even when the
+   * agent asks for one, and the outcome says why.
+   */
+  @Test
+  void aMailInTheOwnersNameAsksForNoReadReceipt() throws Exception {
+    givenAliceSharesWithSendModes(SendMode.ON_BEHALF, SendMode.AS);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L), any())).thenReturn(OwnerCopy.FILED);
+
+    String outcome = emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, "owner", Boolean.TRUE);
+
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME), eq(100L), eq("AS"));
+    assertFalse(sent.getValue().isReadReceiptRequested());
+    assertTrue(outcome.contains("a mail in the owner's name never does"), outcome);
+  }
+
+  /**
    * An owner's identity with no mailbox names nobody's name: refused before anything is
    * read or sent, on every sending tool -- never sent in the user's own name instead.
    */
@@ -1790,7 +1861,7 @@ class EmailMcpToolTest {
   void anOwnersIdentityWithoutAMailboxIsRefusedAndNothingIsSent() {
     for (String identity : List.of("owner", "owner_on_behalf")) {
       List<org.junit.jupiter.api.function.Executable> calls =
-                                                            List.of(() -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, null, identity),
+                                                            List.of(() -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, null, identity, null),
                                                                     () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", null, null, List.of("bob@acme.com"), identity),
                                                                     () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", null, null, List.of("bob@acme.com"), List.of(), identity),
                                                                     () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), null, null, "", null, identity));
@@ -1869,7 +1940,7 @@ class EmailMcpToolTest {
       Mockito.reset(emailBoxService);
       when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L), eq("AS"))).thenThrow(new SendModeUnavailableException(cause.getKey()));
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                                                      () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, "owner"));
+                                                      () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX, "owner", null));
       assertTrue(refused.getMessage().startsWith(cause.getValue()), refused.getMessage());
       assertTrue(refused.getMessage().endsWith("(identity me) -- ask the user, and have them approve again with that identity shown."),
                  refused.getMessage());

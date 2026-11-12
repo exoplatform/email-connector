@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.services.listener.ListenerService;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 
 import io.meeds.social.category.service.CategoryLinkService;
@@ -81,6 +82,9 @@ class EmailBoxListedRowsTest {
 
   @MockitoBean
   private UserEmailSettingService   userEmailSettingService;
+
+  @MockitoBean
+  private IdentityManager identityManager;
 
   @MockitoBean
   private EmailBoxStorage           emailBoxStorage;
