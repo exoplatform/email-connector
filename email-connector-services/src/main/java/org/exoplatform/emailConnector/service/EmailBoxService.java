@@ -11219,8 +11219,9 @@ public class EmailBoxService {
   }
 
   /**
-   * The name a mail from the sender's own mailbox goes out under, as its From's display
-   * name (EXO-93774): the sender's own profile name, read by their username, so the
+   * The name the sender's own address carries on what they send or draft -- the From of
+   * a mail in their own name, the Sender of one on an owner's behalf, a draft's row
+   * (EXO-93774): the sender's own profile name, read by their username, so the
    * name does not depend on the connected address being the one their profile holds;
    * else the name of the platform user the sending address belongs to; else none, and
    * the mail leaves under the bare address. A profile that cannot be read is logged and
