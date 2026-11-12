@@ -8665,6 +8665,28 @@ public class EmailBoxServiceTest {
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
+  /**
+   * EXO-93774 -- a new draft's row shows the user under their profile name, as its
+   * server copy and the mail it becomes do; with no name anywhere, their address.
+   *
+   * @throws Exception if the mailbox stubbing fails
+   */
+  @Test
+  void aNewDraftShowsTheUserUnderTheirProfileName() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    givenTheSendersProfileName("Bob Writer");
+
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+
+    assertEquals("Bob Writer", saved.getSender().getName());
+    assertEquals(userEmailSetting().getEmailAddress(), saved.getSender().getAddress());
+
+    givenTheSendersProfileName(null);
+    Email nameless = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertEquals(userEmailSetting().getEmailAddress(), nameless.getSender().getName());
+  }
+
   @Test
   void firstSaveMintsALocalIdAndAMessageIdOfOurOwn() throws Exception {
     givenAUsableMailbox();

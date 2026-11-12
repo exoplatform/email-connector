@@ -14130,7 +14130,7 @@ public class EmailBoxService {
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
     toStore.setReadReceiptRequested(draft.isReadReceiptRequested());
-    toStore.setSender(ownSender(userEmailSetting));
+    toStore.setSender(ownSender(userEmailSetting, username));
     // Our own Message-ID, minted now and reused when the draft is finally sent. It is
     // also, on a server without UIDPLUS, the only handle we have on a message we just
     // appended -- so it cannot be deferred to send time even if threading did not
@@ -14958,13 +14958,13 @@ public class EmailBoxService {
    * one.
    *
    * @param userEmailSetting the user's connector binding
+   * @param username the draft's owner, whose profile name the draft shows, as the
+   *          From of its server copy and of the mail it becomes does (EXO-93774)
    * @return the sender to stamp on a draft row
    */
-  private EmailSender ownSender(UserEmailSetting userEmailSetting) {
+  private EmailSender ownSender(UserEmailSetting userEmailSetting, String username) {
     String emailAddress = userEmailSetting.getEmailAddress();
-    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-    String name = userProfile != null && StringUtils.isNotBlank(userProfile.getFullName()) ? userProfile.getFullName()
-                                                                                           : emailAddress;
+    String name = StringUtils.defaultIfBlank(senderDisplayName(username, emailAddress), emailAddress);
     return new EmailSender(name, emailAddress, null, null);
   }
 
@@ -17801,7 +17801,7 @@ public class EmailBoxService {
     // different questions about the same imported part, and both are kept.
     importedContent.setHtml(messageContent != null && messageContent.isHtml());
     draft.setContent(importedContent);
-    draft.setSender(serverDraftSender(message, userEmailSetting));
+    draft.setSender(serverDraftSender(message, userEmailSetting, username));
     draft.setTo(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO), username, false));
     draft.setCc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC), username, false));
     draft.setBcc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC), username, false));
@@ -17927,10 +17927,13 @@ public class EmailBoxService {
    *
    * @param message the Drafts message
    * @param userEmailSetting the user's connector binding, for their own address
+   * @param username the mailbox owner
    * @return the sender to stamp, never null
    * @throws MessagingException if the From header cannot be read
    */
-  private EmailSender serverDraftSender(Message message, UserEmailSetting userEmailSetting) throws MessagingException {
+  private EmailSender serverDraftSender(Message message,
+                                        UserEmailSetting userEmailSetting,
+                                        String username) throws MessagingException {
     Address[] from = message.getFrom();
     if (from != null && from.length > 0) {
       EmailSender sender = EmailConnectorUtils.getEmailSender(from[0], false);
@@ -17938,7 +17941,7 @@ public class EmailBoxService {
         return sender;
       }
     }
-    return ownSender(userEmailSetting);
+    return ownSender(userEmailSetting, username);
   }
 
   /**
