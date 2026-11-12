@@ -20,10 +20,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.lang3.StringUtils;
@@ -36,6 +35,7 @@ import org.exoplatform.emailConnector.model.ViewerContactPhoto;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.commons.utils.ListAccess;
@@ -189,11 +189,10 @@ public class EmailSenderProfileService {
    * @return the profile, or null when the address belongs to no enabled user
    */
   Profile resolveSenderProfile(String address) {
-    String key = EmailContactUtils.normalizeAddress(address);
-    if (key == null) {
+    if (EmailContactUtils.normalizeAddress(address) == null) {
       return null;
     }
-    SenderAddressOwner owner = ownerOf(key);
+    SenderAddressOwner owner = ownerOf(EmailSecurityUtils.comparableAddress(address));
     return owner.username() == null ? null : profileOf(owner.username());
   }
 
@@ -219,8 +218,22 @@ public class EmailSenderProfileService {
    * @return the URL of the contact's picture, or null
    */
   String resolveContactPhotoUrl(String viewer, String address) {
-    String key = EmailContactUtils.normalizeAddress(address);
+    String key = storedKeyOf(address);
     return key == null ? null : contactPhotosOf(viewer, List.of(key)).get(key);
+  }
+
+  /**
+   * The key the contacts and the mail cache store an address under, only when that key
+   * names this address alone: the stores lower-case the whole address, which merges
+   * an address written with a non-ASCII capital, a lookalike included, into another
+   * one, so such an address is matched with nothing stored.
+   *
+   * @param address the address, as the mail or the list names it
+   * @return the stored key, or null when the address has none of its own
+   */
+  private static String storedKeyOf(String address) {
+    String key = EmailContactUtils.normalizeAddress(address);
+    return key != null && key.equals(EmailSecurityUtils.comparableAddress(address)) ? key : null;
   }
 
   /**
@@ -239,7 +252,7 @@ public class EmailSenderProfileService {
    * @param addresses the addresses, at most {@link #AVATARS_MAX_ADDRESSES}; blank,
    *          malformed and repeated ones are skipped
    * @param username the asking user
-   * @return the picture's URL by normalized address, for the addresses that have one;
+   * @return the picture's URL by address in its comparable form, as the list asks;
    *         empty for none
    * @throws IllegalArgumentException {@link #AVATARS_TOO_MANY} past the cap
    */
@@ -253,7 +266,7 @@ public class EmailSenderProfileService {
    *
    * @param addresses the addresses, at most {@link #AVATARS_MAX_ADDRESSES}
    * @param username the asking user
-   * @return the picture's URL by normalized address, for the addresses that have one
+   * @return the picture's URL by address in its comparable form, for those that have one
    * @throws IllegalArgumentException {@link #AVATARS_TOO_MANY} past the cap
    */
   Map<String, String> resolveAvatars(List<String> addresses, String username) {
@@ -263,21 +276,25 @@ public class EmailSenderProfileService {
     if (addresses.size() > AVATARS_MAX_ADDRESSES) {
       throw new IllegalArgumentException(AVATARS_TOO_MANY);
     }
-    Set<String> keys = new LinkedHashSet<>();
+    // The answer is keyed by the address in its comparable form, the form the list asks
+    // in; each with its stored key, null when it has none of its own (storedKeyOf).
+    Map<String, String> keys = new LinkedHashMap<>();
     for (String address : addresses) {
       String key = EmailContactUtils.normalizeAddress(address);
       if (key != null && EmailContactUtils.isCompleteAddress(key)) {
-        keys.add(key);
+        keys.putIfAbsent(EmailSecurityUtils.comparableAddress(address), storedKeyOf(address));
       }
     }
     Map<String, String> avatars = new LinkedHashMap<>();
     // The addresses with no platform photo, with the platform's generated picture of
     // their user, null for no user: the next steps are asked for these only.
     Map<String, String> withoutPhoto = new LinkedHashMap<>();
-    for (String key : keys) {
+    for (Map.Entry<String, String> entry : keys.entrySet()) {
+      String key = entry.getKey();
+      String storedKey = entry.getValue();
       SenderAddressOwner owner = ownerOf(key);
       Profile profile = null;
-      if (owner.username() != null && (!owner.mailbox() || emailBoxStorage.hasMailFrom(username, key))) {
+      if (owner.username() != null && (!owner.mailbox() || storedKey != null && emailBoxStorage.hasMailFrom(username, storedKey))) {
         profile = profileOf(owner.username());
       }
       String platformPicture = profile == null ? null : StringUtils.trimToNull(profile.getAvatarUrl());
@@ -288,14 +305,16 @@ public class EmailSenderProfileService {
       }
     }
     if (!withoutPhoto.isEmpty()) {
-      Map<String, String> contactPictures = contactPhotosOf(username, withoutPhoto.keySet());
+      List<String> storedKeys = withoutPhoto.keySet().stream().map(keys::get).filter(Objects::nonNull).toList();
+      Map<String, String> contactPictures = contactPhotosOf(username, storedKeys);
       withoutPhoto.forEach((key, platformPicture) -> {
-        String picture = contactPictures.get(key);
+        String storedKey = keys.get(key);
+        String picture = storedKey == null ? null : contactPictures.get(storedKey);
         // A sender's brand logo (EXO-90893): after the viewer's contact, before the
         // platform's generated picture and the client's initials -- for an address no
         // platform user holds only, so a colleague is never shown as a brand.
-        if (picture == null && platformPicture == null) {
-          picture = brandLogoUrl(key, username);
+        if (picture == null && platformPicture == null && storedKey != null) {
+          picture = brandLogoUrl(storedKey, username);
         }
         if (picture == null) {
           picture = platformPicture;
@@ -395,7 +414,7 @@ public class EmailSenderProfileService {
    * account address on a case-sensitive collation names the mailbox's owner: a
    * collision two users' own settings would have to create.
    *
-   * @param key the normalized address
+   * @param key the address in its comparable form ({@link EmailSecurityUtils#comparableAddress})
    * @return the owner, its username null for nobody
    */
   private SenderAddressOwner ownerOf(String key) {
@@ -446,10 +465,12 @@ public class EmailSenderProfileService {
   }
 
   /**
-   * The user whose address is the one looked up, but for case.
+   * The user whose address is the one looked up, but for the case of its ASCII
+   * letters: every other character must be the same, so an address that only looks
+   * like a user's does not name that user.
    *
    * @param users the candidates
-   * @param key the normalized address
+   * @param key the address in its comparable form
    * @return the eXo login, or null when none carries it
    */
   private String sameAddress(User[] users, String key) {
@@ -457,7 +478,7 @@ public class EmailSenderProfileService {
       return null;
     }
     for (User user : users) {
-      if (user != null && key.equalsIgnoreCase(StringUtils.trim(user.getEmail()))) {
+      if (user != null && key.equals(EmailSecurityUtils.comparableAddress(user.getEmail()))) {
         return user.getUserName();
       }
     }
@@ -469,7 +490,7 @@ public class EmailSenderProfileService {
    * {@link #MAILBOX_OWNERS_TTL_MS}: by one thread, the others waiting for its walk
    * rather than walking too.
    *
-   * @return the eXo login by normalized mailbox address
+   * @return the eXo login by mailbox address in its comparable form
    */
   private Map<String, String> connectedMailboxOwners() {
     ConnectedMailboxOwners known = mailboxOwners.get();
