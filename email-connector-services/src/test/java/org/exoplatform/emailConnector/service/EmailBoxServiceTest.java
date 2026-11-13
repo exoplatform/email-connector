@@ -235,6 +235,9 @@ import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.LogCapture;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
@@ -285,6 +288,9 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private UserEmailSettingService userEmailSettingService;
+
+  @MockitoBean
+  private IdentityManager identityManager;
 
   @MockitoBean
   private EmailBoxStorage         emailBoxStorage;
@@ -3932,6 +3938,75 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The sender's own profile, as the identity manager answers it for their username.
+   *
+   * @param fullName the profile's full name
+   */
+  private void givenTheSendersProfileName(String fullName) {
+    Identity identity = mock(Identity.class);
+    Profile profile = mock(Profile.class);
+    lenient().when(profile.getFullName()).thenReturn(fullName);
+    lenient().when(identity.getProfile()).thenReturn(profile);
+    when(identityManager.getOrCreateUserIdentity(TEST_USER)).thenReturn(identity);
+  }
+
+  /**
+   * EXO-93774 -- a mail from the user's own mailbox goes out under their profile name,
+   * read by their username: here no platform user holds the connected address, so only
+   * the username lookup names the sender.
+   */
+  @Test
+  @SneakyThrows
+  void aMailFromTheOwnMailboxGoesOutUnderTheSendersProfileName() {
+    givenASendableMailbox();
+    givenTheSendersProfileName("Bob\r\nWriter");
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER);
+
+      InternetAddress from = (InternetAddress) sentMessage(transportMock).getFrom()[0];
+      assertEquals("Bob Writer", from.getPersonal(), "the profile name, cleaned of control characters");
+    }
+  }
+
+  /**
+   * EXO-93774 -- a profile that cannot be read never stops the send: it is logged, and
+   * the mail leaves under the address alone when nobody holds it.
+   */
+  @Test
+  @SneakyThrows
+  void aSendersProfileThatCannotBeReadLeavesTheBareAddressAndIsLogged() {
+    givenASendableMailbox();
+    when(identityManager.getOrCreateUserIdentity(TEST_USER)).thenThrow(new IllegalStateException("directory down"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class);
+        LogCapture log = new LogCapture(EmailBoxService.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER);
+
+      assertNull(((InternetAddress) sentMessage(transportMock).getFrom()[0]).getPersonal());
+      List<String> warnings = log.warningsAndAbove().stream().map(event -> event.getFormattedMessage()).toList();
+      assertTrue(warnings.stream().anyMatch(w -> w.startsWith("Cannot read the profile of sender " + TEST_USER)), warnings.toString());
+    }
+  }
+
+  /**
+   * EXO-93774 -- the sender's name falls back to the platform user the address belongs
+   * to when their own profile has none, and is null when neither has one.
+   */
+  @Test
+  void theSendersNameFallsBackToTheAddressOwnersProfile() {
+    givenTheSendersProfileName(" ");
+    Profile byAddress = mock(Profile.class);
+    when(byAddress.getFullName()).thenReturn("Address Owner");
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bob@example.org")).thenReturn(byAddress);
+      assertEquals("Address Owner", emailBoxService.senderDisplayName(TEST_USER, "bob@example.org"));
+      assertNull(emailBoxService.senderDisplayName(TEST_USER, "nobody@example.org"));
+      assertEquals("Address Owner", emailBoxService.senderDisplayName(null, "bob@example.org"));
+    }
+  }
+
+  /**
    * EXO-90584 -- a mail scheduled in Alice's name goes out in it, from the row, once her
    * consent is checked again at dispatch: From her, Sender the writer under the writer's
    * envelope, the draft's own Message-ID, the trail written, and her copy saying who
@@ -3944,6 +4019,7 @@ public class EmailBoxServiceTest {
     IMAPFolder ownerSent = givenAScheduledDraftOfAlicesMailbox("ON_BEHALF");
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF,
                                                                                                              "Alice Martin"));
+    givenTheSendersProfileName("Bob Writer");
     List<MimeMessage> transmitted = new ArrayList<>();
     doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
 
@@ -3954,6 +4030,7 @@ public class EmailBoxServiceTest {
     assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
     assertEquals("Alice Martin", ((InternetAddress) sent.getFrom()[0]).getPersonal());
     assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getSender()).getAddress());
+    assertEquals("Bob Writer", ((InternetAddress) sent.getSender()).getPersonal(), "the writer under their own profile name (EXO-93774)");
     assertEquals(DELEGATE_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
     sent.saveChanges();
     assertEquals("<draft@example.org>", sent.getMessageID(), "the draft's own id");
@@ -8588,6 +8665,28 @@ public class EmailBoxServiceTest {
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
+  /**
+   * EXO-93774 -- a new draft's row shows the user under their profile name, as its
+   * server copy and the mail it becomes do; with no name anywhere, their address.
+   *
+   * @throws Exception if the mailbox stubbing fails
+   */
+  @Test
+  void aNewDraftShowsTheUserUnderTheirProfileName() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    givenTheSendersProfileName("Bob Writer");
+
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+
+    assertEquals("Bob Writer", saved.getSender().getName());
+    assertEquals(userEmailSetting().getEmailAddress(), saved.getSender().getAddress());
+
+    givenTheSendersProfileName(null);
+    Email nameless = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertEquals(userEmailSetting().getEmailAddress(), nameless.getSender().getName());
+  }
+
   @Test
   void firstSaveMintsALocalIdAndAMessageIdOfOurOwn() throws Exception {
     givenAUsableMailbox();
@@ -8662,6 +8761,29 @@ public class EmailBoxServiceTest {
     assertTrue(written.contains(bytes) || written.contains(Base64.getEncoder().encodeToString(bytes.getBytes())),
                "the file's bytes really are in the message rather than an empty part named after it");
     verify(emailBoxStorage, atLeast(2)).getAttachmentFileItem(77L);
+  }
+
+  /**
+   * EXO-93774 -- the draft's copy on the server is from the user under their profile
+   * name, as the mail it becomes will be.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftsServerCopyIsFromTheUserUnderTheirProfileName() throws Exception {
+    givenAUsableMailbox();
+    givenTheSendersProfileName("Bob Writer");
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    givenAStoredDraftCarrying(attachmentRow(), "the bytes of a report".getBytes());
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    assertEquals("Bob Writer", ((InternetAddress) appended.getValue()[0].getFrom()[0]).getPersonal());
   }
 
   /**
@@ -18312,6 +18434,7 @@ public class EmailBoxServiceTest {
     when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, "Alice"));
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice"));
+    givenTheSendersProfileName("Bob Writer");
     ArgumentCaptor<MimeMessage> sent = ArgumentCaptor.forClass(MimeMessage.class);
     List<InternetAddress> froms = new ArrayList<>();
     List<InternetAddress> senders = new ArrayList<>();
@@ -18342,6 +18465,7 @@ public class EmailBoxServiceTest {
     assertEquals(OWNER_ADDRESS, froms.get(0).getAddress());
     assertEquals("Alice", froms.get(0).getPersonal());
     assertEquals(SENDER_THE_PROVIDER_NAMES, senders.get(0).getAddress(), "the factory knows the delegate");
+    assertEquals("Bob Writer", senders.get(0).getPersonal(), "the delegate under their profile name (EXO-93774)");
     assertEquals(SENDER_THE_PROVIDER_NAMES, ((InternetAddress) sent.getAllValues().get(0).getSender()).getAddress());
     assertEquals(SENDER_THE_PROVIDER_NAMES, sent.getAllValues().get(0).getSession().getProperty("mail.smtp.from"));
     assertEquals(OWNER_ADDRESS, froms.get(1).getAddress());
@@ -18349,6 +18473,7 @@ public class EmailBoxServiceTest {
     assertNull(sent.getAllValues().get(1).getSender(), "as her: nothing names the delegate");
     assertEquals(OWNER_ADDRESS, sent.getAllValues().get(1).getSession().getProperty("mail.smtp.from"));
     assertEquals(SENDER_THE_PROVIDER_NAMES, froms.get(2).getAddress(), "no share: the delegate's own name");
+    assertEquals("Bob Writer", froms.get(2).getPersonal(), "the user's own profile name (EXO-93774)");
     assertNull(sent.getAllValues().get(2).getSender());
     assertNull(sent.getAllValues().get(2).getSession().getProperty("mail.smtp.from"));
 
