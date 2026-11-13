@@ -41,6 +41,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
@@ -94,6 +95,9 @@ class EmailBoxServiceTransactionBoundaryTest {
 
   @MockitoBean
   private CategoryLinkService           categoryLinkService;
+
+  @MockitoBean
+  private IdentityManager identityManager;
 
   @MockitoBean
   private FileService                   fileService;

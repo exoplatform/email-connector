@@ -66,6 +66,7 @@ import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import org.exoplatform.services.log.ExoLogger;
@@ -138,6 +139,8 @@ public class EmailMcpTool implements McpToolPlugin {
 
   private final EmailDelegationService  emailDelegationService;
 
+  private final ReadReceiptService      readReceiptService;
+
   /**
    * The tools' services.
    *
@@ -145,14 +148,18 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param userEmailSettingService the account binding service
    * @param emailDelegationService the shared mailboxes' service, which resolves a
    *          {@code mailbox} argument (EXO-90555)
+   * @param readReceiptService the read receipts' service, whose user setting says
+   *          whether a new mail asks for one when the agent does not say (EXO-93774)
    */
   @Autowired
   public EmailMcpTool(EmailBoxService emailBoxService,
                       UserEmailSettingService userEmailSettingService,
-                      EmailDelegationService emailDelegationService) {
+                      EmailDelegationService emailDelegationService,
+                      ReadReceiptService readReceiptService) {
     this.emailBoxService = emailBoxService;
     this.userEmailSettingService = userEmailSettingService;
     this.emailDelegationService = emailDelegationService;
+    this.readReceiptService = readReceiptService;
   }
 
   // ---------------------------------------------------------------------------
@@ -708,6 +715,9 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param identity in whose name the mail leaves: {@value #IDENTITY_ME} or blank for
    *          the user's own, {@value #IDENTITY_OWNER_ON_BEHALF} or {@value #IDENTITY_OWNER}
    *          for the owner of {@code mailbox}
+   * @param requestReadReceipt whether the mail asks its recipients for a read receipt
+   *          (EXO-93774); null follows the user's own setting, as the composer does. A
+   *          mail in the owner's name never asks for one.
    * @return the outcome, in words
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user may not send, or not in the owner's name
@@ -720,7 +730,8 @@ public class EmailMcpTool implements McpToolPlugin {
                           List<String> cc,
                           List<String> bcc,
                           String mailbox,
-                          String identity) throws ObjectNotFoundException, IllegalAccessException {
+                          String identity,
+                          Boolean requestReadReceipt) throws ObjectNotFoundException, IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
@@ -732,12 +743,37 @@ public class EmailMcpTool implements McpToolPlugin {
     email.setBcc(toRecipients(bcc));
     SharedMailboxEntry share = sharedMailbox(mailbox);
     SendMode mode = sendModeOf(identity, share);
-    String copy = send(email, getCurrentUserName(), share, mode);
-    return String.format("Email sent to %s with subject \"%s\"%s.%s",
+    String username = getCurrentUserName();
+    boolean readReceipt = mode == null && (requestReadReceipt != null ? requestReadReceipt.booleanValue()
+                                                                      : readReceiptService.getSettings(username)
+                                                                                          .isRequestByDefault());
+    email.setReadReceiptRequested(readReceipt);
+    String copy = send(email, username, share, mode);
+    return String.format("Email sent to %s with subject \"%s\"%s.%s%s",
                          String.join(", ", to),
                          subject,
                          fromMailbox(share, mode),
+                         readReceiptPhrase(readReceipt, requestReadReceipt, mode),
                          copy);
+  }
+
+  /**
+   * What the answer says about the read receipt: asked, or not asked although the
+   * agent asked for one, because a mail in the owner's name never asks.
+   *
+   * @param asked whether the mail asks for one
+   * @param requested what the agent passed, null for nothing
+   * @param mode the owner's-name shape, null for the user's own name
+   * @return the sentence, with its leading space, or empty
+   */
+  static String readReceiptPhrase(boolean asked, Boolean requested, SendMode mode) {
+    if (asked) {
+      return " It asks for a read receipt.";
+    }
+    if (mode != null && Boolean.TRUE.equals(requested)) {
+      return " It does not ask for a read receipt: a mail in the owner's name never does.";
+    }
+    return "";
   }
 
   /**
