@@ -46,6 +46,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
@@ -114,6 +115,9 @@ public class EmailThreadAiSummaryTest {
 
   @MockitoBean
   private UserEmailSettingService userEmailSettingService;
+
+  @MockitoBean
+  private IdentityManager identityManager;
 
   @MockitoBean
   private SettingService          settingService;
