@@ -11239,7 +11239,7 @@ public class EmailBoxService {
         Profile profile = identity == null ? null : identity.getProfile();
         name = profile == null ? null : profile.getFullName();
       } catch (RuntimeException e) {
-        LOG.warn("Cannot read the profile of sender {}: the mail's From names the address only, unless the address belongs to a user",
+        LOG.warn("Cannot read the profile of sender {}: the name the mail or draft shows for them falls back to the address's owner, or to the bare address",
                  username,
                  e);
       }
