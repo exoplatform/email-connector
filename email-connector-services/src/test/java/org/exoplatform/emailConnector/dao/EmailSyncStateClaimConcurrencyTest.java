@@ -37,6 +37,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Propagation;
@@ -145,6 +146,49 @@ public class EmailSyncStateClaimConcurrencyTest {
       assertTrue(row.getClaimedBy() != null && row.getClaimedBy().startsWith("node-"), "the row names a claimant");
     } finally {
       pool.shutdownNow();
+      emailSyncStateDAO.deleteById(USER);
+    }
+  }
+
+  /**
+   * The tick selects a due mailbox, another node claims it, synchronizes it and
+   * releases it, then the tick's claim arrives: the row is unclaimed again but its
+   * last sync is fresh, so the tick's claim lands on nothing, while the claim of the
+   * immediate and manual syncs, which run whatever the cadence says, still lands.
+   *
+   * <p>
+   * The statement runs on the real engine: the guarantee is that the claim's WHERE
+   * clause re-evaluates the cadence against the committed row, which a mocked storage
+   * cannot show.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void aTickClaimLandsOnlyOnAMailboxStillDue() {
+    Date staleBefore = new Date(NOW.getTime() - 3_600_000L);
+    Date activeSince = new Date(NOW.getTime() - 14L * 24 * 3_600_000L);
+    Date activeDueBefore = new Date(NOW.getTime() - 600_000L);
+    Date inactiveDueBefore = new Date(NOW.getTime() - 3_600_000L);
+    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 7_200_000L), null, NOW, null, 0L));
+    try {
+      assertEquals(List.of(USER),
+                   emailSyncStateDAO.findDue(activeSince, activeDueBefore, inactiveDueBefore, staleBefore, PageRequest.of(0, 10)),
+                   "the tick's selection reads the mailbox as due");
+
+      assertEquals(1, emailSyncStateDAO.claim(USER, NOW, "node-b", staleBefore));
+      assertEquals(1, emailSyncStateDAO.release(USER, "node-b", NOW));
+
+      assertEquals(0,
+                   emailSyncStateDAO.claimDue(USER, NOW, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore),
+                   "the mailbox was synchronized meanwhile: no longer due");
+      assertEquals(null, emailSyncStateDAO.findById(USER).orElseThrow().getClaimedBy());
+
+      assertEquals(1, emailSyncStateDAO.claim(USER, NOW, "node-a", staleBefore), "a claim that runs whatever the cadence still lands");
+      assertEquals(1, emailSyncStateDAO.release(USER, "node-a", new Date(NOW.getTime() - 7_200_000L)));
+
+      assertEquals(1,
+                   emailSyncStateDAO.claimDue(USER, NOW, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore),
+                   "a mailbox still due is claimed by the tick");
+    } finally {
       emailSyncStateDAO.deleteById(USER);
     }
   }

@@ -154,16 +154,15 @@ public class EmailSyncService {
       return 0;
     }
     Date staleBefore = EmailConnectorUtils.getSyncClaimStaleBefore(now);
-    List<String> due = emailSyncStateStorage.findDue(activeSince(now),
-                                                     activeDueBefore(now),
-                                                     inactiveDueBefore(now),
-                                                     staleBefore,
-                                                     free);
+    Date activeSince = activeSince(now);
+    Date activeDueBefore = activeDueBefore(now);
+    Date inactiveDueBefore = inactiveDueBefore(now);
+    List<String> due = emailSyncStateStorage.findDue(activeSince, activeDueBefore, inactiveDueBefore, staleBefore, free);
     int dispatched = 0;
     for (String userId : due) {
       try {
-        if (!emailSyncStateStorage.claim(userId, now, node, staleBefore)) {
-          LOG.debug("The mailbox of user {} was claimed by another node first", userId);
+        if (!emailSyncStateStorage.claimDue(userId, now, node, staleBefore, activeSince, activeDueBefore, inactiveDueBefore)) {
+          LOG.debug("The mailbox of user {} was claimed, or synchronized, by another node first", userId);
           continue;
         }
         executor.execute(() -> runClaimed(userId, now));
