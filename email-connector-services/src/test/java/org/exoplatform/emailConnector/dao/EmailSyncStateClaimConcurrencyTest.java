@@ -151,15 +151,67 @@ public class EmailSyncStateClaimConcurrencyTest {
   }
 
   /**
+   * Eight ticks claim one due mailbox at the same instant, with the claim the tick
+   * runs and the due thresholds it passes: exactly one is told it affected a row.
+   *
+   * @throws Exception if a claimant thread does
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void exactlyOneOfManySimultaneousTickClaimantsWins() throws Exception {
+    Date staleBefore = new Date(NOW.getTime() - 3_600_000L);
+    Date activeSince = new Date(NOW.getTime() - 14L * 24 * 3_600_000L);
+    Date activeDueBefore = new Date(NOW.getTime() - 600_000L);
+    Date inactiveDueBefore = new Date(NOW.getTime() - 3_600_000L);
+    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 7_200_000L), null, NOW, null, 0L));
+
+    CountDownLatch startLine = new CountDownLatch(1);
+    AtomicInteger winners = new AtomicInteger();
+    ExecutorService pool = Executors.newFixedThreadPool(CLAIMANTS);
+    try {
+      List<Future<Integer>> races = new java.util.ArrayList<>();
+      for (int i = 0; i < CLAIMANTS; i++) {
+        String node = "node-" + i;
+        Callable<Integer> claimant = () -> {
+          startLine.await();
+          int affected = emailSyncStateDAO.claimDue(USER,
+                                                    NOW,
+                                                    node,
+                                                    staleBefore,
+                                                    activeSince,
+                                                    activeDueBefore,
+                                                    inactiveDueBefore);
+          if (affected > 0) {
+            winners.incrementAndGet();
+          }
+          return affected;
+        };
+        races.add(pool.submit(claimant));
+      }
+      startLine.countDown();
+      int total = 0;
+      for (Future<Integer> race : races) {
+        total += race.get(30, TimeUnit.SECONDS);
+      }
+      assertEquals(1, winners.get(), "exactly one tick is told it took the mailbox");
+      assertEquals(1, total, "the tick's claim affects exactly one row across every claimant");
+      assertTrue(emailSyncStateDAO.findById(USER).orElseThrow().getClaimedBy().startsWith("node-"), "the row names a claimant");
+    } finally {
+      pool.shutdownNow();
+      emailSyncStateDAO.deleteById(USER);
+    }
+  }
+
+  /**
    * The tick selects a due mailbox, another node claims it, synchronizes it and
    * releases it, then the tick's claim arrives: the row is unclaimed again but its
    * last sync is fresh, so the tick's claim lands on nothing, while the claim of the
    * immediate and manual syncs, which run whatever the cadence says, still lands.
    *
    * <p>
-   * The statement runs on the real engine: the guarantee is that the claim's WHERE
-   * clause re-evaluates the cadence against the committed row, which a mocked storage
-   * cannot show.
+   * The calls are sequential: this pins that the tick's claim reads the cadence from
+   * the committed row, on the real engine. Its claim under contention is pinned by
+   * {@link #exactlyOneOfManySimultaneousTickClaimantsWins()}.
    */
   @Test
   @Transactional(propagation = Propagation.NOT_SUPPORTED)
