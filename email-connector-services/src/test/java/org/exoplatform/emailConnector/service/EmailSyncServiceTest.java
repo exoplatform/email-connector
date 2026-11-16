@@ -249,6 +249,23 @@ public class EmailSyncServiceTest {
   }
 
   /**
+   * A claim that throws leaves that mailbox alone, due for the next tick, and the
+   * next mailbox of the same tick is still dispatched.
+   */
+  @Test
+  void aThrowingClaimLeavesTheMailboxDueAndTheTickGoesOn() throws Exception {
+    when(emailSyncStateStorage.findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt())).thenReturn(List.of(ALICE, BOB));
+    when(emailSyncStateStorage.claimDue(eq(ALICE), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenThrow(new IllegalStateException("the claim failed"));
+    when(emailSyncStateStorage.claimDue(eq(BOB), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(true);
+
+    assertEquals(1, emailSyncService.dispatchDueSyncs());
+
+    verify(emailBoxService, never()).synchronizeClaimed(ALICE);
+    verify(emailBoxService).synchronizeClaimed(BOB);
+    verify(emailSyncStateStorage, never()).release(eq(ALICE), anyString(), any(Date.class));
+  }
+
+  /**
    * A throwing sync still releases its claim: a claim that outlives its run locks
    * the mailbox out of every node for the whole stale timeout. Mutation-verified:
    * with the release out of the {@code finally}, this fails.
