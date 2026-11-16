@@ -44,6 +44,15 @@ import org.exoplatform.emailConnector.entity.EmailSyncStateEntity;
 public interface EmailSyncStateDAO extends JpaRepository<EmailSyncStateEntity, String> {
 
   /**
+   * The cadence half of the due predicate: the mailbox was never synchronized, or its
+   * last sync is older than the period of its owner's tier. Kept apart so the tick's
+   * claim re-checks the same condition its selection read.
+   */
+  String CADENCE_PREDICATE = "(s.lastSyncDate IS NULL"
+      + " OR (s.lastActivityDate IS NOT NULL AND s.lastActivityDate >= :activeSince AND s.lastSyncDate < :activeDueBefore)"
+      + " OR ((s.lastActivityDate IS NULL OR s.lastActivityDate < :activeSince) AND s.lastSyncDate < :inactiveDueBefore))";
+
+  /**
    * The due predicate, shared by the selection, its count and its oldest-row read
    * so the three never disagree. A row is due when nobody holds a live claim on it
    * and either it was never synchronized, or its owner is active (an activity stamp
@@ -53,9 +62,7 @@ public interface EmailSyncStateDAO extends JpaRepository<EmailSyncStateEntity, S
    * the query, on precomputed thresholds, so no date arithmetic runs in JPQL.
    */
   String DUE_PREDICATE = "(s.syncStartedDate IS NULL OR s.syncStartedDate < :staleBefore)"
-      + " AND (s.lastSyncDate IS NULL"
-      + " OR (s.lastActivityDate IS NOT NULL AND s.lastActivityDate >= :activeSince AND s.lastSyncDate < :activeDueBefore)"
-      + " OR ((s.lastActivityDate IS NULL OR s.lastActivityDate < :activeSince) AND s.lastSyncDate < :inactiveDueBefore))";
+      + " AND " + CADENCE_PREDICATE;
 
   /**
    * The mailboxes due for a synchronization, the one waiting longest first, bounded
@@ -143,6 +150,36 @@ public interface EmailSyncStateDAO extends JpaRepository<EmailSyncStateEntity, S
   Date now, @Param("node")
   String node, @Param("staleBefore")
   Date staleBefore);
+
+  /**
+   * The tick's claim: the claim of a mailbox its selection read as due, which lands
+   * only while the row is still due. Between the selection and this statement another
+   * node may have claimed the mailbox, synchronized it and released it, stamping its
+   * last sync: the row is then unclaimed but no longer due, and this returns zero.
+   * Every other claimant (the immediate sync after a settings save, the manual sync,
+   * the reset) runs whatever the cadence says and uses {@link #claim}.
+   *
+   * @param userId the mailbox owner
+   * @param now the claim's stamp, and the run's start
+   * @param node the claiming node's identity
+   * @param staleBefore as for {@link #findDue}
+   * @param activeSince as for {@link #findDue}
+   * @param activeDueBefore as for {@link #findDue}
+   * @param inactiveDueBefore as for {@link #findDue}
+   * @return one when the caller now holds the claim, zero when somebody holds it or the mailbox is no longer due
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailSyncStateEntity s SET s.syncStartedDate = :now, s.claimedBy = :node"
+      + " WHERE s.userId = :userId AND " + DUE_PREDICATE)
+  int claimDue(@Param("userId")
+  String userId, @Param("now")
+  Date now, @Param("node")
+  String node, @Param("staleBefore")
+  Date staleBefore, @Param("activeSince")
+  Date activeSince, @Param("activeDueBefore")
+  Date activeDueBefore, @Param("inactiveDueBefore")
+  Date inactiveDueBefore);
 
   /**
    * The release, at the end of every run, success or failure: the claim cleared and
