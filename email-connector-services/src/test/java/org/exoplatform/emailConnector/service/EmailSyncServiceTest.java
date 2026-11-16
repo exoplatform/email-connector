@@ -146,7 +146,7 @@ public class EmailSyncServiceTest {
   void aTickClaimsOnlyTheFreeSlots() throws Exception {
     executor.active = 2;
     when(emailSyncStateStorage.findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), eq(2))).thenReturn(List.of(ALICE, BOB));
-    when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+    when(emailSyncStateStorage.claimDue(anyString(), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(true);
 
     assertEquals(2, emailSyncService.dispatchDueSyncs());
 
@@ -166,7 +166,7 @@ public class EmailSyncServiceTest {
     assertEquals(0, emailSyncService.dispatchDueSyncs());
 
     verify(emailSyncStateStorage, never()).findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt());
-    verify(emailSyncStateStorage, never()).claim(anyString(), any(Date.class), anyString(), any(Date.class));
+    verify(emailSyncStateStorage, never()).claimDue(anyString(), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class));
   }
 
   /**
@@ -238,8 +238,25 @@ public class EmailSyncServiceTest {
   @Test
   void aLostClaimIsSkippedWithoutError() throws Exception {
     when(emailSyncStateStorage.findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt())).thenReturn(List.of(ALICE, BOB));
-    when(emailSyncStateStorage.claim(eq(ALICE), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
-    when(emailSyncStateStorage.claim(eq(BOB), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+    when(emailSyncStateStorage.claimDue(eq(ALICE), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(false);
+    when(emailSyncStateStorage.claimDue(eq(BOB), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(true);
+
+    assertEquals(1, emailSyncService.dispatchDueSyncs());
+
+    verify(emailBoxService, never()).synchronizeClaimed(ALICE);
+    verify(emailBoxService).synchronizeClaimed(BOB);
+    verify(emailSyncStateStorage, never()).release(eq(ALICE), anyString(), any(Date.class));
+  }
+
+  /**
+   * A claim that throws leaves that mailbox alone, due for the next tick, and the
+   * next mailbox of the same tick is still dispatched.
+   */
+  @Test
+  void aThrowingClaimLeavesTheMailboxDueAndTheTickGoesOn() throws Exception {
+    when(emailSyncStateStorage.findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt())).thenReturn(List.of(ALICE, BOB));
+    when(emailSyncStateStorage.claimDue(eq(ALICE), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenThrow(new IllegalStateException("the claim failed"));
+    when(emailSyncStateStorage.claimDue(eq(BOB), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(true);
 
     assertEquals(1, emailSyncService.dispatchDueSyncs());
 
@@ -273,7 +290,7 @@ public class EmailSyncServiceTest {
   @Test
   void aLinkageErrorReleasesTheClaimAndTheTickGoesOn() throws Exception {
     when(emailSyncStateStorage.findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), anyInt())).thenReturn(List.of(ALICE, BOB));
-    when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+    when(emailSyncStateStorage.claimDue(anyString(), any(Date.class), anyString(), any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(true);
     when(emailBoxService.synchronizeClaimed(ALICE)).thenThrow(new NoClassDefFoundError("org/apache/commons/validator/routines/EmailValidator"));
 
     assertDoesNotThrow(() -> emailSyncService.dispatchDueSyncs());

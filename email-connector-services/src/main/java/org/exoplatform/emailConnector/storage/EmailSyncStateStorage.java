@@ -116,6 +116,29 @@ public class EmailSyncStateStorage {
   }
 
   /**
+   * Takes the claim on a mailbox the tick's selection read as due, if it is still
+   * due: nobody holds a live claim and its cadence has not been stamped since.
+   *
+   * @param userId the mailbox owner
+   * @param now the claim's stamp
+   * @param node the claiming node's identity
+   * @param staleBefore a claim taken strictly before this instant may be taken over
+   * @param activeSince an activity stamp at or after this instant makes the owner active
+   * @param activeDueBefore an active mailbox last synchronized strictly before this is due
+   * @param inactiveDueBefore an inactive mailbox last synchronized strictly before this is due
+   * @return true when the caller now holds the claim
+   */
+  public boolean claimDue(String userId,
+                          Date now,
+                          String node,
+                          Date staleBefore,
+                          Date activeSince,
+                          Date activeDueBefore,
+                          Date inactiveDueBefore) {
+    return emailSyncStateDAO.claimDue(userId, now, node, staleBefore, activeSince, activeDueBefore, inactiveDueBefore) == 1;
+  }
+
+  /**
    * Releases a node's claim on a mailbox and stamps the cadence with the run's
    * start.
    *
