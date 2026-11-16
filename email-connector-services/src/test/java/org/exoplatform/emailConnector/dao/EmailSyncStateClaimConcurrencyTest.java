@@ -37,6 +37,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Propagation;
@@ -145,6 +146,101 @@ public class EmailSyncStateClaimConcurrencyTest {
       assertTrue(row.getClaimedBy() != null && row.getClaimedBy().startsWith("node-"), "the row names a claimant");
     } finally {
       pool.shutdownNow();
+      emailSyncStateDAO.deleteById(USER);
+    }
+  }
+
+  /**
+   * Eight ticks claim one due mailbox at the same instant, with the claim the tick
+   * runs and the due thresholds it passes: exactly one is told it affected a row.
+   *
+   * @throws Exception if a claimant thread does
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void exactlyOneOfManySimultaneousTickClaimantsWins() throws Exception {
+    Date staleBefore = new Date(NOW.getTime() - 3_600_000L);
+    Date activeSince = new Date(NOW.getTime() - 14L * 24 * 3_600_000L);
+    Date activeDueBefore = new Date(NOW.getTime() - 600_000L);
+    Date inactiveDueBefore = new Date(NOW.getTime() - 3_600_000L);
+    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 7_200_000L), null, NOW, null, 0L));
+
+    CountDownLatch startLine = new CountDownLatch(1);
+    AtomicInteger winners = new AtomicInteger();
+    ExecutorService pool = Executors.newFixedThreadPool(CLAIMANTS);
+    try {
+      List<Future<Integer>> races = new java.util.ArrayList<>();
+      for (int i = 0; i < CLAIMANTS; i++) {
+        String node = "node-" + i;
+        Callable<Integer> claimant = () -> {
+          startLine.await();
+          int affected = emailSyncStateDAO.claimDue(USER,
+                                                    NOW,
+                                                    node,
+                                                    staleBefore,
+                                                    activeSince,
+                                                    activeDueBefore,
+                                                    inactiveDueBefore);
+          if (affected > 0) {
+            winners.incrementAndGet();
+          }
+          return affected;
+        };
+        races.add(pool.submit(claimant));
+      }
+      startLine.countDown();
+      int total = 0;
+      for (Future<Integer> race : races) {
+        total += race.get(30, TimeUnit.SECONDS);
+      }
+      assertEquals(1, winners.get(), "exactly one tick is told it took the mailbox");
+      assertEquals(1, total, "the tick's claim affects exactly one row across every claimant");
+      assertTrue(emailSyncStateDAO.findById(USER).orElseThrow().getClaimedBy().startsWith("node-"), "the row names a claimant");
+    } finally {
+      pool.shutdownNow();
+      emailSyncStateDAO.deleteById(USER);
+    }
+  }
+
+  /**
+   * The tick selects a due mailbox, another node claims it, synchronizes it and
+   * releases it, then the tick's claim arrives: the row is unclaimed again but its
+   * last sync is fresh, so the tick's claim lands on nothing, while the claim of the
+   * immediate and manual syncs, which run whatever the cadence says, still lands.
+   *
+   * <p>
+   * The calls are sequential: this pins that the tick's claim reads the cadence from
+   * the committed row, on the real engine. Its claim under contention is pinned by
+   * {@link #exactlyOneOfManySimultaneousTickClaimantsWins()}.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void aTickClaimLandsOnlyOnAMailboxStillDue() {
+    Date staleBefore = new Date(NOW.getTime() - 3_600_000L);
+    Date activeSince = new Date(NOW.getTime() - 14L * 24 * 3_600_000L);
+    Date activeDueBefore = new Date(NOW.getTime() - 600_000L);
+    Date inactiveDueBefore = new Date(NOW.getTime() - 3_600_000L);
+    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 7_200_000L), null, NOW, null, 0L));
+    try {
+      assertEquals(List.of(USER),
+                   emailSyncStateDAO.findDue(activeSince, activeDueBefore, inactiveDueBefore, staleBefore, PageRequest.of(0, 10)),
+                   "the tick's selection reads the mailbox as due");
+
+      assertEquals(1, emailSyncStateDAO.claim(USER, NOW, "node-b", staleBefore));
+      assertEquals(1, emailSyncStateDAO.release(USER, "node-b", NOW));
+
+      assertEquals(0,
+                   emailSyncStateDAO.claimDue(USER, NOW, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore),
+                   "the mailbox was synchronized meanwhile: no longer due");
+      assertEquals(null, emailSyncStateDAO.findById(USER).orElseThrow().getClaimedBy());
+
+      assertEquals(1, emailSyncStateDAO.claim(USER, NOW, "node-a", staleBefore), "a claim that runs whatever the cadence still lands");
+      assertEquals(1, emailSyncStateDAO.release(USER, "node-a", new Date(NOW.getTime() - 7_200_000L)));
+
+      assertEquals(1,
+                   emailSyncStateDAO.claimDue(USER, NOW, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore),
+                   "a mailbox still due is claimed by the tick");
+    } finally {
       emailSyncStateDAO.deleteById(USER);
     }
   }

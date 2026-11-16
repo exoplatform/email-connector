@@ -16,10 +16,13 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.util.Date;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,7 +35,7 @@ import org.exoplatform.emailConnector.dao.EmailSyncStateDAO;
 import org.exoplatform.emailConnector.entity.EmailSyncStateEntity;
 
 /**
- * The creation of a mailbox's sync-state row (EXO-90418).
+ * The creation of a mailbox's sync-state row (EXO-90418), and the tick's claim.
  */
 @ExtendWith(MockitoExtension.class)
 public class EmailSyncStateStorageTest {
@@ -60,5 +63,25 @@ public class EmailSyncStateStorageTest {
     verify(emailSyncStateDAO).saveAndFlush(created.capture());
     assertNotEquals(0L, created.getValue().getInboxEpoch());
     assertTrue(created.getValue().getInboxEpoch() >= before, "the creation instant");
+  }
+
+  /**
+   * The tick's claim holds only when its statement updated the row: zero rows means
+   * another node holds the claim, or synchronized the mailbox since the selection.
+   */
+  @Test
+  void theTicksClaimHoldsOnlyWhenTheRowWasUpdated() {
+    Date now = new Date(10_000L);
+    Date staleBefore = new Date(1_000L);
+    Date activeSince = new Date(2_000L);
+    Date activeDueBefore = new Date(3_000L);
+    Date inactiveDueBefore = new Date(4_000L);
+    when(emailSyncStateDAO.claimDue("alice", now, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore))
+      .thenReturn(1);
+    when(emailSyncStateDAO.claimDue("bob", now, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore))
+      .thenReturn(0);
+
+    assertTrue(storage.claimDue("alice", now, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore));
+    assertFalse(storage.claimDue("bob", now, "node-a", staleBefore, activeSince, activeDueBefore, inactiveDueBefore));
   }
 }
