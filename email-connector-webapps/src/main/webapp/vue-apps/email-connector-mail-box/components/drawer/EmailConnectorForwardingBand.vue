@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        Never in someone else's mailbox: the parent shows it on the user's own only. -->
   <div
     v-if="shown"
-    :class="{ white: sticky }"
+    :class="{ 'application-background': sticky }"
     :style="sticky ? STICKY_STYLE : null">
     <v-alert
       :icon="false"

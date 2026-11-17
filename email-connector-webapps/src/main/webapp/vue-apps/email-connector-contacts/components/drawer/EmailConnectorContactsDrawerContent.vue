@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :indeterminate="indeterminate"
       :label="$t('emailConnector.contacts.select.all')"
       class="ps-4 my-2 pt-0"
-      color="#707070"
+      color="var(--allPagesGreyColorLighten1, #707070)"
       hide-details
       @click.stop />
     <email-connector-contacts-list

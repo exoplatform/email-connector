@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -59,6 +60,7 @@ import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.EmailSignatureImage;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSignatureSetting;
 import org.exoplatform.portal.branding.BrandingService;
@@ -532,6 +534,63 @@ class EmailSignatureServiceTest {
     assertTrue(signature.getLogoHtml().contains("?v=42"), "and its file id versions the image address");
   }
 
+  @Test
+  void theCompanyLogoFallbackDeclaresTheTypeOfItsBytes() {
+    assertEquals("image/svg+xml", companyLogoMimeType("<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(StandardCharsets.UTF_8)));
+    assertEquals("image/svg+xml", companyLogoMimeType("<svg xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(StandardCharsets.UTF_8)));
+    assertEquals("image/svg+xml", companyLogoMimeType("<!DOCTYPE svg>\n<SVG xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(StandardCharsets.UTF_8)),
+                 "the type is read whatever the case, as the branding accepted it");
+    assertEquals("image/svg+xml", companyLogoMimeType("<!doctype svg><svg/>".getBytes(StandardCharsets.UTF_8)));
+    assertEquals("image/jpeg", companyLogoMimeType(new byte[] { (byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0x10, 'J', 'F', 'I', 'F' }));
+    assertEquals("image/png", companyLogoMimeType(new byte[] { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0 }));
+    assertEquals("image/png", companyLogoMimeType("not an image".getBytes(StandardCharsets.UTF_8)));
+  }
+
+  private String companyLogoMimeType(byte[] data) {
+    Logo logo = new Logo();
+    logo.setData(data);
+    logo.setFileId(7L);
+    when(brandingService.getLogo()).thenReturn(logo);
+    return emailSignatureService.getSignatureImage(TEST_USER).logo().mimeType();
+  }
+
+  /**
+   * The signature image comes with the version of the address naming it, read
+   * together: the user's own file id when their file is served, the company
+   * logo's file id when the company logo is served, a refused id or an
+   * unreadable own file included, taken from the company logo file read, and
+   * no image without either.
+   */
+  @Test
+  @SneakyThrows
+  void theSignatureImageVersionDescribesTheImageServed() {
+    Logo companyLogo = new Logo();
+    companyLogo.setData("company logo bytes".getBytes(StandardCharsets.UTF_8));
+    companyLogo.setFileId(7L);
+    when(brandingService.getLogo()).thenReturn(companyLogo);
+    // a publication between two reads moves the logo id: the version is the read file's id, never a second read
+    lenient().when(brandingService.getLogoId()).thenReturn(8L);
+    givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
+    givenTheUsersOwnImage(42L);
+    when(fileService.getFile(42L)).thenReturn(fileItemOf(42L, "own image bytes", "image/png"));
+
+    EmailSignatureImage own = emailSignatureService.getSignatureImage(TEST_USER);
+    assertEquals("own image bytes", new String(own.logo().bytes(), StandardCharsets.UTF_8), "the user's own image");
+    assertEquals(42L, own.version(), "versioned by its file id");
+
+    when(fileService.getFile(42L)).thenThrow(new IllegalStateException("file store unavailable"));
+    EmailSignatureImage unreadable = emailSignatureService.getSignatureImage(TEST_USER);
+    assertEquals("company logo bytes", new String(unreadable.logo().bytes(), StandardCharsets.UTF_8),
+                 "the company logo stands in for an unreadable own image");
+    assertEquals(7L, unreadable.version(), "versioned by the company logo's id, never by the unreadable file's");
+
+    givenAnotherUsersImage(42L);
+    assertEquals(7L, emailSignatureService.getSignatureImage(TEST_USER).version(), "a refused id gives the company logo's");
+
+    when(brandingService.getLogo()).thenReturn(null);
+    assertNull(emailSignatureService.getSignatureImage(TEST_USER), "no image, no version");
+  }
+
   /**
    * A stored image id that names another user's image is neither reported as
    * the user's own image nor used as the image address's version: the
@@ -541,7 +600,7 @@ class EmailSignatureServiceTest {
   void aRefusedIdIsNeitherTheCustomImageNorItsVersion() {
     givenAProfile(profile -> profile.setProperty(Profile.FULL_NAME, "Ada"));
     givenACompanyLogo("company logo bytes");
-    when(brandingService.getLastUpdatedTime()).thenReturn(7L);
+    when(brandingService.getLogoId()).thenReturn(7L);
     givenAStoredSetting("{\"enabled\":true,\"logoFileId\":42}");
     givenAnotherUsersImage(42L);
 
@@ -551,6 +610,30 @@ class EmailSignatureServiceTest {
     assertTrue(signature.getLogoHtml().contains("?v=7"), "the image address carries the company logo's version");
     assertFalse(signature.getLogoHtml().contains("?v=42"), "never the refused file id");
     assertFalse(signature.getDefaultHtml().contains("?v=42"), "in the default signature either");
+  }
+
+  /**
+   * The company logo's address is versioned by the logo's file id, and its
+   * presence is read from that id alone: the logo's content is never loaded to
+   * build the markup, and a logo with no file id is no image.
+   */
+  @Test
+  void companyLogoPresenceAndVersionComeFromTheLogoFileId() {
+    givenAProfile(profile -> profile.setProperty(Profile.FULL_NAME, "Ada"));
+    givenACompanyLogo("company logo bytes");
+    when(brandingService.getLastUpdatedTime()).thenReturn(7L);
+    when(brandingService.getLogoId()).thenReturn(99L);
+
+    assertTrue(emailSignatureService.getEmailSignature(TEST_USER).getLogoHtml().contains("?v=99"),
+               "the logo's file id versions the image address");
+    verify(brandingService, never()).getLogo();
+
+    when(brandingService.getLogoId()).thenReturn(null);
+
+    String withoutId = emailSignatureService.getEmailSignature(TEST_USER).getLogoHtml();
+    assertFalse(withoutId != null && withoutId.contains(EmailSignatureService.SIGNATURE_IMAGE_PATH),
+                "a logo with no file id is no image, whatever the update time");
+    verify(brandingService, never()).getLogo();
   }
 
   /**
@@ -677,6 +760,7 @@ class EmailSignatureServiceTest {
     Logo logo = new Logo();
     logo.setData(content.getBytes(StandardCharsets.UTF_8));
     when(brandingService.getLogo()).thenReturn(logo);
+    lenient().when(brandingService.getLogoId()).thenReturn(1L);
   }
 
   /**

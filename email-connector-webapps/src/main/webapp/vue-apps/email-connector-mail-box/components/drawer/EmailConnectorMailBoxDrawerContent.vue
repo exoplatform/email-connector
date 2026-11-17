@@ -21,7 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="ps-5 my-2 pt-0"
       v-if="selectMode"
       :indeterminate="indeterminate"
-      color="#707070"
+      color="var(--allPagesGreyColorLighten1, #707070)"
       :background-color="selectAllBackground"
       hide-details
       :aria-label="$t('emailConnector.mailBox.list.drawer.selectAll')"

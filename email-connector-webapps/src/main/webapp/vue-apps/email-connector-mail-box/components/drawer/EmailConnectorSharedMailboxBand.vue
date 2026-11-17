@@ -27,9 +27,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        then showed its icon and no text. Hence the explicit v-if on $slots.default.
        Pinned through a wrapper, not the alert itself: Vuetify's .v-alert--text forces
        a transparent background with !important, so only a wrapper can put an opaque
-       surface (the platform's `white` helper) under the translucent tint and keep the
+       surface (the platform's `application-background` helper) under the translucent tint and keep the
        rows scrolling beneath from showing through. -->
-  <div :class="{ white: sticky }" :style="sticky ? STICKY_STYLE : null">
+  <div :class="{ 'application-background': sticky }" :style="sticky ? STICKY_STYLE : null">
     <v-alert
       :icon="false"
       class="mb-0 text-body-2 border-box-sizing"
@@ -109,7 +109,7 @@ export default {
     sticky: { type: Boolean, default: false },
   },
   data: () => ({
-    // Pinned to the top of the scrolling list; the opaque surface is the `white` class.
+    // Pinned to the top of the scrolling list; the opaque surface is the `application-background` class.
     STICKY_STYLE: { position: 'sticky', top: 0, zIndex: 3 },
     // One line of the band's text (text-body-2's line height): the box a leading icon
     // is centred in, so it sits on the first line whatever the text does below it.
