@@ -77,12 +77,26 @@ const LINE_STRUCTURE_TAGS = [
  */
 const MAX_ENVELOPE_DIVS = 1;
 
+/** What a colour read from the page may hold before it is written into the frame's style. */
+const SAFE_CSS_VALUE = /^[#a-zA-Z0-9(),.%\s-]+$/;
+
+/**
+ * The page's custom properties the reader copies into the frame, in the order of the
+ * platform's fallbacks: the first one that is set holds the colour.
+ */
+const THEME_PROPERTIES = {
+  '--allPagesBaseTextColor': ['--appTextColor', '--allPagesBaseTextColor'],
+  '--allPagesPrimaryTextColor': ['--allPagesPrimaryTextColor'],
+};
+
 export default {
   data() {
     return {
       iframeHeight: 0,
       iframeVisible: false,
-      resizeObserver: null
+      resizeObserver: null,
+      displayVersion: 'light',
+      themeProperties: {},
     };
   },
   props: {
@@ -132,6 +146,15 @@ export default {
       return emailBodyText === '';
     }
   },
+  created() {
+    document.addEventListener('displayModeChanged', this.readTheme);
+  },
+  mounted() {
+    this.readTheme();
+  },
+  beforeDestroy() {
+    document.removeEventListener('displayModeChanged', this.readTheme);
+  },
   watch: {
     expandedDrawer() {
       this.$nextTick(() => this.recalculateIframeHeight());
@@ -144,6 +167,47 @@ export default {
     },
   },
   methods: {
+    /**
+     * Reads the display version the page shows and the custom properties of its colours,
+     * which the frame, a document of its own, does not inherit. A reader inside a scope
+     * that keeps the light display keeps it. Read again whenever the page changes version,
+     * which builds the frame's document again.
+     *
+     * @returns {void}
+     */
+    readTheme() {
+      const lightScope = !!(this.$root?.lightOnly || this.$el?.closest?.('[data-display-mode="light"]:not(html)'));
+      this.displayVersion = !lightScope && this.$displayMode?.getVersion?.() === 'dark' ? 'dark' : 'light';
+      const style = window.getComputedStyle(this.$el?.nodeType === 1 ? this.$el : document.documentElement);
+      const properties = {};
+      Object.entries(THEME_PROPERTIES).forEach(([property, sources]) => {
+        const source = sources.find(name => style.getPropertyValue(name)?.trim());
+        const value = source && style.getPropertyValue(source).trim();
+        if (value && SAFE_CSS_VALUE.test(value)) {
+          properties[property] = value;
+        }
+      });
+      this.themeProperties = this.displayVersion === 'dark' ? properties : {};
+    },
+    /**
+     * The frame's theme, only for the dark version (light keeps the frame as it was): its
+     * color-scheme and the page's colour properties copied into its head. The sender's background is never set here, so a
+     * received mail keeps its own; only the text the sender left uncoloured, and the
+     * links, follow the version.
+     *
+     * @returns {string} the frame's theme style
+     */
+    themeCSS() {
+      if (this.displayVersion !== 'dark') {
+        return '';
+      }
+      const properties = Object.entries(this.themeProperties).map(([name, value]) => `${name}: ${value};`).join(' ');
+      return `
+        :root { color-scheme: dark; ${properties} }
+        body { color: var(--allPagesBaseTextColor, #E6E9EB); }
+        a, .ec-quoted-toggle { color: var(--allPagesPrimaryTextColor, #1a73e8); }
+      `;
+    },
     /**
      * Wrap the purified email body into a self-contained HTML document for the
      * iframe, first folding the quoted history behind a Gmail-style "···" toggle so
@@ -234,12 +298,13 @@ export default {
       const renderedBody = this.renderBody(purified.body);
       const senderCSS = purified.styles ? `<style>${purified.styles}</style>` : '';
       return `
-        <html${purified.htmlAttributes}>
+        <html${purified.htmlAttributes} data-display-mode="${this.displayVersion}">
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <meta name="referrer" content="no-referrer">
             <base target="_blank">
             <style>${finalCSS}</style>
+            <style>${this.themeCSS()}</style>
             ${senderCSS}
           </head>
           <body${purified.bodyAttributes}>${renderedBody}</body>

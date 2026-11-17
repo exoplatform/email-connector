@@ -33,6 +33,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -87,6 +88,7 @@ import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.EmailSignatureImage;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.FolderAccess;
 import org.exoplatform.emailConnector.model.FolderAccessChange;
@@ -828,14 +830,71 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void getSignatureImage() throws Exception {
-    when(emailSignatureService.getSignatureLogo(SIMPLE_USER)).thenReturn(new EmailSignatureLogo(new byte[] { 1, 2 },
-                                                                                                "image/png",
-                                                                                                "logo"));
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(signatureImage(1L));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
            .andExpect(status().isOk());
-    when(emailSignatureService.getSignatureLogo(SIMPLE_USER)).thenReturn(null);
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(null);
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
            .andExpect(status().isNotFound());
+  }
+
+  /**
+   * The signature image is cached privately for a year only when the address
+   * names the image's current version; an older or missing version, as a
+   * stored signature or a draft keeps it, is cached for a minute.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void signatureImageCachesLongOnlyForItsCurrentVersion() throws Exception {
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(signatureImage(99L));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image?v=99").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", "max-age=31536000, private"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image?v=1763481600000").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", "max-age=60, private"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", "max-age=60, private"));
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(signatureImage(null));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image?v=null").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("Cache-Control", "max-age=60, private"));
+  }
+
+  /**
+   * The signature image is never sniffed by the browser, and an SVG is served
+   * under a policy that runs no script, as the platform's branding images are.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void signatureImageIsNeverSniffedAndAnSvgRunsNoScript() throws Exception {
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(signatureImage(1L));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image?v=1").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+           .andExpect(header().doesNotExist("Content-Security-Policy"));
+    when(emailSignatureService.getSignatureImage(SIMPLE_USER)).thenReturn(new EmailSignatureImage(new EmailSignatureLogo("<svg/>".getBytes(),
+                                                                                                                         "image/svg+xml",
+                                                                                                                         "logo"),
+                                                                                                  1L));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image?v=1").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(header().string("Content-Type", "image/svg+xml"))
+           .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+           .andExpect(header().string("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'"));
+  }
+
+  /**
+   * A signature image of two bytes.
+   *
+   * @param version the version of the address naming it
+   * @return the image with its version
+   */
+  private static EmailSignatureImage signatureImage(Long version) {
+    return new EmailSignatureImage(new EmailSignatureLogo(new byte[] { 1, 2 }, "image/png", "logo"), version);
   }
 
   /**

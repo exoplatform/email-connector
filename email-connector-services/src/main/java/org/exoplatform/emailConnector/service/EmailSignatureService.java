@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -37,6 +39,7 @@ import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.HTMLSanitizer;
 import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.EmailSignatureImage;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSignatureSetting;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -236,15 +239,33 @@ public class EmailSignatureService {
    * @return the image, or null when there is none to embed
    */
   public EmailSignatureLogo getSignatureLogo(String username) {
+    EmailSignatureImage image = getSignatureImage(username);
+    return image == null ? null : image.logo();
+  }
+
+  /**
+   * The image of {@link #getSignatureLogo} with the version of the address
+   * that names it ({@code ?v=}, as the signature markup writes it): the user's
+   * own file id when their file is the image served, the company logo's file
+   * id when the company logo is, including when the user's own file cannot be
+   * read. The image endpoint grants its long private cache only to a request
+   * naming this version, so an older address kept in a stored signature or a
+   * draft is revalidated within a minute.
+   *
+   * @param username the signature's owner
+   * @return the image and its version, or null when there is no image
+   */
+  public EmailSignatureImage getSignatureImage(String username) {
     Long logoFileId = ownLogoFileId(username, getStoredSetting(username));
     if (logoFileId != null) {
       try {
         FileItem fileItem = fileService.getFile(logoFileId);
         if (fileItem != null && fileItem.getAsByte() != null) {
           String mimeType = fileItem.getFileInfo() == null ? null : fileItem.getFileInfo().getMimetype();
-          return new EmailSignatureLogo(fileItem.getAsByte(),
-                                        StringUtils.defaultIfBlank(mimeType, DEFAULT_LOGO_MIME_TYPE),
-                                        SIGNATURE_LOGO_FILE_NAME);
+          return new EmailSignatureImage(new EmailSignatureLogo(fileItem.getAsByte(),
+                                                                StringUtils.defaultIfBlank(mimeType, DEFAULT_LOGO_MIME_TYPE),
+                                                                SIGNATURE_LOGO_FILE_NAME),
+                                         logoFileId);
         }
       } catch (Exception e) {
         LOG.warn("The signature image of user {} could not be read; falling back to the company logo", username, e);
@@ -254,7 +275,37 @@ public class EmailSignatureService {
     if (companyLogo == null || companyLogo.getData() == null || companyLogo.getData().length == 0) {
       return null;
     }
-    return new EmailSignatureLogo(companyLogo.getData(), DEFAULT_LOGO_MIME_TYPE, "logo");
+    // the version is the id of the file these bytes were read from, never a second read of the logo id, which a
+    // publication in between would move to another file
+    return new EmailSignatureImage(new EmailSignatureLogo(companyLogo.getData(), detectImageMimeType(companyLogo.getData()), "logo"),
+                                   companyLogo.getFileId() > 0 ? companyLogo.getFileId() : null);
+  }
+
+  /**
+   * The company logo carries no type: it is read from the bytes (the formats
+   * the branding accepts for a logo are PNG, JPEG and SVG), PNG otherwise.
+   */
+  static String detectImageMimeType(byte[] data) {
+    if (data.length >= 8
+        && (data[0] & 0xFF) == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+      return DEFAULT_LOGO_MIME_TYPE;
+    } else if (data.length >= 3 && (data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8 && (data[2] & 0xFF) == 0xFF) {
+      return "image/jpeg";
+    } else if (data.length >= 6 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8') {
+      return "image/gif";
+    } else if (isSvg(data)) {
+      return "image/svg+xml";
+    }
+    return DEFAULT_LOGO_MIME_TYPE;
+  }
+
+  private static boolean isSvg(byte[] data) {
+    String head = new String(data, 0, Math.min(data.length, 1024), StandardCharsets.UTF_8).stripLeading().toLowerCase(Locale.ROOT);
+    if (head.startsWith("\uFEFF")) {
+      head = head.substring(1).stripLeading();
+    }
+    return head.startsWith("<svg") || ((head.startsWith("<?xml") || head.startsWith("<!--") || head.startsWith("<!doctype"))
+                                       && head.contains("<svg"));
   }
 
   /**
@@ -384,8 +435,10 @@ public class EmailSignatureService {
    * The signature image element, pointing at {@link #SIGNATURE_IMAGE_PATH} —
    * the address the composer can render (the caller is logged in there) and the
    * send path recognises and replaces with the {@code cid:} of the embedded
-   * part. The version parameter is the custom file's id or the branding's own
-   * update time, so replacing the image is a new URL rather than a stale cache.
+   * part. The version parameter is the custom file's id, or the company logo's
+   * file id, so replacing the image is a new URL rather than a stale cache.
+   * The company logo's presence is read from its file id: no file content is
+   * loaded to build the markup.
    *
    * @param logoFileId the user's own signature image file id, or null when the
    *          signature carries the company logo
@@ -396,11 +449,11 @@ public class EmailSignatureService {
     if (logoFileId != null) {
       version = logoFileId;
     } else {
-      Logo companyLogo = brandingService.getLogo();
-      if (companyLogo == null || companyLogo.getData() == null || companyLogo.getData().length == 0) {
+      Long companyLogoId = brandingService.getLogoId();
+      if (companyLogoId == null) {
         return null;
       }
-      version = brandingService.getLastUpdatedTime();
+      version = companyLogoId;
     }
     String companyName = escapeHtml(brandingService.getCompanyName());
     return "<img src=\"" + SIGNATURE_IMAGE_PATH + "?v=" + version + "\" alt=\""

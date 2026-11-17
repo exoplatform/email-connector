@@ -97,7 +97,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-checkbox
           v-if="showCheckbox"
           class="ma-0 pa-0"
-          color="#707070"
+          color="var(--allPagesGreyColorLighten1, #707070)"
           background-color="transparent"
           hide-details
           :aria-label="selectLabel"
