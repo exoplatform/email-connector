@@ -36,7 +36,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="selectMode"
       :input-value="ticked"
       class="mt-0 pt-0 me-2 align-self-center"
-      color="#707070"
+      color="var(--allPagesGreyColorLighten1, #707070)"
       background-color="transparent"
       hide-details
       dense

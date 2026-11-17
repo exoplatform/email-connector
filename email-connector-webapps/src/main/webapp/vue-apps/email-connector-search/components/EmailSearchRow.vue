@@ -191,7 +191,7 @@ export default {
       return this.unread ? 'fas fa-envelope' : 'far fa-envelope-open';
     },
     iconColor() {
-      return this.unread ? 'primary' : '#707070';
+      return this.unread ? 'primary' : 'var(--allPagesGreyColorLighten1, #707070)';
     },
     subject() {
       return this.result?.subject?.trim?.() || this.$t('emailConnector.mailBox.list.drawer.noSubject');

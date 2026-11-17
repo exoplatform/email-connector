@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.EmailSignatureImage;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.FolderAccessUpdate;
 import org.exoplatform.emailConnector.model.ForwardingAuthoring;
@@ -100,11 +101,20 @@ import jakarta.servlet.http.HttpServletRequest;
 public class UserEmailSettingRest {
 
   /**
-   * How long a browser may cache the signature image privately. Safe to be
-   * long: the image URL carries a version parameter that changes whenever the
-   * image does, so a stale cache is a URL nobody asks for any more.
+   * How long a browser may cache the signature image privately when the
+   * address names the image's current version: the version parameter changes
+   * whenever the image does.
    */
   private static final long       SIGNATURE_IMAGE_CACHE_DAYS = 365;
+
+  /**
+   * How long a browser may cache the signature image privately when the
+   * address names any other version: a stored signature or a draft keeps the
+   * address it was written with, and must show a replaced image soon.
+   */
+  private static final long       SIGNATURE_IMAGE_OLD_VERSION_CACHE_SECONDS = 60;
+
+  private static final MediaType  SVG_MEDIA_TYPE                            = MediaType.parseMediaType("image/svg+xml");
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -512,29 +522,46 @@ public class UserEmailSettingRest {
   /**
    * Streams the caller's signature image. The EFFECTIVE image - the picture the caller
    * uploaded through the cropper when they set one, the platform's company logo
-   * otherwise.
+   * otherwise. Cached privately for a year when the requested version is the
+   * image's current one, for a minute otherwise: an address an older signature
+   * or draft still carries gets the current image, revalidated soon.
    *
    * @param request the caller's request, for the acting user
+   * @param version the image version the address carries, the {@code v} parameter
    * @return the answer, as ResponseEntity&lt;InputStreamResource&gt;
    */
   @GetMapping("/signature/image")
   @Secured("users")
   @Operation(summary = "Streams the caller's signature image",
              method = "GET",
-             description = "The EFFECTIVE image - the picture the caller uploaded through the cropper when they set one, the platform's company logo otherwise. This URL only renders for the logged-in caller; in a message that actually goes out, the send path swaps it for a cid: reference to an embedded multipart/related part, which is the only form an external recipient's client renders. Answers 404 when there is no image at all.")
+             description = "The EFFECTIVE image - the picture the caller uploaded through the cropper when they set one, the platform's company logo otherwise. Cache-Control is private for a year when v is the image's current version, private, max-age=60 for any other v. This URL only renders for the logged-in caller; in a message that actually goes out, the send path swaps it for a cid: reference to an embedded multipart/related part, which is the only form an external recipient's client renders. Answers 404 when there is no image at all.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
-  public ResponseEntity<InputStreamResource> getSignatureImage(HttpServletRequest request) {
-    EmailSignatureLogo logo = emailSignatureService.getSignatureLogo(request.getRemoteUser());
-    if (logo == null) {
+  public ResponseEntity<InputStreamResource> getSignatureImage(HttpServletRequest request,
+                                                               @Parameter(description = "The image version the address carries")
+                                                               @RequestParam(name = "v", required = false)
+                                                               String version) {
+    EmailSignatureImage image = emailSignatureService.getSignatureImage(request.getRemoteUser());
+    if (image == null) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
-    return ResponseEntity.ok()
-                         .cacheControl(CacheControl.maxAge(SIGNATURE_IMAGE_CACHE_DAYS, TimeUnit.DAYS).cachePrivate())
-                         .contentType(StringUtils.isBlank(logo.mimeType()) ? MediaType.IMAGE_PNG
-                                                                           : MediaType.parseMediaType(logo.mimeType()))
-                         .body(new InputStreamResource(new ByteArrayInputStream(logo.bytes())));
+    EmailSignatureLogo logo = image.logo();
+    boolean isCurrentVersion = image.version() != null && String.valueOf(image.version()).equals(version);
+    CacheControl cacheControl = (isCurrentVersion ? CacheControl.maxAge(SIGNATURE_IMAGE_CACHE_DAYS, TimeUnit.DAYS)
+                                                  : CacheControl.maxAge(SIGNATURE_IMAGE_OLD_VERSION_CACHE_SECONDS,
+                                                                        TimeUnit.SECONDS)).cachePrivate();
+    MediaType mediaType = StringUtils.isBlank(logo.mimeType()) ? MediaType.IMAGE_PNG : MediaType.parseMediaType(logo.mimeType());
+    // served as the type its bytes are, never sniffed, and an SVG under a policy that runs no script, as the
+    // platform's own branding images are
+    ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                                                        .cacheControl(cacheControl)
+                                                        .contentType(mediaType)
+                                                        .header("X-Content-Type-Options", "nosniff");
+    if (SVG_MEDIA_TYPE.isCompatibleWith(mediaType)) {
+      response.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    }
+    return response.body(new InputStreamResource(new ByteArrayInputStream(logo.bytes())));
   }
 
   /**

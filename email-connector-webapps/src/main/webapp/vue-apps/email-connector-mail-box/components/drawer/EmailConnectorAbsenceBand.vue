@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        reply is never said there. -->
   <div
     v-if="shown"
-    :class="{ white: sticky }"
+    :class="{ 'application-background': sticky }"
     :style="sticky ? STICKY_STYLE : null">
     <v-alert
       :icon="false"
