@@ -40,7 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-list-item-content>
       <v-icon
         size="60"
-        class="tertiary--text">
+        class="secondary--text">
         far fa-envelope
       </v-icon>
       <v-list-item-title class="text-wrap mt-5">
