@@ -77,6 +77,7 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.services.listener.ListenerService;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 
 import com.sun.mail.imap.IMAPFolder;
@@ -102,6 +103,9 @@ class EmailBoxMailTransferTest {
 
   @MockitoBean
   private UserEmailSettingService userEmailSettingService;
+
+  @MockitoBean
+  private IdentityManager identityManager;
 
   @MockitoBean
   private EmailBoxStorage         emailBoxStorage;
