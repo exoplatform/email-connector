@@ -24,13 +24,13 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 
-import javax.mail.Flags;
-import javax.mail.FolderClosedException;
-import javax.mail.MessagingException;
-import javax.mail.Session;
-import javax.mail.StoreClosedException;
-import javax.mail.internet.MimeMessage;
-import javax.mail.util.SharedByteArrayInputStream;
+import jakarta.mail.Flags;
+import jakarta.mail.FolderClosedException;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.StoreClosedException;
+import jakarta.mail.internet.MimeMessage;
+import jakarta.mail.util.SharedByteArrayInputStream;
 
 import org.apache.commons.lang3.StringUtils;
 

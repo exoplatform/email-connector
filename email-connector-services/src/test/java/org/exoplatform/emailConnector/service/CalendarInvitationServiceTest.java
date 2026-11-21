@@ -43,12 +43,12 @@ import java.util.Date;
 import java.util.List;
 import java.util.Properties;
 
-import javax.mail.BodyPart;
-import javax.mail.Message;
-import javax.mail.Multipart;
-import javax.mail.Session;
-import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.BodyPart;
+import jakarta.mail.Message;
+import jakarta.mail.Multipart;
+import jakarta.mail.Session;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -791,7 +791,7 @@ class CalendarInvitationServiceTest {
   }
 
   /**
-   * A mail with no From is nobody's, whatever its Sender: javax.mail's getFrom() answers
+   * A mail with no From is nobody's, whatever its Sender: jakarta.mail's getFrom() answers
    * the Sender there, and the sync stored it as the From, so neither the server read nor
    * the stored From may stand for one. The update and the cancellation are refused.
    *
@@ -801,7 +801,7 @@ class CalendarInvitationServiceTest {
   void aMailWithNoFromIsNotTheOrganisersWhateverItsSender() throws Exception {
     when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
     when(invitationLandingService.lookUpHeld(any())).thenReturn(heldCopy(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 1)));
-    MimeMessage message = new MimeMessage((javax.mail.Session) null);
+    MimeMessage message = new MimeMessage((jakarta.mail.Session) null);
     message.setSender(new InternetAddress("olivia@partner.example"));
     email.setSender(new EmailSender("Olivia", ((InternetAddress) message.getFrom()[0]).getAddress(), null, null));
     authors = EmailBoxService.authorsOf(message);
@@ -855,7 +855,7 @@ class CalendarInvitationServiceTest {
    * @throws Exception never
    */
   private static MimeMessage senderNamingTheOrganiser() throws Exception {
-    MimeMessage message = new MimeMessage((javax.mail.Session) null);
+    MimeMessage message = new MimeMessage((jakarta.mail.Session) null);
     message.setFrom(new InternetAddress("mallory@elsewhere.example"));
     message.setSender(new InternetAddress("olivia@partner.example"));
     return message;

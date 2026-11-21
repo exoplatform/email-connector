@@ -48,13 +48,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import javax.mail.Flags;
-import javax.mail.Folder;
-import javax.mail.Message;
-import javax.mail.MessagingException;
-import javax.mail.StoreClosedException;
-import javax.mail.search.SearchTerm;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.Flags;
+import jakarta.mail.Folder;
+import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
+import jakarta.mail.StoreClosedException;
+import jakarta.mail.search.SearchTerm;
+import jakarta.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -589,7 +589,7 @@ class EmailImportServiceTest {
    * @throws Exception when it cannot be parsed
    */
   private static MimeMessage parse(String raw) throws Exception {
-    return new MimeMessage(javax.mail.Session.getInstance(new java.util.Properties()),
+    return new MimeMessage(jakarta.mail.Session.getInstance(new java.util.Properties()),
                            new java.io.ByteArrayInputStream(raw.getBytes(StandardCharsets.US_ASCII)));
   }
 
@@ -637,7 +637,7 @@ class EmailImportServiceTest {
    * @throws Exception when it cannot be parsed
    */
   private static MimeMessage mime(String headers) throws Exception {
-    return new MimeMessage(javax.mail.Session.getInstance(new java.util.Properties()),
+    return new MimeMessage(jakarta.mail.Session.getInstance(new java.util.Properties()),
                            new java.io.ByteArrayInputStream((headers + MAIL_NEW).getBytes(StandardCharsets.US_ASCII)));
   }
 }

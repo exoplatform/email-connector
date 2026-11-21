@@ -29,7 +29,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 
-import javax.mail.PasswordAuthentication;
+import jakarta.mail.PasswordAuthentication;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
