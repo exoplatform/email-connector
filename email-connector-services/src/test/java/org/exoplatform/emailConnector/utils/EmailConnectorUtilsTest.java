@@ -241,4 +241,23 @@ public class EmailConnectorUtilsTest {
     return part;
   }
 
+  @Test
+  void canonicalConnectorIdIsTheNumbersDecimalString() {
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("+7"));
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("007"));
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("7"));
+    assertEquals(null, EmailConnectorUtils.canonicalConnectorId(" "));
+    assertEquals(null, EmailConnectorUtils.canonicalConnectorId("7a"));
+    assertEquals(null, EmailConnectorUtils.canonicalConnectorId("99999999999999999999"));
+  }
+
+  @Test
+  void sameConnectorMatchesByNumber() {
+    assertTrue(EmailConnectorUtils.sameConnector("+7", 7L));
+    assertTrue(EmailConnectorUtils.sameConnector("007", "7"));
+    assertFalse(EmailConnectorUtils.sameConnector("8", 7L));
+    assertFalse(EmailConnectorUtils.sameConnector(null, 7L));
+    assertFalse(EmailConnectorUtils.sameConnector("7a", "7"));
+    assertTrue(EmailConnectorUtils.sameConnector("7a", "7a"));
+  }
 }

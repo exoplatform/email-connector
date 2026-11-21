@@ -2755,4 +2755,43 @@ public class UserEmailSettingServiceTest {
                                setAside.capture());
     return JsonUtils.fromJsonString(setAside.getValue().getValue().toString(), UserEmailSettingEntity.class);
   }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "+7", "007", "7" })
+  void storesConnectorIdInCanonicalForm(String posted) throws TokenServiceInitializationException {
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailConnectorId(posted);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(stored.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertEquals("7", persisted.getEmailConnectorId());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "+7", "007" })
+  void theUsersOfAConnectorIncludeThoseWhoseStoredIdIsInAnotherForm(String storedId) throws TokenServiceInitializationException {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob")));
+    storedDocument("alice", "{\"emailConnectorId\":\"" + storedId + "\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"8\"}");
+
+    assertEquals(List.of("alice"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(7L));
+  }
+
+  @Test
+  @SneakyThrows
+  void aStoredIdInAnotherFormIsTheConnectorsOwnWhenConnecting() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    EmailConnector seven = new EmailConnector();
+    seven.setId(7L);
+    seven.setActive(true);
+    when(emailConnectorService.getEmailConnector(7L)).thenReturn(seven);
+    storedDocument(TEST_USER, "{\"emailConnectorId\":\"007\",\"emailAddress\":\"a@b.c\"}");
+
+    assertTrue(userEmailSettingService.canConnect(7L, TEST_USER));
+  }
 }

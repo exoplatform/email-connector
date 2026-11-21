@@ -399,4 +399,14 @@ class EmailManagedEnrollmentServiceTest {
 
     assertFalse(service.scheduleEnrollment(USER));
   }
+
+  @Test
+  void leavesAloneAUserOnTheDesignatedConnectorStoredInAnotherForm() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configuredOn("007");
+
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).switchThroughProvider(anyLong(), anyString());
+  }
 }

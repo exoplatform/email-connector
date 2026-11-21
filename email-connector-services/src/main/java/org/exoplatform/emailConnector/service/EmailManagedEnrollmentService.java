@@ -32,6 +32,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.emailConnector.constant.EmailManagedEnrollmentOutcome;
 import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -143,7 +144,7 @@ public class EmailManagedEnrollmentService {
         return EmailManagedEnrollmentOutcome.NOT_MANAGED;
       }
       String configuredConnectorId = configuredConnectorId(username);
-      if (String.valueOf(connectorId).equals(configuredConnectorId)) {
+      if (EmailConnectorUtils.sameConnector(configuredConnectorId, connectorId)) {
         LOG.debug("User {} not enrolled: they are already on the managed mail connector", username);
         return EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }

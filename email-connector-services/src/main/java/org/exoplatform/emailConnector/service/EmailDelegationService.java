@@ -4273,7 +4273,7 @@ public class EmailDelegationService {
   private String resolveGranteeIdentifierOrNull(String username, long connectorId) {
     UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
     if (setting == null || StringUtils.isBlank(setting.getEmailConnectorId())
-        || !String.valueOf(connectorId).equals(setting.getEmailConnectorId())) {
+        || !EmailConnectorUtils.sameConnector(setting.getEmailConnectorId(), connectorId)) {
       return null;
     }
     return mailboxIdentifier(setting);

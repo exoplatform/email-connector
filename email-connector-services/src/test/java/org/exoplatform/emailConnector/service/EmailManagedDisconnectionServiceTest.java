@@ -590,4 +590,25 @@ class EmailManagedDisconnectionServiceTest {
       return loaded.computeIfAbsent(user, stored::get);
     }
   }
+
+  /** A user whose stored id is the connector's number in another form is disconnected with the others. */
+  @Test
+  void aProviderChangeDisconnectsAUserWhoseStoredIdIsInAnotherForm() throws Exception {
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("alice", "chloe"));
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("+3");
+    when(userEmailSettingService.getStoredEmailConnectorId("chloe")).thenReturn("003");
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(userEmailSettingService).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService).deleteUserEmailSetting("chloe");
+  }
+
+  /** A user already on the designated connector, stored in another form, is left alone. */
+  @Test
+  void aUserOnTheGoverningConnectorStoredInAnotherFormIsStillGoverned() {
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("007");
+
+    assertEquals(false, service.isNoLongerManaged("alice", 7L, List.of()));
+  }
 }

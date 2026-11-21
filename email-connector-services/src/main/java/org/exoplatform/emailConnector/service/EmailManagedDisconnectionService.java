@@ -17,7 +17,6 @@
 package org.exoplatform.emailConnector.service;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -29,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -228,7 +228,7 @@ public class EmailManagedDisconnectionService {
    */
   boolean isStillOn(String username, String connectorId) {
     try {
-      return connectorId.equals(userEmailSettingService.getStoredEmailConnectorId(username));
+      return EmailConnectorUtils.sameConnector(userEmailSettingService.getStoredEmailConnectorId(username), connectorId);
     } catch (Exception e) {
       // Exception, not RuntimeException: see isStillNoLongerManaged.
       LOG.warn("Cannot read the mail setting of user {}; left connected to connector {}", username, connectorId, e);
@@ -248,7 +248,7 @@ public class EmailManagedDisconnectionService {
    */
   boolean isNoLongerManaged(String username, Long designation, List<String> excludedGroups) {
     Long governing = managedConnectorService.designatedConnectorFor(designation, excludedGroups, username);
-    return governing == null || !Objects.equals(String.valueOf(governing), userEmailSettingService.getStoredEmailConnectorId(username));
+    return governing == null || !EmailConnectorUtils.sameConnector(userEmailSettingService.getStoredEmailConnectorId(username), governing);
   }
 
   /**

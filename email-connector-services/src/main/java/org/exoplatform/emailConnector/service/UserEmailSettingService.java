@@ -386,7 +386,7 @@ public class UserEmailSettingService {
       }
       store = connectThroughProviderMaterial(emailConnector, username);
       String storedConnectorId = byManagedMode ? getStoredUserEmailSetting(username).getEmailConnectorId() : null;
-      if (replacing ? String.valueOf(emailConnectorId).equals(storedConnectorId) : StringUtils.isNotBlank(storedConnectorId)) {
+      if (replacing ? EmailConnectorUtils.sameConnector(storedConnectorId, emailConnectorId) : StringUtils.isNotBlank(storedConnectorId)) {
         return false;
       }
       // Read before the write: the cleanup broadcast wipes the mirror and ends every
@@ -524,7 +524,7 @@ public class UserEmailSettingService {
     if (connecting.getDefaultCategoryView() == null) {
       connecting.setDefaultCategoryView(stored.getDefaultCategoryView());
     }
-    if (StringUtils.equals(stored.getEmailConnectorId(), connecting.getEmailConnectorId())
+    if (EmailConnectorUtils.sameConnector(stored.getEmailConnectorId(), connecting.getEmailConnectorId())
         && StringUtils.equalsIgnoreCase(stored.getEmailAddress(), connecting.getEmailAddress())) {
       if (connecting.getCarddavEnabled() == null) {
         connecting.setCarddavEnabled(stored.getCarddavEnabled());
@@ -547,7 +547,7 @@ public class UserEmailSettingService {
    */
   private boolean isConnectedAccount(UserEmailSetting stored, long emailConnectorId, String address) {
     return stored != null
-        && String.valueOf(emailConnectorId).equals(stored.getEmailConnectorId())
+        && EmailConnectorUtils.sameConnector(stored.getEmailConnectorId(), emailConnectorId)
         && StringUtils.equalsIgnoreCase(address, stored.getEmailAddress());
   }
 
@@ -568,6 +568,11 @@ public class UserEmailSettingService {
    * @param username user setting the user email setting
    */
   public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username, boolean broadcast) {
+    // Stored as the connector's number, however it was written, so every reader finds it.
+    String canonicalConnectorId = EmailConnectorUtils.canonicalConnectorId(userEmailSetting.getEmailConnectorId());
+    if (canonicalConnectorId != null) {
+      userEmailSetting.setEmailConnectorId(canonicalConnectorId);
+    }
     String encodedPassword = encodePassword(userEmailSetting.getEmailPassword());
     if (encodedPassword == null && userEmailSetting.isPasswordUnreadable()) {
       // The model came from a read whose decode failed (a codec the instance cannot
@@ -978,7 +983,7 @@ public class UserEmailSettingService {
 
   private boolean isStoredOn(String username, String connectorId) {
     try {
-      return connectorId.equals(getStoredEmailConnectorId(username));
+      return EmailConnectorUtils.sameConnector(getStoredEmailConnectorId(username), connectorId);
     } catch (Exception e) {
       // Exception, not RuntimeException: a malformed document surfaces as Jackson's
       // checked exception, thrown sneakily. One unreadable user must not fail the walk.
@@ -1236,7 +1241,7 @@ public class UserEmailSettingService {
     }
     UserEmailSetting stored = getStoredUserEmailSetting(username);
     if (!stored.isPasswordStored()
-        || !StringUtils.equals(stored.getEmailConnectorId(), userEmailSetting.getEmailConnectorId())
+        || !EmailConnectorUtils.sameConnector(stored.getEmailConnectorId(), userEmailSetting.getEmailConnectorId())
         || !StringUtils.equalsIgnoreCase(stored.getEmailAddress(), userEmailSetting.getEmailAddress())) {
       throw new IllegalArgumentException(PASSWORD_REQUIRED);
     }
@@ -1412,7 +1417,7 @@ public class UserEmailSettingService {
   }
 
   private boolean isEmailConnectorUserConnected(long emailConnectorId, UserEmailSetting userEmailSetting) {
-    return String.valueOf(emailConnectorId).equals(userEmailSetting.getEmailConnectorId());
+    return EmailConnectorUtils.sameConnector(userEmailSetting.getEmailConnectorId(), emailConnectorId);
   }
 
   /**
@@ -1660,7 +1665,7 @@ public class UserEmailSettingService {
       return null;
     }
     UserEmailSettingEntity entity = JsonUtils.fromJsonString(stored.getValue().toString(), UserEmailSettingEntity.class);
-    if (entity == null || !StringUtils.equals(entity.getEmailConnectorId(), model.getEmailConnectorId())
+    if (entity == null || !EmailConnectorUtils.sameConnector(entity.getEmailConnectorId(), model.getEmailConnectorId())
         || !StringUtils.equalsIgnoreCase(entity.getEmailAddress(), model.getEmailAddress())) {
       return null;
     }
