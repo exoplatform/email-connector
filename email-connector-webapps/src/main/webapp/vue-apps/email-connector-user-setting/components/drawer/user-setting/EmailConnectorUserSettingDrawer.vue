@@ -165,7 +165,7 @@ export default {
      */
     passwordKept() {
       return !!this.userEmailSetting?.passwordStored
-        && String(this.emailSetting.emailConnectorId) === String(this.userEmailSetting.emailConnectorId)
+        && this.sameConnector(this.emailSetting.emailConnectorId, this.userEmailSetting.emailConnectorId)
         && (this.emailSetting.emailAddress || '').toLowerCase() === (this.userEmailSetting.emailAddress || '').toLowerCase();
     },
     emailAddressModified() {
@@ -176,6 +176,21 @@ export default {
     this.$root.$on('open-user-setting-drawer', this.open);
   },
   methods: {
+    /**
+     * Whether two connector ids name the same connector, compared by number as the
+     * server does; ids that are not numbers match only when equal as text.
+     *
+     * @param {*} connectorId a connector id
+     * @param {*} otherConnectorId another connector id
+     * @returns {boolean} true when both are the same connector
+     */
+    sameConnector(connectorId, otherConnectorId) {
+      const isNumber = id => /^[+-]?\d+$/.test(String(id));
+      if (isNumber(connectorId) && isNumber(otherConnectorId)) {
+        return Number(connectorId) === Number(otherConnectorId);
+      }
+      return String(connectorId) === String(otherConnectorId);
+    },
     open(emailConnector) {
       this.emailSetting.emailAddress = this.userEmailSetting.emailAddress;
       this.emailSetting.emailPassword = '';

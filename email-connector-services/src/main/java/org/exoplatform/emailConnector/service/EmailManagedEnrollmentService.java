@@ -232,8 +232,8 @@ public class EmailManagedEnrollmentService {
    */
   private boolean isNoLongerGoverned(String username) {
     return userEmailSettingService.isConnectedByManagedMode(username)
-        && !String.valueOf(emailManagedModeService.governingConnectorFor(username))
-                  .equals(userEmailSettingService.getStoredEmailConnectorId(username));
+        && !EmailConnectorUtils.sameConnector(userEmailSettingService.getStoredEmailConnectorId(username),
+                                              emailManagedModeService.governingConnectorFor(username));
   }
 
   /**

@@ -409,4 +409,18 @@ class EmailManagedEnrollmentServiceTest {
 
     verify(userEmailSettingService, never()).switchThroughProvider(anyLong(), anyString());
   }
+
+  /** A managed user whose stored id is the governing connector's number in another form is not disconnected. */
+  @Test
+  void neverDisconnectsAManagedUserWhoseStoredIdIsInAnotherForm() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
+    when(emailManagedModeService.governingConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.getStoredEmailConnectorId(USER)).thenReturn("007");
+    configuredOn("007");
+
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
 }
