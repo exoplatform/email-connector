@@ -147,7 +147,7 @@ public class EmailSignatureService {
     EmailSignatureSetting setting = getStoredSetting(username);
     Long logoFileId = ownLogoFileId(username, setting);
     return new EmailSignature(setting.getEnabled(),
-                              sanitize(setting.getCustomHtml()),
+                              sanitize(username, setting.getCustomHtml()),
                               buildDefaultSignature(username, logoFileId),
                               logoFileId != null,
                               logoImage(logoFileId));
@@ -526,18 +526,20 @@ public class EmailSignatureService {
    * sanitizer sets, and a change of the sanitizer's policy or of its allowed
    * iframe hosts applies on read.
    *
+   * @param username the signature's owner, named in the log when the
+   *          sanitizer refuses the markup
    * @param customHtml the markup as stored, may be null
    * @return the sanitized markup, or null when there was none or the sanitizer
    *         refused it
    */
-  private String sanitize(String customHtml) {
+  private String sanitize(String username, String customHtml) {
     if (customHtml == null) {
       return null;
     }
     try {
       return StringUtils.trimToNull(HTMLSanitizer.sanitize(customHtml));
     } catch (AssertionError e) { // NOSONAR the sanitizer's bad-HTML handler asserts
-      LOG.warn("The signature markup of a user could not be sanitized; it reads as no custom markup");
+      LOG.warn("The signature markup of user {} could not be sanitized; it reads as no custom markup", username);
       return null;
     } catch (Exception e) {
       throw new IllegalStateException("The signature markup could not be sanitized", e);

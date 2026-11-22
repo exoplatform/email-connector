@@ -48,9 +48,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     signatureEnabled: true,
-    // The stored custom markup, carried so the enable switch can send back
-    // the markup the GET returned: the switch and the editor share one stored document, and a
-    // toggle that omitted the markup would silently erase it.
+    // The custom markup the GET returned, carried so the enable switch can send
+    // it back: the switch and the editor share one stored document, and a toggle
+    // that omitted the markup would silently erase it.
     signatureCustomHtml: null,
     savingSignature: false,
   }),
