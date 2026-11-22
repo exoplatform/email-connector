@@ -137,8 +137,8 @@ public class EmailSignatureService {
   /**
    * The caller's signature as the settings screen and the composer consume it:
    * the stored preference plus the default computed from the profile as it
-   * stands right now. The custom markup is sanitized on the way out as it is on
-   * the way in.
+   * stands right now. The custom markup is stored as the user wrote it, so it is
+   * sanitized here, on every read.
    *
    * @param username the signature's owner
    * @return the signature, never null
@@ -155,9 +155,12 @@ public class EmailSignatureService {
 
   /**
    * Stores the caller's signature preference: the on/off switch and their own
-   * markup, sanitized on the way in because it will be rendered in the composer
-   * and mailed to other people. A null (or blank) {@code customHtml} means
-   * "back to the default", which then keeps following the profile.
+   * markup, as written (trimmed, and bounded by
+   * {@link #MAX_SIGNATURE_HTML_LENGTH} on the value as submitted). It is
+   * sanitized when read, in {@link #getEmailSignature}, because it will be
+   * rendered in the composer and mailed to other people. A null (or blank)
+   * {@code customHtml} means "back to the default", which then keeps following
+   * the profile.
    *
    * @param username the signature's owner
    * @param signature the preference to store; only {@code enabled} and
@@ -172,7 +175,7 @@ public class EmailSignatureService {
       throw new IllegalArgumentException(SIGNATURE_TOO_LONG_MESSAGE);
     }
     setting.setEnabled(signature == null ? null : signature.getEnabled());
-    setting.setCustomHtml(sanitize(customHtml));
+    setting.setCustomHtml(customHtml);
     storeSetting(username, setting);
   }
 
@@ -516,15 +519,16 @@ public class EmailSignatureService {
   /**
    * Sanitizes the user's own markup with the platform's OWASP-backed
    * sanitizer — the one that actually strips scripts, not the link-transform
-   * facade. Applied at save, and again on every read: the stored document is
-   * not trusted to have come through the save. Sanitizing already sanitized
+   * facade. Applied on every read, the one place the stored markup leaves the
+   * service: it is stored as written. Sanitizing already sanitized
    * markup again encodes no entity twice and lets nothing back in. It can still
    * change it: a link's own {@code rel} value gives way to the one the
    * sanitizer sets, and a change of the sanitizer's policy or of its allowed
    * iframe hosts applies on read.
    *
-   * @param customHtml the markup as submitted or stored, may be null
-   * @return the sanitized markup, or null when there was none
+   * @param customHtml the markup as stored, may be null
+   * @return the sanitized markup, or null when there was none or the sanitizer
+   *         refused it
    */
   private String sanitize(String customHtml) {
     if (customHtml == null) {
@@ -532,6 +536,9 @@ public class EmailSignatureService {
     }
     try {
       return StringUtils.trimToNull(HTMLSanitizer.sanitize(customHtml));
+    } catch (AssertionError e) { // NOSONAR the sanitizer's bad-HTML handler asserts
+      LOG.warn("The signature markup of a user could not be sanitized; it reads as no custom markup");
+      return null;
     } catch (Exception e) {
       throw new IllegalStateException("The signature markup could not be sanitized", e);
     }
