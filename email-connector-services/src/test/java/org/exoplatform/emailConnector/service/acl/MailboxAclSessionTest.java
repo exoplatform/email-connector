@@ -29,8 +29,8 @@ import static org.mockito.Mockito.when;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.mail.MessagingException;
-import javax.mail.Store;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Store;
 
 import org.junit.jupiter.api.Test;
 

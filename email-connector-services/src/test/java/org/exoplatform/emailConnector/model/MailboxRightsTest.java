@@ -24,11 +24,11 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
-import com.sun.mail.imap.Rights;
+import org.eclipse.angus.mail.imap.Rights;
 
 /**
  * The letter-by-letter reading of IMAP rights, pinned against the mail library the
- * add-on resolves: {@code com.sun.mail:javax.mail:1.6.2} exposes the RFC 2086 constant
+ * add-on resolves: {@code org.eclipse.angus:jakarta.mail:2.0.5} exposes the RFC 2086 constant
  * set, and a check written through {@link Rights.Right#DELETE} ({@code d}) is false on a
  * server that answers RFC 4314's {@code t}. Every affordance here is read from the
  * letters, and the two legacy letters fold into their 4314 pairs -- from an RFC 2086

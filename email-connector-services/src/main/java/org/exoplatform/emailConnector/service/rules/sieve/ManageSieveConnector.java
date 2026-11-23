@@ -19,9 +19,9 @@ package org.exoplatform.emailConnector.service.rules.sieve;
 import java.security.NoSuchAlgorithmException;
 import java.util.Properties;
 
-import javax.mail.Authenticator;
-import javax.mail.PasswordAuthentication;
-import javax.mail.Session;
+import jakarta.mail.Authenticator;
+import jakarta.mail.PasswordAuthentication;
+import jakarta.mail.Session;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 

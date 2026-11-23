@@ -16,8 +16,8 @@
  */
 package org.exoplatform.emailConnector.service.acl;
 
-import javax.mail.MessagingException;
-import javax.mail.Store;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Store;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
 /**

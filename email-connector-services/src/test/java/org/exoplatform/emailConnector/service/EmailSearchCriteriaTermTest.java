@@ -36,19 +36,19 @@ import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Properties;
 
-import javax.activation.DataHandler;
-import javax.mail.Part;
-import javax.mail.Session;
-import javax.mail.internet.MimeBodyPart;
-import javax.mail.internet.MimeMessage;
-import javax.mail.internet.MimeMultipart;
-import javax.mail.search.SearchTerm;
-import javax.mail.util.ByteArrayDataSource;
+import jakarta.activation.DataHandler;
+import jakarta.mail.Part;
+import jakarta.mail.Session;
+import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.internet.MimeMessage;
+import jakarta.mail.internet.MimeMultipart;
+import jakarta.mail.search.SearchTerm;
+import jakarta.mail.util.ByteArrayDataSource;
 
 import org.junit.jupiter.api.Test;
 
-import com.sun.mail.iap.Protocol;
-import com.sun.mail.imap.protocol.SearchSequence;
+import org.eclipse.angus.mail.iap.Protocol;
+import org.eclipse.angus.mail.imap.protocol.SearchSequence;
 
 import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 
