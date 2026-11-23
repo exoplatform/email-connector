@@ -99,6 +99,8 @@ public class EmailSignatureService {
 
   private static final String SIGNATURE_TOO_LONG_MESSAGE   = "emailConnector.signature.tooLong";
 
+  private static final String SIGNATURE_REFUSED_MESSAGE    = "emailConnector.signature.refused";
+
   private static final String LOGO_UPLOAD_GONE_MESSAGE     = "emailConnector.signature.logo.uploadGone";
 
   private static final String LOGO_NOT_AN_IMAGE_MESSAGE    = "emailConnector.signature.logo.notAnImage";
@@ -166,7 +168,8 @@ public class EmailSignatureService {
    * @param signature the preference to store; only {@code enabled} and
    *          {@code customHtml} are read from it
    * @throws IllegalArgumentException when the custom markup exceeds
-   *           {@link #MAX_SIGNATURE_HTML_LENGTH}
+   *           {@link #MAX_SIGNATURE_HTML_LENGTH}, or is markup the sanitizer
+   *           refuses (it would read back as no custom markup)
    */
   public void saveEmailSignature(String username, EmailSignature signature) {
     EmailSignatureSetting setting = getStoredSetting(username);
@@ -174,6 +177,7 @@ public class EmailSignatureService {
     if (customHtml != null && customHtml.length() > MAX_SIGNATURE_HTML_LENGTH) {
       throw new IllegalArgumentException(SIGNATURE_TOO_LONG_MESSAGE);
     }
+    requireSanitizable(customHtml);
     setting.setEnabled(signature == null ? null : signature.getEnabled());
     setting.setCustomHtml(customHtml);
     storeSetting(username, setting);
@@ -514,6 +518,25 @@ public class EmailSignatureService {
                .replace(">", "&gt;")
                .replace("\"", "&quot;")
                .replace("'", "&#39;");
+  }
+
+  /**
+   * Refuses, at save, markup the sanitizer cannot process: stored, it would read
+   * back as the default signature after a success message. The sanitized output
+   * is discarded: the markup is stored as written.
+   *
+   * @param customHtml the trimmed markup about to be stored, may be null
+   * @throws IllegalArgumentException when the sanitizer refuses the markup
+   */
+  private void requireSanitizable(String customHtml) {
+    if (customHtml == null) {
+      return;
+    }
+    try {
+      HTMLSanitizer.sanitize(customHtml);
+    } catch (AssertionError e) { // NOSONAR the sanitizer's bad-HTML handler asserts
+      throw new IllegalArgumentException(SIGNATURE_REFUSED_MESSAGE);
+    }
   }
 
   /**

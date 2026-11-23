@@ -497,7 +497,7 @@ public class UserEmailSettingRest {
              method = "PUT",
              description = "Stores the on/off switch and the caller's own markup as written, capped in size; it is sanitized when read (GET /signature). Sending it null (or blank) resets to the computed default, which then keeps following the profile.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "The custom markup exceeds the size cap"),
+      @ApiResponse(responseCode = "400", description = "The custom markup exceeds the size cap or is refused by the sanitizer"),
       @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void saveEmailSignature(HttpServletRequest request,
                                  @RequestBody

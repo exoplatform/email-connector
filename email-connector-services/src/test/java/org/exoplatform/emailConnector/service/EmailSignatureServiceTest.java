@@ -358,6 +358,28 @@ class EmailSignatureServiceTest {
   }
 
   /**
+   * Markup the sanitizer refuses is refused at save with the 400-contract
+   * exception, and nothing is stored: the user is never told it was saved.
+   */
+  @Test
+  void aSignatureTheSanitizerRefusesIsRefusedAtSave() {
+    try (MockedStatic<HTMLSanitizer> sanitizer = Mockito.mockStatic(HTMLSanitizer.class)) {
+      sanitizer.when(() -> HTMLSanitizer.sanitize(anyString())).thenThrow(new AssertionError("bad html"));
+
+      IllegalArgumentException refusal =
+                                       assertThrows(IllegalArgumentException.class,
+                                                    () -> emailSignatureService.saveEmailSignature(TEST_USER,
+                                                                                                   new EmailSignature(true,
+                                                                                                                      "<p>x</p>",
+                                                                                                                      null,
+                                                                                                                      false, null)));
+
+      assertEquals("emailConnector.signature.refused", refusal.getMessage(), "the message code");
+    }
+    verify(settingService, never()).set(any(), any(), anyString(), any());
+  }
+
+  /**
    * The size cap: markup past 20KB answers the 400-contract exception with its
    * message code, and stores nothing.
    */
