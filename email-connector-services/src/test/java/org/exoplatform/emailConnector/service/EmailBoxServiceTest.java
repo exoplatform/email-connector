@@ -16,9 +16,9 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import com.sun.mail.smtp.SMTPAddressFailedException;
-import com.sun.mail.smtp.SMTPSendFailedException;
-import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.eclipse.angus.mail.smtp.SMTPAddressFailedException;
+import org.eclipse.angus.mail.smtp.SMTPSendFailedException;
+import org.eclipse.angus.mail.smtp.SMTPSenderFailedException;
 import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
@@ -27,7 +27,7 @@ import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
-import javax.mail.internet.AddressException;
+import jakarta.mail.internet.AddressException;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -107,44 +107,44 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import javax.activation.DataHandler;
-import javax.mail.Address;
-import javax.mail.Authenticator;
-import javax.mail.BodyPart;
-import javax.mail.FetchProfile;
-import javax.mail.Flags;
-import javax.mail.Folder;
-import javax.mail.Message;
-import javax.mail.MessageRemovedException;
-import javax.mail.MessagingException;
-import javax.mail.Multipart;
-import javax.mail.Part;
-import javax.mail.ReadOnlyFolderException;
-import javax.mail.Session;
-import javax.mail.Store;
-import javax.mail.StoreClosedException;
-import javax.mail.Transport;
-import javax.mail.UIDFolder;
-import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeBodyPart;
-import javax.mail.internet.MimeMessage;
-import javax.mail.internet.MimeMultipart;
-import javax.mail.util.ByteArrayDataSource;
-import javax.mail.search.AndTerm;
-import javax.mail.search.ComparisonTerm;
-import javax.mail.search.FlagTerm;
-import javax.mail.search.FromStringTerm;
-import javax.mail.search.OrTerm;
-import javax.mail.search.ReceivedDateTerm;
-import javax.mail.search.SearchException;
-import javax.mail.search.RecipientStringTerm;
-import javax.mail.search.MessageIDTerm;
-import javax.mail.search.SearchTerm;
-import javax.mail.search.SubjectTerm;
+import jakarta.activation.DataHandler;
+import jakarta.mail.Address;
+import jakarta.mail.Authenticator;
+import jakarta.mail.BodyPart;
+import jakarta.mail.FetchProfile;
+import jakarta.mail.Flags;
+import jakarta.mail.Folder;
+import jakarta.mail.Message;
+import jakarta.mail.MessageRemovedException;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Multipart;
+import jakarta.mail.Part;
+import jakarta.mail.ReadOnlyFolderException;
+import jakarta.mail.Session;
+import jakarta.mail.Store;
+import jakarta.mail.StoreClosedException;
+import jakarta.mail.Transport;
+import jakarta.mail.UIDFolder;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.internet.MimeMessage;
+import jakarta.mail.internet.MimeMultipart;
+import jakarta.mail.util.ByteArrayDataSource;
+import jakarta.mail.search.AndTerm;
+import jakarta.mail.search.ComparisonTerm;
+import jakarta.mail.search.FlagTerm;
+import jakarta.mail.search.FromStringTerm;
+import jakarta.mail.search.OrTerm;
+import jakarta.mail.search.ReceivedDateTerm;
+import jakarta.mail.search.SearchException;
+import jakarta.mail.search.RecipientStringTerm;
+import jakarta.mail.search.MessageIDTerm;
+import jakarta.mail.search.SearchTerm;
+import jakarta.mail.search.SubjectTerm;
 
 import java.util.function.Function;
-import javax.mail.AuthenticationFailedException;
-import javax.mail.SendFailedException;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.SendFailedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
@@ -170,14 +170,14 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import com.sun.mail.iap.Argument;
-import com.sun.mail.iap.Protocol;
-import com.sun.mail.iap.Response;
-import com.sun.mail.imap.AppendUID;
-import com.sun.mail.imap.IMAPFolder;
-import com.sun.mail.imap.IMAPStore;
-import com.sun.mail.imap.ResyncData;
-import com.sun.mail.imap.protocol.IMAPProtocol;
+import org.eclipse.angus.mail.iap.Argument;
+import org.eclipse.angus.mail.iap.Protocol;
+import org.eclipse.angus.mail.iap.Response;
+import org.eclipse.angus.mail.imap.AppendUID;
+import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
+import org.eclipse.angus.mail.imap.ResyncData;
+import org.eclipse.angus.mail.imap.protocol.IMAPProtocol;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.command.NotificationCommand;
@@ -5521,7 +5521,7 @@ public class EmailBoxServiceTest {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
     // Every worker connection fails outright: the sync must neither fail nor lose
     // messages — the serial loop fetches every body itself, as before the prefetch.
-    when(userEmailSettingService.connect(eq(emailConnector), any(Authenticator.class))).thenThrow(new javax.mail.AuthenticationFailedException("Too many simultaneous connections"));
+    when(userEmailSettingService.connect(eq(emailConnector), any(Authenticator.class))).thenThrow(new jakarta.mail.AuthenticationFailedException("Too many simultaneous connections"));
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
     assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
@@ -18433,18 +18433,18 @@ public class EmailBoxServiceTest {
     Email draft = draft("draft-1");
     draft.setSendDelegationId(100L);
     MimeMessage copy = draftsCopyOf(draft);
-    javax.mail.UIDFolder uidFolder = mock(javax.mail.UIDFolder.class);
+    jakarta.mail.UIDFolder uidFolder = mock(jakarta.mail.UIDFolder.class);
     when(uidFolder.getUID(copy)).thenReturn(77L);
     when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
 
-    Boolean incomplete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+    Boolean incomplete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new jakarta.mail.Message[] { copy },
                                                           new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
     assertFalse(incomplete, "a draft left out: no snapshot, so the next sync retries it");
     verify(emailBoxStorage, never()).createEmail(any());
 
     org.mockito.Mockito.reset(emailDelegationService);
     when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
-    Boolean complete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+    Boolean complete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new jakarta.mail.Message[] { copy },
                                                         new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
     assertTrue(complete);
     verify(emailBoxStorage).createEmail(any());
@@ -19156,7 +19156,7 @@ public class EmailBoxServiceTest {
   /**
    * The addresses a message says it is from, which decide whether a calendar change is
    * its organiser's: every address of its From header, never the Sender, which DMARC
-   * does not authenticate -- not even when there is no From, where javax.mail's
+   * does not authenticate -- not even when there is no From, where jakarta.mail's
    * getFrom() answers the Sender; a header that cannot be read adds nothing.
    *
    * @throws Exception never

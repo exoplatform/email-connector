@@ -53,10 +53,10 @@ import java.util.Map;
 import java.util.Properties;
 
 import javax.crypto.BadPaddingException;
-import javax.mail.Authenticator;
-import javax.mail.MessagingException;
-import javax.mail.Session;
-import javax.mail.Store;
+import jakarta.mail.Authenticator;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.Store;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1804,7 +1804,7 @@ public class UserEmailSettingServiceTest {
       mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
-      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).doNothing().when(store).connect();
+      doThrow(new jakarta.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).doNothing().when(store).connect();
 
       assertSame(store, userEmailSettingService.connect("1", TEST_USER));
 
@@ -1826,9 +1826,9 @@ public class UserEmailSettingServiceTest {
       mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
-      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
+      doThrow(new jakarta.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
 
-      assertThrows(javax.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
+      assertThrows(jakarta.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
 
       verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), any(), any());
       verify(store, times(2)).connect();
@@ -1872,9 +1872,9 @@ public class UserEmailSettingServiceTest {
       mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
-      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
+      doThrow(new jakarta.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
 
-      assertThrows(javax.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
+      assertThrows(jakarta.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
 
       verify(store, times(1)).connect();
       verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());

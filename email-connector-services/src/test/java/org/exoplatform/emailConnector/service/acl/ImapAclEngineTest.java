@@ -41,23 +41,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
-import javax.mail.Folder;
-import javax.mail.FolderNotFoundException;
-import javax.mail.MessagingException;
-import javax.mail.Store;
-import javax.mail.StoreClosedException;
+import jakarta.mail.Folder;
+import jakarta.mail.FolderNotFoundException;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Store;
+import jakarta.mail.StoreClosedException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import com.sun.mail.iap.BadCommandException;
-import com.sun.mail.iap.CommandFailedException;
-import com.sun.mail.iap.ConnectionException;
-import com.sun.mail.imap.ACL;
-import com.sun.mail.imap.IMAPFolder;
-import com.sun.mail.imap.IMAPStore;
-import com.sun.mail.imap.Rights;
+import org.eclipse.angus.mail.iap.BadCommandException;
+import org.eclipse.angus.mail.iap.CommandFailedException;
+import org.eclipse.angus.mail.iap.ConnectionException;
+import org.eclipse.angus.mail.imap.ACL;
+import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
+import org.eclipse.angus.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;

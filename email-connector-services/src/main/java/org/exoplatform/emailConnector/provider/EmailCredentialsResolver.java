@@ -23,8 +23,8 @@ import java.util.IdentityHashMap;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import javax.mail.AuthenticationFailedException;
-import javax.mail.Authenticator;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.Authenticator;
 
 import org.springframework.stereotype.Component;
 

@@ -30,7 +30,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 
-import javax.mail.Authenticator;
+import jakarta.mail.Authenticator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -287,14 +287,14 @@ public class EmailCredentialsResolverTest {
   /** EXO-89649. Only the server refusing the credentials counts, wherever JavaMail put it. */
   @Test
   void recognisesAnAuthenticationFailureOnEitherChain() {
-    javax.mail.AuthenticationFailedException refused = new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED");
-    javax.mail.MessagingException wrappedAsNext = new javax.mail.SendFailedException("Sending failed", refused);
+    jakarta.mail.AuthenticationFailedException refused = new jakarta.mail.AuthenticationFailedException("AUTHENTICATIONFAILED");
+    jakarta.mail.MessagingException wrappedAsNext = new jakarta.mail.SendFailedException("Sending failed", refused);
     RuntimeException wrappedAsCause = new IllegalStateException("Error when connecting store", refused);
 
     org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(refused));
     org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(wrappedAsNext));
     org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(wrappedAsCause));
-    org.junit.jupiter.api.Assertions.assertFalse(EmailCredentialsResolver.isAuthenticationFailure(new javax.mail.MessagingException("Connection timed out")));
+    org.junit.jupiter.api.Assertions.assertFalse(EmailCredentialsResolver.isAuthenticationFailure(new jakarta.mail.MessagingException("Connection timed out")));
     org.junit.jupiter.api.Assertions.assertFalse(EmailCredentialsResolver.isAuthenticationFailure(null));
   }
 

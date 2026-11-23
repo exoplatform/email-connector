@@ -27,20 +27,20 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
-import javax.mail.Folder;
-import javax.mail.FolderClosedException;
-import javax.mail.MessagingException;
-import javax.mail.Store;
-import javax.mail.StoreClosedException;
+import jakarta.mail.Folder;
+import jakarta.mail.FolderClosedException;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Store;
+import jakarta.mail.StoreClosedException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 
-import com.sun.mail.iap.ConnectionException;
-import com.sun.mail.imap.ACL;
-import com.sun.mail.imap.IMAPFolder;
-import com.sun.mail.imap.IMAPStore;
-import com.sun.mail.imap.Rights;
+import org.eclipse.angus.mail.iap.ConnectionException;
+import org.eclipse.angus.mail.imap.ACL;
+import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
+import org.eclipse.angus.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;

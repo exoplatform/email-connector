@@ -45,8 +45,8 @@ import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-import javax.mail.Session;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.Session;
+import jakarta.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -319,7 +319,7 @@ class EmailExportServiceTest {
     ZipExportVisitor visitor = new ZipExportVisitor((name, size) -> out);
     visitor.begin(2);
     MimeMessage failing = org.mockito.Mockito.mock(MimeMessage.class);
-    org.mockito.Mockito.doThrow(new com.sun.mail.util.FolderClosedIOException(null, "dropped")).when(failing).writeTo(any());
+    org.mockito.Mockito.doThrow(new java.io.IOException("dropped", new jakarta.mail.FolderClosedException(null, "dropped"))).when(failing).writeTo(any());
     visitor.message(row("Cut", null), failing);
     visitor.message(row("Whole", null), mime(RAW));
     visitor.finish();
@@ -361,7 +361,7 @@ class EmailExportServiceTest {
     MboxExportVisitor visitor = new MboxExportVisitor((name, size) -> new ByteArrayOutputStream(), "Inbox");
     visitor.begin(1);
     MimeMessage failing = org.mockito.Mockito.mock(MimeMessage.class);
-    org.mockito.Mockito.doThrow(new com.sun.mail.util.MessageRemovedIOException("gone")).when(failing).writeTo(any());
+    org.mockito.Mockito.doThrow(new java.io.IOException("gone", new jakarta.mail.MessageRemovedException("gone"))).when(failing).writeTo(any());
     assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class, () -> visitor.message(null, failing));
   }
 
@@ -380,7 +380,7 @@ class EmailExportServiceTest {
     org.mockito.Mockito.doAnswer(invocation -> {
       java.io.OutputStream stream = invocation.getArgument(0);
       stream.write("From: a@example.com\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\nhalf a li".getBytes(StandardCharsets.US_ASCII));
-      throw new com.sun.mail.util.MessageRemovedIOException("gone");
+      throw new java.io.IOException("gone", new jakarta.mail.MessageRemovedException("gone"));
     }).when(cut).writeTo(any());
     assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class, () -> visitor.message(null, cut));
     visitor.interrupted(1, 3);

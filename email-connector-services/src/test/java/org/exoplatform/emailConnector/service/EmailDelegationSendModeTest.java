@@ -36,7 +36,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
-import javax.mail.Store;
+import jakarta.mail.Store;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

@@ -16,11 +16,11 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import javax.mail.Address;
-import javax.mail.MessagingException;
-import javax.mail.SendFailedException;
-import javax.mail.Transport;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.Address;
+import jakarta.mail.MessagingException;
+import jakarta.mail.SendFailedException;
+import jakarta.mail.Transport;
+import jakarta.mail.internet.MimeMessage;
 
 import org.springframework.stereotype.Component;
 

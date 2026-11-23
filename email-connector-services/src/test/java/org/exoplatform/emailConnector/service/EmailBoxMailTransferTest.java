@@ -44,11 +44,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import javax.mail.FetchProfile;
-import javax.mail.Folder;
-import javax.mail.Store;
-import javax.mail.UIDFolder;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.FetchProfile;
+import jakarta.mail.Folder;
+import jakarta.mail.Store;
+import jakarta.mail.UIDFolder;
+import jakarta.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -80,8 +80,8 @@ import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 
-import com.sun.mail.imap.IMAPFolder;
-import com.sun.mail.imap.IMAPMessage;
+import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPMessage;
 
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
@@ -186,8 +186,8 @@ class EmailBoxMailTransferTest {
     when(root.listSubscribed("*")).thenReturn(new Folder[] { sent });
     IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
     IMAPMessage b = message("<b@x>", "B".getBytes(StandardCharsets.UTF_8));
-    when(inbox.getMessagesByUID(new long[] { 11L })).thenReturn(new javax.mail.Message[] { a });
-    when(sent.getMessagesByUID(new long[] { 22L })).thenReturn(new javax.mail.Message[] { b });
+    when(inbox.getMessagesByUID(new long[] { 11L })).thenReturn(new jakarta.mail.Message[] { a });
+    when(sent.getMessagesByUID(new long[] { 22L })).thenReturn(new jakarta.mail.Message[] { b });
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readRawEmails(OWNER,
@@ -281,7 +281,7 @@ class EmailBoxMailTransferTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     IMAPMessage other = message("<other@x>", "O".getBytes(StandardCharsets.UTF_8));
     IMAPMessage c = message("<c@x>", "C".getBytes(StandardCharsets.UTF_8));
-    when(inbox.getMessagesByUID(new long[] { 11L, 12L, 13L })).thenReturn(new javax.mail.Message[] { null, other, c });
+    when(inbox.getMessagesByUID(new long[] { 11L, 12L, 13L })).thenReturn(new jakarta.mail.Message[] { null, other, c });
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readRawEmails(OWNER,
@@ -312,7 +312,7 @@ class EmailBoxMailTransferTest {
     IMAPMessage a = message("<a@x>", new byte[0]);
     IMAPMessage other = message("<other@x>", new byte[0]);
     IMAPMessage d = message("<d@x>", new byte[0]);
-    when(inbox.getMessagesByUID(any(long[].class))).thenReturn(new javax.mail.Message[] { a, other, null, d });
+    when(inbox.getMessagesByUID(any(long[].class))).thenReturn(new jakarta.mail.Message[] { a, other, null, d });
     when(inbox.getUID(a)).thenReturn(11L);
     when(inbox.getUID(other)).thenReturn(12L);
     when(inbox.getUID(d)).thenReturn(14L);
@@ -368,7 +368,7 @@ class EmailBoxMailTransferTest {
     Store store = connectedStore(OWNER);
     IMAPFolder inbox = uidFolder();
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    doThrow(new javax.mail.MessagingException("down")).when(inbox).open(Folder.READ_ONLY);
+    doThrow(new jakarta.mail.MessagingException("down")).when(inbox).open(Folder.READ_ONLY);
     assertThrows(IllegalStateException.class,
                  () -> emailBoxService.readAuthenticationResults(OWNER, MailFolder.INBOX, List.of(cachedRow(11L, "<a@x>"))));
     verify(store).close();
@@ -548,8 +548,8 @@ class EmailBoxMailTransferTest {
     when(existing.getHeader("Message-ID")).thenReturn(new String[] { "<old@EXAMPLE.com>" });
     // The server's search, the term matched against what the folder holds.
     when(inbox.search(any())).thenAnswer(invocation -> {
-      javax.mail.search.SearchTerm term = invocation.getArgument(0);
-      return term.match(existing) ? new javax.mail.Message[] { existing } : new javax.mail.Message[0];
+      jakarta.mail.search.SearchTerm term = invocation.getArgument(0);
+      return term.match(existing) ? new jakarta.mail.Message[] { existing } : new jakarta.mail.Message[0];
     });
 
     MailImportTarget target = emailBoxService.openImportTarget(OWNER, MailFolder.INBOX);
@@ -559,12 +559,12 @@ class EmailBoxMailTransferTest {
     assertTrue(target.contains("<old@example.com>"));
     assertTrue(target.contains("old@example.com"));
     assertFalse(target.contains("<new@example.com>"));
-    javax.mail.internet.MimeMessage added = new javax.mail.internet.MimeMessage(javax.mail.Session.getInstance(new java.util.Properties()),
+    jakarta.mail.internet.MimeMessage added = new jakarta.mail.internet.MimeMessage(jakarta.mail.Session.getInstance(new java.util.Properties()),
                                                                                new java.io.ByteArrayInputStream(("Message-ID: <new@example.com>\r\nFrom: a@b\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\nx").getBytes(StandardCharsets.US_ASCII)));
     target.append(added);
     assertTrue(target.contains("<new@example.com>"));
     assertEquals(1, target.getAppended());
-    verify(inbox).appendMessages(new javax.mail.Message[] { added });
+    verify(inbox).appendMessages(new jakarta.mail.Message[] { added });
     target.close();
     target.close();
     verify(store).close();
@@ -610,9 +610,9 @@ class EmailBoxMailTransferTest {
     when(store.getFolder("Invoices")).thenReturn(invoices);
     IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
     IMAPMessage b = mock(IMAPMessage.class);
-    when(b.getMessageID()).thenThrow(new javax.mail.FolderClosedException(inbox, "dropped"));
-    when(inbox.getMessagesByUID(new long[] { 11L, 12L })).thenReturn(new javax.mail.Message[] { a, b });
-    doThrow(new javax.mail.MessagingException("renamed")).when(invoices).open(Folder.READ_ONLY);
+    when(b.getMessageID()).thenThrow(new jakarta.mail.FolderClosedException(inbox, "dropped"));
+    when(inbox.getMessagesByUID(new long[] { 11L, 12L })).thenReturn(new jakarta.mail.Message[] { a, b });
+    doThrow(new jakarta.mail.MessagingException("renamed")).when(invoices).open(Folder.READ_ONLY);
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readRawEmails(OWNER,
@@ -641,15 +641,15 @@ class EmailBoxMailTransferTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.getMessageCount()).thenReturn(1);
     IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
-    when(inbox.getMessages()).thenReturn(new javax.mail.Message[] { a });
+    when(inbox.getMessages()).thenReturn(new jakarta.mail.Message[] { a });
     when(inbox.getUID(a)).thenReturn(7L);
-    when(inbox.getMessagesByUID(new long[] { 7L })).thenThrow(new javax.mail.StoreClosedException(store, "dropped"));
+    when(inbox.getMessagesByUID(new long[] { 7L })).thenThrow(new jakarta.mail.StoreClosedException(store, "dropped"));
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, visitor));
     assertEquals(List.of("begin:1", "interrupted:0/1"), visitor.events);
 
-    doReturn(new javax.mail.Message[] { a }).when(inbox).getMessagesByUID(new long[] { 7L });
+    doReturn(new jakarta.mail.Message[] { a }).when(inbox).getMessagesByUID(new long[] { 7L });
     RawEmailVisitor gone = new RecordingVisitor() {
       /**
        * The reader left.
@@ -739,7 +739,7 @@ class EmailBoxMailTransferTest {
     when(inbox.getMessages()).thenReturn(messages);
     when(inbox.getMessagesByUID(any())).thenAnswer(invocation -> {
       long[] uids = invocation.getArgument(0);
-      return java.util.Arrays.stream(uids).mapToObj(uid -> messages[(int) uid - 1]).toArray(javax.mail.Message[]::new);
+      return java.util.Arrays.stream(uids).mapToObj(uid -> messages[(int) uid - 1]).toArray(jakarta.mail.Message[]::new);
     });
     List<IMAPMessage> handed = new ArrayList<>();
     RecordingVisitor visitor = new RecordingVisitor() {

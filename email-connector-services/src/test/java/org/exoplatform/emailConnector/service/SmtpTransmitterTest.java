@@ -22,16 +22,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.Properties;
 
-import javax.mail.Address;
-import javax.mail.AuthenticationFailedException;
-import javax.mail.Message;
-import javax.mail.MessagingException;
-import javax.mail.Provider;
-import javax.mail.Session;
-import javax.mail.Transport;
-import javax.mail.URLName;
-import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.Address;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Provider;
+import jakarta.mail.Session;
+import jakarta.mail.Transport;
+import jakarta.mail.URLName;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -145,7 +145,7 @@ public class SmtpTransmitterTest {
     Session session = Session.getInstance(new Properties());
     try {
       session.setProvider(new Provider(Provider.Type.TRANSPORT, "smtp", CountingTransport.class.getName(), "test", "1"));
-    } catch (javax.mail.NoSuchProviderException e) {
+    } catch (jakarta.mail.NoSuchProviderException e) {
       throw new IllegalStateException(e);
     }
     return session;

@@ -21,7 +21,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-import com.sun.mail.imap.Rights;
+import org.eclipse.angus.mail.imap.Rights;
 
 /**
  * The rights a user holds on one IMAP mailbox, as RFC 4314 spells them: one letter per
@@ -30,7 +30,7 @@ import com.sun.mail.imap.Rights;
  * rights string, and it reads it <b>by letter</b>, never through the mail library's
  * {@link Rights.Right} constants.
  * <p>
- * Why by letter. The library this add-on resolves ({@code com.sun.mail:javax.mail:1.6.2})
+ * Why by letter. The library this add-on resolves ({@code org.eclipse.angus:jakarta.mail:2.0.5})
  * exposes the <b>RFC 2086</b> constant set: {@code CREATE} is {@code c}, {@code DELETE}
  * is {@code d}, and there is no constant at all for the RFC 4314 letters {@code k x t e}
  * that split them. {@link Rights.Right#getInstance(char)} accepts any letter, so a
