@@ -473,7 +473,8 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * Cuts a listed message's body as a thread message's is (EXO-94363): ten whole
    * bodies were most of a list's size. The body is cut on a copy of the content,
-   * never on the content read, which a cache may hand to the next reader.
+   * so the model handed on keeps the cut and the content read keeps its whole
+   * (already flattened) body.
    *
    * @param model a listed message, its body already plain text
    * @return the same message, its body cut and marked as such when it was longer
