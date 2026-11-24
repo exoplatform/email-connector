@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailPageModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
@@ -270,7 +271,7 @@ class EmailMcpToolTest {
     emailBox.setEmails(List.of(buildEmail(1L), buildEmail(2L)));
     when(emailBoxService.getEmailBox(USERNAME, MailFolder.INBOX)).thenReturn(emailBox);
 
-    List<EmailModel> emails = emailMcpTool.listEmails(null, null, null, null, null);
+    List<EmailModel> emails = emailMcpTool.listEmails(null, null, null, null, null).getEmails();
 
     assertNotNull(emails);
     assertEquals(2, emails.size());
@@ -280,6 +281,82 @@ class EmailMcpToolTest {
     // but it does expose the conversation id, which is where get_email_thread's own
     // argument comes from
     assertEquals("thread-1", emails.get(0).getThreadId());
+  }
+
+  /**
+   * A list is one page with the folder's count (EXO-94363): a limit above
+   * {@link EmailMcpTool#MAX_LIST_LIMIT} is capped, the count is the folder's
+   * after the unread filter, has_more says whether messages remain, and an
+   * offset past the end gives an empty page with the count. Mutants: no cap;
+   * the count taken from the page; has_more always false; the unread filter
+   * left out of the count.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aListIsOnePageWithItsTotal() throws Exception {
+    List<Email> mirror = new java.util.ArrayList<>();
+    for (long id = 1; id <= 80; id++) {
+      Email email = buildEmail(id);
+      email.setRead(id > 30);
+      mirror.add(email);
+    }
+    EmailBox emailBox = new EmailBox();
+    emailBox.setEmails(mirror);
+    when(emailBoxService.getEmailBox(USERNAME, MailFolder.INBOX)).thenReturn(emailBox);
+
+    EmailPageModel capped = emailMcpTool.listEmails(null, 500, null, null, null);
+    assertEquals(50, EmailMcpTool.MAX_LIST_LIMIT);
+    assertEquals(EmailMcpTool.MAX_LIST_LIMIT, capped.getEmails().size());
+    assertEquals(EmailMcpTool.MAX_LIST_LIMIT, capped.getLimit());
+    assertEquals(80, capped.getCount());
+    assertTrue(capped.isHasMore());
+
+    EmailPageModel byDefault = emailMcpTool.listEmails(null, null, null, null, null);
+    assertEquals(10, byDefault.getEmails().size());
+    assertEquals(80, byDefault.getCount());
+
+    EmailPageModel unread = emailMcpTool.listEmails(20, 20, true, null, null);
+    assertEquals(30, unread.getCount(), "the count is the unread messages'");
+    assertEquals(10, unread.getEmails().size());
+    assertEquals(21L, unread.getEmails().get(0).getId());
+    assertFalse(unread.isHasMore(), "the last unread page");
+
+    EmailPageModel past = emailMcpTool.listEmails(200, null, null, null, null);
+    assertTrue(past.getEmails().isEmpty());
+    assertEquals(80, past.getCount());
+    assertFalse(past.isHasMore());
+
+    EmailPageModel lastOne = emailMcpTool.listEmails(79, 0, null, null, null);
+    assertEquals(1, lastOne.getEmails().size(), "a limit under 1 reads one message");
+    assertFalse(lastOne.isHasMore());
+  }
+
+  /**
+   * A listed body is its plain text cut at 1,500 characters and marked, as a
+   * thread message's is (EXO-94363), on a copy: the message read keeps its
+   * body for the next reader, and get_email_by_id still gives it whole.
+   * Mutants: the body not cut; the cut made on the message read.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aListedBodyIsCutAsInAThread() throws Exception {
+    Email longOne = buildEmail(1L);
+    String body = "word ".repeat(1000).trim();
+    longOne.getContent().setBody("<p>" + body + "</p>");
+    Email shortOne = buildEmail(2L);
+    EmailBox emailBox = new EmailBox();
+    emailBox.setEmails(List.of(longOne, shortOne));
+    when(emailBoxService.getEmailBox(USERNAME, MailFolder.INBOX)).thenReturn(emailBox);
+
+    List<EmailModel> listed = emailMcpTool.listEmails(null, null, null, null, null).getEmails();
+
+    String cut = listed.get(0).getContent().getBody();
+    assertEquals(1500 + "… [truncated]".length(), cut.length());
+    assertTrue(cut.startsWith(body.substring(0, 1500)) && cut.endsWith("… [truncated]"), cut);
+    assertEquals("Hello world", listed.get(1).getContent().getBody(), "a short body is whole");
+    assertEquals(body, longOne.getContent().getBody(), "the message read keeps its whole body");
   }
 
   // --- get_my_email_account ------------------------------------------------
@@ -1116,7 +1193,7 @@ class EmailMcpToolTest {
     EmailBox archive = new EmailBox();
     archive.setEmails(List.of());
     when(emailBoxService.getEmailBox(USERNAME, "CUSTOM:7")).thenReturn(archive);
-    assertTrue(emailMcpTool.listEmails(null, null, null, "ARCHIVE", OWNER_MAILBOX).isEmpty());
+    assertTrue(emailMcpTool.listEmails(null, null, null, "ARCHIVE", OWNER_MAILBOX).getEmails().isEmpty());
 
     EmailSearchResult hit = new EmailSearchResult(9L, "CUSTOM:7", "Budget", null, new Date(), false, false, true, null);
     when(emailBoxService.searchSharedMailboxMirror(USERNAME, "CUSTOM:7", queryCriteria("budget"), 20))
@@ -1191,7 +1268,7 @@ class EmailMcpToolTest {
     sent.setEmails(List.of(buildEmail(1L)));
     when(emailBoxService.getEmailBox(USERNAME, MailFolder.SENT)).thenReturn(sent);
 
-    assertEquals(1, emailMcpTool.listEmails(null, null, null, "sent", null).size());
+    assertEquals(1, emailMcpTool.listEmails(null, null, null, "sent", null).getEmails().size());
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.listEmails(null, null, null, "TRASH", null));
     Mockito.verifyNoInteractions(emailDelegationService);
   }
