@@ -25,8 +25,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * One page of a mailbox folder, with how many messages the folder holds
- * (EXO-94363).
+ * One page of a mailbox folder's mirror, with how many messages the mirror
+ * holds for it (EXO-94363).
  * <p>
  * A bare list let an agent ask for a page as large as the mailbox and gave
  * it no total, so it read everything to count. With the count and whether
@@ -47,7 +47,11 @@ public class EmailPageModel {
   /** The most messages this page could hold, once capped. */
   private int              limit;
 
-  /** How many messages the folder holds, the unread filter applied. */
+  /**
+   * How many messages of the folder the mirror holds, the unread filter
+   * applied: the mirror holds the latest ones only, so the folder may hold
+   * more.
+   */
   private int              count;
 
   /** Whether messages remain after this page. */
