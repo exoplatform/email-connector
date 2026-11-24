@@ -62,6 +62,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailDraftModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailPageModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
@@ -144,6 +145,12 @@ public class EmailMcpTool implements McpToolPlugin {
    * twenty-five times.
    */
   private static final int              THREAD_BODY_MAX_CHARS = 1500;
+
+  /**
+   * The most messages one list_emails page holds (EXO-94363), whatever limit
+   * is asked: a larger page was the whole mailbox in one tool result.
+   */
+  static final int                      MAX_LIST_LIMIT        = 50;
 
   /** What a draft tool says it was about to do with a draft it refuses to delete. */
   private static final String           DELETED              = "deleted";
@@ -420,6 +427,11 @@ public class EmailMcpTool implements McpToolPlugin {
    * defaulting to the first 10) and an unread-only filter so the agent triages
    * incrementally instead of pulling the whole mirror at once.
    * <p>
+   * A page holds {@value #MAX_LIST_LIMIT} messages at most, whatever limit is asked,
+   * and says how many the folder holds and whether more remain (EXO-94363); each
+   * body is its plain text cut as a thread message's is, get_email_by_id reading
+   * one whole.
+   * <p>
    * A shared mailbox's folder is listed only when it is in the user's mirror; one that
    * is not is said, never answered with an empty page that would read as "no mail".
    *
@@ -428,11 +440,11 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param unreadOnly only unread messages
    * @param folder INBOX (default), SENT or ARCHIVE
    * @param mailbox the shared mailbox to list, blank for the user's own
-   * @return the page, newest first
+   * @return the page, newest first, with the folder's count
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailModel> listEmails(Integer offset,
+  public EmailPageModel listEmails(Integer offset,
                                      Integer limit,
                                      Boolean unreadOnly,
                                      String folder,
@@ -441,14 +453,45 @@ public class EmailMcpTool implements McpToolPlugin {
     String folderName = browsableFolder(folder);
     String folderKey = share == null ? folderName : mirroredFolderOrFail(share, folderName);
     EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName(), folderKey);
-    return emailBox.getEmails()
-                   .stream()
-                   .filter(email -> !Boolean.TRUE.equals(unreadOnly) || !email.isRead())
-                   .skip(getInteger(offset, DEFAULT_OFFSET))
-                   .limit(getInteger(limit, DEFAULT_LIMIT))
-                   .map(email -> withBody(email, share))
-                   .map(email -> toEmailModel(email, false, share))
-                   .toList();
+    List<Email> listed = emailBox.getEmails() == null ? List.of()
+                                                      : emailBox.getEmails()
+                                                                .stream()
+                                                                .filter(email -> !Boolean.TRUE.equals(unreadOnly) || !email.isRead())
+                                                                .toList();
+    int usedOffset = Math.max(getInteger(offset, DEFAULT_OFFSET), 0);
+    int usedLimit = Math.min(Math.max(getInteger(limit, DEFAULT_LIMIT), 1), MAX_LIST_LIMIT);
+    List<EmailModel> page = listed.stream()
+                                  .skip(usedOffset)
+                                  .limit(usedLimit)
+                                  .map(email -> withBody(email, share))
+                                  .map(email -> withCutBody(toEmailModel(email, false, share)))
+                                  .toList();
+    return new EmailPageModel(page, usedOffset, usedLimit, listed.size(), usedOffset + page.size() < listed.size());
+  }
+
+  /**
+   * Cuts a listed message's body as a thread message's is (EXO-94363): ten whole
+   * bodies were most of a list's size. The body is cut on a copy of the content,
+   * never on the content read, which a cache may hand to the next reader.
+   *
+   * @param model a listed message, its body already plain text
+   * @return the same message, its body cut and marked as such when it was longer
+   */
+  private EmailModel withCutBody(EmailModel model) {
+    EmailContent content = model.getContent();
+    if (content == null || content.getBody() == null || content.getBody().length() <= THREAD_BODY_MAX_CHARS) {
+      return model;
+    }
+    EmailContent cut = new EmailContent(content.getBody().substring(0, THREAD_BODY_MAX_CHARS) + TRUNCATION_MARKER,
+                                        content.getExcerpt(),
+                                        content.getAttachments());
+    cut.setHtml(content.isHtml());
+    cut.setRemoteContentBlocked(content.isRemoteContentBlocked());
+    cut.setSecurityWarnings(content.getSecurityWarnings());
+    cut.setAuthFailure(content.getAuthFailure());
+    cut.setDmarcPassed(content.isDmarcPassed());
+    model.setContent(cut);
+    return model;
   }
 
   /**

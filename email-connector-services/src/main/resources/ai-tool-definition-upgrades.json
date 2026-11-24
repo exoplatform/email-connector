@@ -1,0 +1,16 @@
+{
+  "tools": [
+    {
+      "name": "list_emails",
+      "replaced_definitions": [
+        "28d5a11870a666d885c34f882a8722571eaf30fc87959b1042bddf18c200c77f",
+        "2e5fa6a6bcb1a7e1e31476d6760091d7905e810e488beed525a50ba967c96b34",
+        "44633f476a88e7f9fcf6498ca7a680e47d986a5dca6aa2a2576725e647abf80c",
+        "642691ac62aabfe71be93d6379f9a1a3002cf98b6218d231da896442de138371",
+        "73c278d1375c3b392282b22a48473f98cbb50a9fafb6f2c068d1242fdeef6209",
+        "e9ff224c2207d720aa2e354f784a2754d759c284dc8d9d61963b894452f6c8a8",
+        "f9010c8a2f0caec16bb8ec5659f6909e9ce4530c0e3f4214ddcbb906565d53a2"
+      ]
+    }
+  ]
+}
