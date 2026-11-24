@@ -358,10 +358,11 @@ public class MasterChangelogTest {
   void theReadReceiptColumnsOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
       String update = offlineUpdateSql(vendor, "1.0.0-66").toUpperCase(Locale.ROOT);
-      // MySQL renders the flags TINYINT DEFAULT 0, PostgreSQL BOOLEAN DEFAULT FALSE: the
+      // MySQL renders the flags TINYINT or TINYINT(1) DEFAULT 0, by Liquibase version,
+      // PostgreSQL BOOLEAN DEFAULT FALSE: the
       // types every other flag of EMAIL_BOX already has on each.
       for (String flag : List.of("READ_RECEIPT_REQUESTED", "READ_RECEIPT_RETURN_PATH_MATCH")) {
-        assertTrue(Pattern.compile("ADD " + flag + " (TINYINT DEFAULT 0|BOOLEAN DEFAULT FALSE) NOT NULL").matcher(update).find(),
+        assertTrue(Pattern.compile("ADD " + flag + " (TINYINT(\\(1\\))? DEFAULT 0|BOOLEAN DEFAULT FALSE) NOT NULL").matcher(update).find(),
                    vendor + " " + flag + ": " + update);
       }
       for (String nullable : List.of("READ_RECEIPT_TO N?VARCHAR\\(1000\\)", "READ_RECEIPT_STATE N?VARCHAR\\(20\\)")) {
@@ -533,7 +534,7 @@ public class MasterChangelogTest {
                                    "ORIGIN VARCHAR(10) NOT NULL")) {
         assertTrue(update.contains(column), vendor + " " + column + ": " + update);
       }
-      assertTrue(Pattern.compile("BADGE_INCLUDED (BOOLEAN|BIT\\(1\\)|TINYINT) DEFAULT (FALSE|0) NOT NULL").matcher(update).find(),
+      assertTrue(Pattern.compile("BADGE_INCLUDED (BOOLEAN|BIT\\(1\\)|TINYINT(\\(1\\))?) DEFAULT (FALSE|0) NOT NULL").matcher(update).find(),
                  vendor + ": " + update);
       String rollback = offlineRollbackSql(vendor, "1.0.0-76").toUpperCase(Locale.ROOT);
       int folderIndex = rollback.indexOf("IDX_EMAIL_FOLDER_DELEGATION");
