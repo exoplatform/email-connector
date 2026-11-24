@@ -428,7 +428,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * incrementally instead of pulling the whole mirror at once.
    * <p>
    * A page holds {@value #MAX_LIST_LIMIT} messages at most, whatever limit is asked,
-   * and says how many the folder holds and whether more remain (EXO-94363); each
+   * and says how many of the folder's messages the mirror holds and whether more
+   * remain (EXO-94363); each
    * body is its plain text cut as a thread message's is, get_email_by_id reading
    * one whole.
    * <p>

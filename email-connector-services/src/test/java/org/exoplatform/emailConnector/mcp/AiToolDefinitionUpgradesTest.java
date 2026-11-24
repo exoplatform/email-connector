@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -31,6 +32,8 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+
+import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -84,7 +87,9 @@ class AiToolDefinitionUpgradesTest {
 
   /**
    * The list_emails definition states the page cap and the body cut the tool
-   * applies (EXO-94363), and where a whole body is read. Mutant: the cap
+   * applies (EXO-94363), where a whole body is read, and that count is what
+   * the mirror holds, which syncs the latest SENT and ARCHIVE emails only.
+   * Mutants: the cap changed in the code only; the SENT and ARCHIVE window
    * changed in the code only.
    *
    * @throws Exception never
@@ -96,6 +101,10 @@ class AiToolDefinitionUpgradesTest {
     assertTrue(description.contains("cut at 1500 characters"), description);
     assertTrue(description.contains("count") && description.contains("has_more"), description);
     assertTrue(description.contains("get_email_by_id reads one email whole"), description);
+    Field window = EmailBoxService.class.getDeclaredField("NON_INBOX_FOLDER_SYNC_LIMIT");
+    window.setAccessible(true);
+    assertTrue(description.contains("how many emails of that folder the mirror holds"), description);
+    assertTrue(description.contains("the latest " + window.getInt(null) + " of SENT and ARCHIVE"), description);
   }
 
   /**
