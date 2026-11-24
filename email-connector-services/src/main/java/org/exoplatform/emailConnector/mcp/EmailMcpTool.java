@@ -441,7 +441,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param unreadOnly only unread messages
    * @param folder INBOX (default), SENT or ARCHIVE
    * @param mailbox the shared mailbox to list, blank for the user's own
-   * @return the page, newest first, with the folder's count
+   * @return the page, newest first, with how many of the folder's messages the mirror holds
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
    */
