@@ -55,7 +55,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :sync-in-progress="syncInProgress"
         :has-webmail-access="hasWebmailAccess"
         :hide-views="hideViews"
-        :hide-sync="hideSync" />
+        :hide-sync="hideSync"
+        @open-webmail="$emit('open-webmail')" />
     </v-menu>
   </v-list-item-action>
 </template>

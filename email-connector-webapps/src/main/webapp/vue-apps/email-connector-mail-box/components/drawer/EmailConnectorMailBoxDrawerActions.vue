@@ -53,7 +53,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :sync-in-progress="syncInProgress"
       :has-webmail-access="hasWebmailAccess"
       :hide-views="hideViews"
-      :hide-sync="syncButton" />
+      :hide-sync="syncButton"
+      @open-webmail="openWebmail" />
   </div>
   <div v-else-if="hasSelectedEmails">
     <template v-if="top">
@@ -615,9 +616,6 @@ export default {
       return this.emailsMap[this.selectedEmails[0]]?.folder || 'INBOX';
     },
   },
-  created() {
-    this.$root.$on('open-webmail', this.openWebmail);
-  },
   watch: {
     /**
      * Follows the tiles each time they appear: a selection mode entered with nothing
@@ -801,6 +799,17 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
       });
     },
+    /**
+     * Opens the webmail of this toolbar's own menu, the one clicked. The toolbar is
+     * mounted in several places at once and torn down while the mailbox loads (a
+     * standalone tab opens in the narrow layout, then switches to full screen). An
+     * event on the app's $root would also reach the copies already torn down, since a
+     * destroyed component does not remove the listeners it added on $root, and their
+     * webmail address may still be null: window.open(null) opens the relative page
+     * "null".
+     *
+     * @returns {void}
+     */
     openWebmail() {
       this.$emailConnectorMailBoxService.broadcastAccessWebmail();
       window.open(this.webmailUrl, '_blank');
