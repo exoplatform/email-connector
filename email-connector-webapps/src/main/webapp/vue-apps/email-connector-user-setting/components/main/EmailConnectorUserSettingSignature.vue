@@ -17,8 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The signature: one switch and an editor behind a drawer, following the
        address-book rows' shape; its own component since EXO-90559. The switch and the
-       Edit button write the same stored document, so the switch sends the stored
-       markup back along with itself rather than silently blanking it. -->
+       Edit button write the same stored document, so the switch sends back the
+       markup the GET returned along with itself rather than silently blanking it. -->
   <v-list-item>
     <v-list-item-content>
       <v-list-item-title class="text-color">
@@ -48,9 +48,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     signatureEnabled: true,
-    // The stored custom markup, carried so the enable switch can send it back
-    // unchanged: the switch and the editor share one stored document, and a
-    // toggle that omitted the markup would silently erase it.
+    // The custom markup the GET returned, carried so the enable switch can send
+    // it back: the switch and the editor share one stored document, and a toggle
+    // that omitted the markup would silently erase it.
     signatureCustomHtml: null,
     savingSignature: false,
   }),

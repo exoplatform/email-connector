@@ -46,6 +46,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -58,6 +60,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.commons.utils.HTMLSanitizer;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSignatureSetting;
@@ -256,27 +259,24 @@ class EmailSignatureServiceTest {
   }
 
   /**
-   * Custom markup is sanitized at save: a script pasted into the signature
-   * editor is stripped before the document is stored, so every render that
-   * follows reads an already-safe string.
+   * Custom markup is stored as the user wrote it: the markup a sanitizer would
+   * strip is in the stored document, and is removed only when it is read.
    */
   @Test
-  void aCustomSignatureIsSanitizedAtSave() {
-    emailSignatureService.saveEmailSignature(TEST_USER,
-                                             new EmailSignature(true,
-                                                                "<p>fine</p><script>alert(1)</script>",
-                                                                null,
-                                                                false, null));
+  @SneakyThrows
+  void aCustomSignatureIsStoredAsWritten() {
+    String written = "<p>fine</p><script>alert(1)</script><img src=x onerror=alert(2)>";
+    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(true, written, null, false, null));
 
-    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
-    verify(settingService).set(eq(Context.USER.id(TEST_USER)),
-                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
-                               eq(EmailSignatureService.EMAIL_SIGNATURE_KEY),
-                               stored.capture());
-    String storedJson = stored.getValue().getValue().toString();
-    assertTrue(storedJson.contains("fine"), "the honest part of the markup survives");
-    assertFalse(storedJson.contains("<script>"), "the script does not");
-    assertFalse(storedJson.contains("alert(1)"), "not even as text");
+    String storedHtml = JsonUtils.fromJsonString(storedSignatureJson(), EmailSignatureSetting.class).getCustomHtml();
+    assertEquals(written, storedHtml, "the stored markup is the markup the user wrote");
+
+    givenAStoredSetting(storedSignatureJson());
+    String readHtml = emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
+    assertTrue(readHtml.contains("fine"), "the honest part of the markup survives the read");
+    assertFalse(readHtml.contains("<script"), "the script does not");
+    assertFalse(readHtml.contains("alert(1)"), "not even as text");
+    assertFalse(readHtml.contains("onerror"), "nor the event handler");
   }
 
   /**
@@ -298,26 +298,85 @@ class EmailSignatureServiceTest {
   }
 
   /**
-   * Sanitizing on read encodes no entity of markup sanitized at save twice:
-   * ampersands, at signs, quotes and a link's query come back as stored. This
-   * markup, whose link carries no {@code rel} of its own, reads back unchanged;
-   * a link's own {@code rel} value would give way to the sanitizer's.
+   * A signature stored in its sanitized form, as a save did before the markup was
+   * stored as written, reads back unchanged: sanitizing it again encodes no
+   * entity twice and lets nothing back in. This markup, whose link carries no
+   * {@code rel} of its own, is the one such a save left; a link's own {@code rel}
+   * value would give way to the sanitizer's.
    */
   @Test
-  @SneakyThrows
-  void aSanitizedSignatureIsNotEncodedTwiceOnRead() {
-    String submitted = "<p>Ada &amp; Co &lt;3 — ada@example.com</p>"
-        + "<p><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\">site</a> \"q\" 'a' = +</p>";
-    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(true, submitted, null, false, null));
-    String storedJson = storedSignatureJson();
-    String storedHtml = JsonUtils.fromJsonString(storedJson, EmailSignatureSetting.class).getCustomHtml();
-    givenAStoredSetting(storedJson);
+  void aSignatureStoredAlreadySanitizedReadsBackUnchanged() {
+    String sanitized = HTMLSanitizer.sanitize("<p>Ada &amp; Co &lt;3 — ada@example.com</p>"
+        + "<p><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\">site</a> \"q\" 'a' = +</p>");
+    assertEquals(sanitized, HTMLSanitizer.sanitize(sanitized), "the sanitizer is idempotent on this markup");
+    givenAStoredSetting(JsonUtils.toJsonString(new EmailSignatureSetting(true, sanitized, null)));
 
     String readHtml = emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
 
-    assertEquals(storedHtml, readHtml, "this markup sanitized at save reads back unchanged");
+    assertEquals(sanitized, readHtml, "the signature stored sanitized reads back unchanged");
     assertFalse(readHtml.contains("&amp;amp;"), "no ampersand encoded twice");
     assertFalse(readHtml.contains("&amp;#"), "no numeric entity encoded twice");
+  }
+
+  /**
+   * A link's own {@code rel} is the one markup the sanitizer does not leave
+   * alone on a second pass: a read after a fresh save is a first pass, and once
+   * the settings screen writes the read value back, every later read is a second
+   * pass. Pinned with the sanitizer version this module resolves.
+   */
+  @Test
+  void aLinkRelReadsAsAFirstPassAfterASaveAndAsASecondPassOnceWrittenBack() {
+    String plain = "<a href=\"https://example.org/x\" rel=\"noopener\">x</a>";
+    String firstPlain = savedThenRead(plain);
+    assertEquals("<a href=\"https://example.org/x\" rel=\"noopener nofollow\">x</a>", firstPlain, "first read");
+    assertEquals("<a href=\"https://example.org/x\" rel=\"nofollow\">x</a>", savedThenRead(firstPlain), "second read");
+
+    String blank = "<a href=\"https://example.org/x\" rel=\"noopener\" target=\"_blank\">x</a>";
+    String firstBlank = savedThenRead(blank);
+    assertEquals("<a href=\"https://example.org/x\" rel=\"noopener nofollow noreferrer\" target=\"_blank\">x</a>",
+                 firstBlank,
+                 "first read");
+    assertEquals("<a href=\"https://example.org/x\" target=\"_blank\" rel=\"nofollow noopener noreferrer\">x</a>",
+                 savedThenRead(firstBlank),
+                 "second read");
+  }
+
+  /**
+   * The sanitizer's bad-HTML handler can throw an {@link AssertionError}; as
+   * unsanitized markup is stored, the read fails closed: no custom markup, never
+   * an error to the composer.
+   */
+  @Test
+  void aSignatureTheSanitizerRefusesReadsAsNoCustomMarkup() {
+    givenAStoredSetting("{\"enabled\":true,\"customHtml\":\"<p>secret</p>\"}");
+
+    try (MockedStatic<HTMLSanitizer> sanitizer = Mockito.mockStatic(HTMLSanitizer.class)) {
+      sanitizer.when(() -> HTMLSanitizer.sanitize(anyString())).thenThrow(new AssertionError("bad html"));
+
+      assertNull(emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml(), "no custom markup");
+    }
+  }
+
+  /**
+   * Markup the sanitizer refuses is refused at save with the 400-contract
+   * exception, and nothing is stored: the user is never told it was saved.
+   */
+  @Test
+  void aSignatureTheSanitizerRefusesIsRefusedAtSave() {
+    try (MockedStatic<HTMLSanitizer> sanitizer = Mockito.mockStatic(HTMLSanitizer.class)) {
+      sanitizer.when(() -> HTMLSanitizer.sanitize(anyString())).thenThrow(new AssertionError("bad html"));
+
+      IllegalArgumentException refusal =
+                                       assertThrows(IllegalArgumentException.class,
+                                                    () -> emailSignatureService.saveEmailSignature(TEST_USER,
+                                                                                                   new EmailSignature(true,
+                                                                                                                      "<p>x</p>",
+                                                                                                                      null,
+                                                                                                                      false, null)));
+
+      assertEquals("emailConnector.signature.refused", refusal.getMessage(), "the message code");
+    }
+    verify(settingService, never()).set(any(), any(), anyString(), any());
   }
 
   /**
@@ -780,5 +839,18 @@ class EmailSignatureServiceTest {
                                eq(EmailSignatureService.EMAIL_SIGNATURE_KEY),
                                stored.capture());
     return stored.getValue().getValue().toString();
+  }
+
+  /**
+   * Saves the markup, then reads it back as the settings screen does.
+   *
+   * @param html the markup submitted
+   * @return the markup the read returned
+   */
+  private String savedThenRead(String html) {
+    Mockito.reset(settingService);
+    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(true, html, null, false, null));
+    givenAStoredSetting(storedSignatureJson());
+    return emailSignatureService.getEmailSignature(TEST_USER).getCustomHtml();
   }
 }
