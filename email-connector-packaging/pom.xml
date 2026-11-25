@@ -10,6 +10,10 @@
   <packaging>pom</packaging>
   <name>eXo Email Connector - Packaging</name>
   <description>eXo Email Connector - Packaging</description>
+  <properties>
+    <!-- Generate and publish the CycloneDX SBOM of the deliverable zip -->
+    <sbom.skip>false</sbom.skip>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>${project.groupId}</groupId>
