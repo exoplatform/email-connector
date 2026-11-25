@@ -26,8 +26,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-list-item-subtitle
         v-for="(value, index) in values"
         :key="value.address"
-        :class="{'mb-2': index !== values.length - 1}"
-        v-html="parsedValue(value)" />
+        :class="{'mb-2': index !== values.length - 1}">
+        <!-- Name and address are interpolated, never built as an HTML string: both
+             come straight from the mail's headers, so whoever sent the mail chooses
+             them. Rendered as markup, a From name is script the reader runs on the
+             portal page — and the drawer is not the sandboxed frame the body gets.
+             The link around the name is ours, so it stays real markup; only the href
+             is bound, and only to a platform profile URL resolved on our side. -->
+        <a
+          v-if="value.profileUrl"
+          :href="value.profileUrl"
+          target="_blank"
+          rel="noopener noreferrer">{{ value.name }}</a>
+        <span
+          v-else
+          class="text-color">{{ value.name }}</span>
+        <!-- A real interpolated space, not a margin: margin is box geometry, not text
+             content, so selection/copy, find-in-page and screen readers would glue the
+             name to the address. A literal blank between elements is condensed away by
+             the template compiler; an interpolated one cannot be. -->
+        {{ ' ' }}
+        <span>{{ value.address }}</span>
+      </v-list-item-subtitle>
     </v-list-item-content>
   </v-list-item>
 </template>
@@ -46,11 +66,6 @@ export default {
     labelWidth: {
       type: Number,
       default: null,
-    },
-  },
-  methods: {
-    parsedValue(value) {
-      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `<span class="text-color">${value.name}</span> ${value.address}`;
     },
   },
 };
