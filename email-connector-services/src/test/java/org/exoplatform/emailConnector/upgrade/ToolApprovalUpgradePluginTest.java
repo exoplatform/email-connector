@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -61,8 +62,10 @@ class ToolApprovalUpgradePluginTest {
     saved.setDescription("Admin description");
     saved.setInputSchema("{\"type\":\"object\"}");
     saved.setRequireApproval(false);
-    saved.setDisabled(true);
+    // the definition lags the switch-off stored for every node
+    saved.setDisabled(false);
     when(mcpServerToolService.getToolDefinition("mark_read")).thenReturn(saved);
+    when(mcpServerToolService.readDisabledToolNames()).thenReturn(Set.of("mark_read"));
 
     newPlugin("mark_read").processUpgrade("7.3.0-M18", "7.3.0");
 
@@ -98,6 +101,31 @@ class ToolApprovalUpgradePluginTest {
 
     verify(mcpServerToolService, never()).updateToolDefinition(eq("unknown_tool"), any(), any(), any(), anyBoolean(), anyBoolean());
     verify(mcpServerToolService).updateToolDefinition(eq("remove_email_category"), any(), any(), any(), eq(true), eq(false));
+  }
+
+  @Test
+  void readsNoSwitchedOffStateWhenEveryToolIsAlreadyGated() {
+    SimpleToolDefinition saved = new SimpleToolDefinition();
+    saved.setName("mark_unread");
+    saved.setRequireApproval(true);
+    when(mcpServerToolService.getToolDefinition("mark_unread")).thenReturn(saved);
+
+    newPlugin("mark_unread").processUpgrade("7.3.0-M18", "7.3.0");
+
+    verify(mcpServerToolService, never()).readDisabledToolNames();
+  }
+
+  @Test
+  void staysPendingWhenTheSwitchedOffStatesCannotBeRead() {
+    SimpleToolDefinition saved = new SimpleToolDefinition();
+    saved.setName("mark_read");
+    saved.setRequireApproval(false);
+    when(mcpServerToolService.getToolDefinition("mark_read")).thenReturn(saved);
+    when(mcpServerToolService.readDisabledToolNames()).thenThrow(new IllegalStateException("unreadable"));
+    ToolApprovalUpgradePlugin plugin = newPlugin("mark_read");
+
+    assertThrows(IllegalStateException.class, () -> plugin.processUpgrade("7.3.0-M18", "7.3.0"));
+    verify(mcpServerToolService, never()).updateToolDefinition(anyString(), any(), any(), any(), anyBoolean(), anyBoolean());
   }
 
   /**
