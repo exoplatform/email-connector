@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.upgrade;
 
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import org.exoplatform.commons.upgrade.UpgradeProductPlugin;
@@ -84,17 +85,25 @@ public class ToolApprovalUpgradePlugin extends UpgradeProductPlugin {
       throw new IllegalStateException("No MCP server tool service: the approval flag of tools " + toolNames
           + " is left unchanged, and the upgrade stays pending");
     }
+    Set<String> disabledToolNames = null;
     for (String toolName : toolNames) {
       SimpleToolDefinition toolDefinition = toolService.getToolDefinition(toolName);
       if (toolDefinition == null) {
         LOG.info("Tool '{}' is not registered on the MCP server, its approval flag is not changed", toolName);
       } else if (!toolDefinition.isRequireApproval()) {
+        if (disabledToolNames == null) {
+          // the switched-off state shared by every node, which
+          // updateToolDefinition writes back: the definition's own disabled can
+          // lag it on a cluster, and a read that fails throws, so the upgrade
+          // stays pending
+          disabledToolNames = toolService.readDisabledToolNames();
+        }
         toolService.updateToolDefinition(toolName,
                                          toolDefinition.getTitle(),
                                          toolDefinition.getDescription(),
                                          toolDefinition.getInputSchema(),
                                          true,
-                                         toolDefinition.isDisabled());
+                                         disabledToolNames.contains(toolName));
         LOG.info("Tool '{}' now requires the user's approval", toolName);
       }
     }
