@@ -533,12 +533,13 @@ export default {
       this.$root.$emit(OPEN_IMPORT_DRAWER_EVENT, { folder: this.currentFolder, label: this.currentFolderLabel });
     },
     /**
-     * Opens the user's webmail in a new tab.
+     * Asks the toolbar this menu belongs to for the user's webmail, which it opens in a
+     * new tab.
      *
      * @returns {void}
      */
     openWebmail() {
-      this.$root.$emit('open-webmail');
+      this.$emit('open-webmail');
     },
   }
 };
