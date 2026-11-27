@@ -981,6 +981,42 @@ public class UserEmailSettingService {
     return contexts.stream().map(Context::getId).filter(user -> isStoredOn(user, connectorId)).toList();
   }
 
+  /**
+   * The users whose stored connector id is a number written in another form than
+   * its canonical one ({@code " 12"}, {@code "012"}, {@code "+12"}). While stored ids
+   * were compared as text, such a user was left out of the disconnection of a
+   * connector whose provider changed and of the cleanup of a deleted connector; a
+   * one-shot upgrade disconnects them.
+   *
+   * @return the users to disconnect; a user whose document cannot be read is logged
+   *         and left out
+   */
+  public List<String> getUsersWithNonCanonicalConnectorId() {
+    List<Context> contexts =
+                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                  Scope.APPLICATION.getName(),
+                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                                  0,
+                                                                                  Integer.MAX_VALUE);
+    return contexts.stream().map(Context::getId).filter(this::hasNonCanonicalConnectorId).toList();
+  }
+
+  private boolean hasNonCanonicalConnectorId(String username) {
+    try {
+      String storedConnectorId = getStoredEmailConnectorId(username);
+      String canonicalConnectorId = EmailConnectorUtils.canonicalConnectorId(storedConnectorId);
+      return canonicalConnectorId != null && !canonicalConnectorId.equals(storedConnectorId);
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed document surfaces as Jackson's
+      // checked exception, thrown sneakily. One unreadable user must not fail the walk.
+      LOG.warn("Cannot read the mail setting of user {}; left out of the users with a non-canonical connector id",
+               username,
+               e);
+      return false;
+    }
+  }
+
   private boolean isStoredOn(String username, String connectorId) {
     try {
       return EmailConnectorUtils.sameConnector(getStoredEmailConnectorId(username), connectorId);

@@ -2783,6 +2783,26 @@ public class UserEmailSettingServiceTest {
   }
 
   @Test
+  void theUsersToDisconnectAreThoseWhoseStoredIdIsANumberInAnotherForm() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"),
+                            Context.USER.id("bob"),
+                            Context.USER.id("carol"),
+                            Context.USER.id("dave"),
+                            Context.USER.id("erin"),
+                            Context.USER.id("frank")));
+    storedDocument("alice", "{\"emailConnectorId\":\"007\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"7\"}");
+    storedDocument("carol", "{\"emailConnectorId\":\"+8\"}");
+    storedDocument("dave", "{\"emailConnectorId\":\"exchange\"}");
+    storedDocument("erin", "{}");
+    storedDocument("frank", "not json");
+
+    // the canonical id, a name that is no number, a document with no id and an unreadable one are left alone
+    assertEquals(List.of("alice", "carol"), userEmailSettingService.getUsersWithNonCanonicalConnectorId());
+  }
+
+  @Test
   @SneakyThrows
   void aStoredIdInAnotherFormIsTheConnectorsOwnWhenConnecting() {
     when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
