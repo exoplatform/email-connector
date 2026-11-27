@@ -17,8 +17,6 @@
 package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -53,6 +51,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
 
+import io.meeds.portal.theme.util.BrandingImageValidator;
 import io.meeds.social.util.JsonUtils;
 
 /**
@@ -282,30 +281,11 @@ public class EmailSignatureService {
   }
 
   /**
-   * The company logo carries no type: it is read from the bytes (the formats
-   * the branding accepts for a logo are PNG, JPEG and SVG), PNG otherwise.
+   * The company logo carries no type: it is read from the bytes, as the
+   * branding reads an uploaded image, PNG otherwise.
    */
   static String detectImageMimeType(byte[] data) {
-    if (data.length >= 8
-        && (data[0] & 0xFF) == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
-      return DEFAULT_LOGO_MIME_TYPE;
-    } else if (data.length >= 3 && (data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8 && (data[2] & 0xFF) == 0xFF) {
-      return "image/jpeg";
-    } else if (data.length >= 6 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8') {
-      return "image/gif";
-    } else if (isSvg(data)) {
-      return "image/svg+xml";
-    }
-    return DEFAULT_LOGO_MIME_TYPE;
-  }
-
-  private static boolean isSvg(byte[] data) {
-    String head = new String(data, 0, Math.min(data.length, 1024), StandardCharsets.UTF_8).stripLeading().toLowerCase(Locale.ROOT);
-    if (head.startsWith("\uFEFF")) {
-      head = head.substring(1).stripLeading();
-    }
-    return head.startsWith("<svg") || ((head.startsWith("<?xml") || head.startsWith("<!--") || head.startsWith("<!doctype"))
-                                       && head.contains("<svg"));
+    return StringUtils.defaultIfBlank(BrandingImageValidator.detectType(data), DEFAULT_LOGO_MIME_TYPE);
   }
 
   /**
