@@ -16,8 +16,9 @@
  */
 package org.exoplatform.emailConnector.utils;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -241,4 +242,23 @@ public class EmailConnectorUtilsTest {
     return part;
   }
 
+  @Test
+  void canonicalConnectorIdIsTheNumbersDecimalString() {
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("+7"));
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("007"));
+    assertEquals("7", EmailConnectorUtils.canonicalConnectorId("7"));
+    assertNull(EmailConnectorUtils.canonicalConnectorId(" "));
+    assertNull(EmailConnectorUtils.canonicalConnectorId("7a"));
+    assertNull(EmailConnectorUtils.canonicalConnectorId("99999999999999999999"));
+  }
+
+  @Test
+  void sameConnectorMatchesByNumber() {
+    assertTrue(EmailConnectorUtils.sameConnector("+7", 7L));
+    assertTrue(EmailConnectorUtils.sameConnector("007", "7"));
+    assertFalse(EmailConnectorUtils.sameConnector("8", 7L));
+    assertFalse(EmailConnectorUtils.sameConnector(null, 7L));
+    assertFalse(EmailConnectorUtils.sameConnector("7a", "7"));
+    assertTrue(EmailConnectorUtils.sameConnector("7a", "7a"));
+  }
 }

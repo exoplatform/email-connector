@@ -17,7 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import java.util.List;
-import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -29,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -129,6 +131,28 @@ public class EmailManagedDisconnectionService {
     executor.execute(() -> disconnectAllNow(emailConnectorId));
   }
 
+  /**
+   * Disconnects the users whose stored connector id is a number written in another
+   * form than its canonical one ({@link UserEmailSettingService#getUsersWithNonCanonicalConnectorId()}),
+   * and waits for the run to end. While stored ids were compared as text, such a user
+   * was left out of {@link #disconnectAllUsersOf(long)} and of the cleanup of a deleted
+   * connector; a one-shot data upgrade calls this method to catch them up. A user on a
+   * connector that did not change is disconnected too: the two cannot be told apart.
+   * <p>
+   * The run executes on the executor's thread, in the request lifecycles
+   * {@link #reconcileNow()} describes, not in the caller's: an upgrade runs inside a
+   * request lifecycle of its own, which would hold every user's turn in one persistence
+   * context. A user who reconnected since the selection is left alone, and a failed
+   * disconnection is logged without abandoning the others.
+   *
+   * @return the number of users left connected because their disconnection failed
+   * @throws InterruptedException when the caller is interrupted while it waits
+   * @throws ExecutionException when the selection fails: nobody is disconnected
+   */
+  public int disconnectUsersWithNonCanonicalConnectorId() throws InterruptedException, ExecutionException {
+    return CompletableFuture.supplyAsync(this::disconnectNonCanonicalNow, executor).get();
+  }
+
   @PreDestroy
   public void stop() {
     if (executor instanceof ExecutorService service) {
@@ -172,6 +196,27 @@ public class EmailManagedDisconnectionService {
     return (int) users.stream()
                       .filter(user -> inItsOwnLifecycle(() -> isStillOn(user, connectorId) && disconnectNow(user)))
                       .count();
+  }
+
+  /**
+   * Disconnects the users whose stored connector id is not in its canonical form, one by
+   * one, each one checked again when their turn comes ({@link #isStillNonCanonical(String)}),
+   * in the request lifecycles {@link #reconcileNow()} describes.
+   *
+   * @return the number of users whose disconnection failed
+   */
+  int disconnectNonCanonicalNow() {
+    List<String> users = inItsOwnLifecycle(userEmailSettingService::getUsersWithNonCanonicalConnectorId);
+    int failed = 0;
+    for (String user : users) {
+      if (Boolean.FALSE.equals(inItsOwnLifecycle(() -> !isStillNonCanonical(user) || disconnectNonCanonical(user)))) {
+        failed++;
+      }
+    }
+    LOG.info("{} of {} users with a non-canonical mail connector id left connected after their disconnection failed",
+             failed,
+             users.size());
+    return failed;
   }
 
   /**
@@ -228,10 +273,47 @@ public class EmailManagedDisconnectionService {
    */
   boolean isStillOn(String username, String connectorId) {
     try {
-      return connectorId.equals(userEmailSettingService.getStoredEmailConnectorId(username));
+      return EmailConnectorUtils.sameConnector(userEmailSettingService.getStoredEmailConnectorId(username), connectorId);
     } catch (Exception e) {
       // Exception, not RuntimeException: see isStillNoLongerManaged.
       LOG.warn("Cannot read the mail setting of user {}; left connected to connector {}", username, connectorId, e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a user selected for a non-canonical connector id still has one when their
+   * turn comes: a user who reconnected, or disconnected, during the run is left alone.
+   *
+   * @param username the eXo login the run selected
+   * @return true when the user is still to be disconnected
+   */
+  boolean isStillNonCanonical(String username) {
+    try {
+      String stored = userEmailSettingService.getStoredEmailConnectorId(username);
+      String canonical = EmailConnectorUtils.canonicalConnectorId(stored);
+      return canonical != null && !canonical.equals(stored);
+    } catch (Exception e) {
+      // Exception, not RuntimeException: see isStillNoLongerManaged.
+      LOG.warn("Cannot read the mail setting of user {}; left connected", username, e);
+      return false;
+    }
+  }
+
+  /**
+   * Disconnects one user whose stored connector id is not in its canonical form,
+   * logging a failure rather than throwing it, as {@link #disconnectNow(String)} does.
+   *
+   * @param username the eXo login to disconnect
+   * @return true when the user was disconnected
+   */
+  boolean disconnectNonCanonical(String username) {
+    try {
+      userEmailSettingService.deleteUserEmailSetting(username);
+      LOG.info("User {} disconnected from their mail connector: its stored id was not in its canonical form", username);
+      return true;
+    } catch (Exception e) {
+      LOG.warn("Cannot disconnect user {} from their mail connector, whose stored id is not in its canonical form", username, e);
       return false;
     }
   }
@@ -248,7 +330,7 @@ public class EmailManagedDisconnectionService {
    */
   boolean isNoLongerManaged(String username, Long designation, List<String> excludedGroups) {
     Long governing = managedConnectorService.designatedConnectorFor(designation, excludedGroups, username);
-    return governing == null || !Objects.equals(String.valueOf(governing), userEmailSettingService.getStoredEmailConnectorId(username));
+    return governing == null || !EmailConnectorUtils.sameConnector(userEmailSettingService.getStoredEmailConnectorId(username), governing);
   }
 
   /**

@@ -3999,4 +3999,19 @@ class EmailDelegationServiceTest {
     delegation.setOrigin(origin);
     return delegation;
   }
+
+  /** A grantee whose stored id is the preset's number in another form is connected on it. */
+  @Test
+  void inviteAcceptsAGranteeWhoseStoredIdIsInAnotherForm() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrsa"));
+    when(engine.grant(any(), any(), any(), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrs")));
+    UserEmailSetting granteeSetting = setting(7L, GRANTEE_MAILBOX);
+    granteeSetting.setEmailConnectorId("007");
+    when(userEmailSettingService.getUserEmailSetting(GRANTEE)).thenReturn(granteeSetting);
+
+    service.invite(OWNER, GRANTEE, DelegationPreset.READER);
+
+    verify(engine).grant(any(), any(), any(), any(), any());
+  }
 }

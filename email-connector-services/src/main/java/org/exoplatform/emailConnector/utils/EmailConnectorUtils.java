@@ -947,4 +947,51 @@ public class EmailConnectorUtils {
       return raw;
     }
   }
+
+  /**
+   * The canonical form of a connector id: the decimal string of its number, so that
+   * {@code +7} and {@code 007} are {@code 7}.
+   *
+   * @param connectorId the connector id as written
+   * @return the canonical id, or null when it is blank or not a number
+   */
+  public static String canonicalConnectorId(String connectorId) {
+    if (StringUtils.isBlank(connectorId)) {
+      return null;
+    }
+    try {
+      return String.valueOf(Long.parseLong(connectorId));
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Whether a stored connector id names a connector, compared by number. Two ids
+   * that are not numbers match only when equal as text.
+   *
+   * @param storedConnectorId the connector id as stored
+   * @param connectorId the connector's id
+   * @return true when both are the same connector
+   */
+  public static boolean sameConnector(String storedConnectorId, Long connectorId) {
+    return connectorId != null && sameConnector(storedConnectorId, String.valueOf(connectorId));
+  }
+
+  /**
+   * Whether two connector ids name the same connector, compared by number. Two ids
+   * that are not numbers match only when equal as text.
+   *
+   * @param connectorId a connector id
+   * @param otherConnectorId another connector id
+   * @return true when both are the same connector
+   */
+  public static boolean sameConnector(String connectorId, String otherConnectorId) {
+    String canonical = canonicalConnectorId(connectorId);
+    String otherCanonical = canonicalConnectorId(otherConnectorId);
+    if (canonical == null || otherCanonical == null) {
+      return StringUtils.equals(connectorId, otherConnectorId);
+    }
+    return canonical.equals(otherCanonical);
+  }
 }

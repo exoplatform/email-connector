@@ -17,8 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.mockito.Mockito.times;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -645,8 +645,8 @@ public class UserEmailSettingServiceTest {
     assertNotNull(read);
     assertEquals("testEmail", read.getEmailAddress());
     assertNull(read.getEmailPassword());
-    assertTrue("the read marks the model, so a write handed it back keeps the stored ciphertext", read.isPasswordUnreadable());
-    assertFalse("a password that cannot be decoded is not one the screen may offer to keep", read.isPasswordStored());
+    assertTrue(read.isPasswordUnreadable(), "the read marks the model, so a write handed it back keeps the stored ciphertext");
+    assertFalse(read.isPasswordStored(), "a password that cannot be decoded is not one the screen may offer to keep");
   }
 
   /**
@@ -1124,7 +1124,7 @@ public class UserEmailSettingServiceTest {
     try {
       IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                    () -> userEmailSettingService.authenticatorFor(emailConnector(), TEST_USER));
-      assertTrue("the refusal says what is missing", refusal.getMessage().contains("credentials contract is not available"));
+      assertTrue(refusal.getMessage().contains("credentials contract is not available"), "the refusal says what is missing");
     } finally {
       ReflectionTestUtils.setField(userEmailSettingService, "emailCredentialsResolver", wired);
     }
@@ -1496,7 +1496,7 @@ public class UserEmailSettingServiceTest {
       ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
       String document = String.valueOf(stored.getValue().getValue());
-      assertTrue(document, document.contains("eric@bm.example.org"));
+      assertTrue(document.contains("eric@bm.example.org"), document);
     }
   }
 
@@ -1566,7 +1566,7 @@ public class UserEmailSettingServiceTest {
       ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
       String document = String.valueOf(stored.getValue().getValue());
-      assertTrue(document, document.contains("eric@bm.example.org"));
+      assertTrue(document.contains("eric@bm.example.org"), document);
     }
   }
 
@@ -1658,7 +1658,7 @@ public class UserEmailSettingServiceTest {
 
     // The message matters: without it, this assertion passes on a version that lost
     // the guard and simply fails further on, for another reason.
-    assertTrue(refusal.getMessage(), refusal.getMessage().contains("expects the user to supply"));
+    assertTrue(refusal.getMessage().contains("expects the user to supply"), refusal.getMessage());
 
     // Nothing WRITTEN: canConnect reads the existing setting, which is legitimate.
     verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
@@ -2008,7 +2008,7 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                stored.capture());
     String document = String.valueOf(stored.getValue().getValue());
-    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    assertTrue(document.contains("\"emailConnectorId\":\"1\""), document);
     verify(settingService).set(any(Context.class),
                                any(Scope.class),
                                eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
@@ -2038,8 +2038,8 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                stored.capture());
     String document = String.valueOf(stored.getValue().getValue());
-    assertTrue(document, document.contains("eric@bm.example.org"));
-    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    assertTrue(document.contains("eric@bm.example.org"), document);
+    assertTrue(document.contains("\"emailConnectorId\":\"1\""), document);
     verify(settingService).set(any(Context.class),
                                any(Scope.class),
                                eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
@@ -2259,7 +2259,7 @@ public class UserEmailSettingServiceTest {
     assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
     for (String stored : List.of("", "eric@bm.example.org", ":eric@bm.example.org", "seven:eric@bm.example.org")) {
       givenRefusalStored(stored);
-      assertFalse(stored, userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+      assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused(), stored);
     }
     verifyNoInteractions(emailCredentialsResolver);
   }
@@ -2754,5 +2754,146 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
                                setAside.capture());
     return JsonUtils.fromJsonString(setAside.getValue().getValue().toString(), UserEmailSettingEntity.class);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "+7", "007", "7" })
+  void storesConnectorIdInCanonicalForm(String posted) throws TokenServiceInitializationException {
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailConnectorId(posted);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(stored.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertEquals("7", persisted.getEmailConnectorId());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "+7", "007" })
+  void theUsersOfAConnectorIncludeThoseWhoseStoredIdIsInAnotherForm(String storedId) throws TokenServiceInitializationException {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob")));
+    storedDocument("alice", "{\"emailConnectorId\":\"" + storedId + "\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"8\"}");
+
+    assertEquals(List.of("alice"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(7L));
+  }
+
+  @Test
+  void theUsersToDisconnectAreThoseWhoseStoredIdIsANumberInAnotherForm() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"),
+                            Context.USER.id("bob"),
+                            Context.USER.id("carol"),
+                            Context.USER.id("dave"),
+                            Context.USER.id("erin"),
+                            Context.USER.id("frank")));
+    storedDocument("alice", "{\"emailConnectorId\":\"007\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"7\"}");
+    storedDocument("carol", "{\"emailConnectorId\":\"+8\"}");
+    storedDocument("dave", "{\"emailConnectorId\":\"exchange\"}");
+    storedDocument("erin", "{}");
+    storedDocument("frank", "not json");
+
+    // the canonical id, a name that is no number, a document with no id and an unreadable one are left alone
+    assertEquals(List.of("alice", "carol"), userEmailSettingService.getUsersWithNonCanonicalConnectorId());
+  }
+
+  @Test
+  @SneakyThrows
+  void aStoredIdInAnotherFormIsTheConnectorsOwnWhenConnecting() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    EmailConnector seven = new EmailConnector();
+    seven.setId(7L);
+    seven.setActive(true);
+    when(emailConnectorService.getEmailConnector(7L)).thenReturn(seven);
+    storedDocument(TEST_USER, "{\"emailConnectorId\":\"007\",\"emailAddress\":\"a@b.c\"}");
+
+    assertTrue(userEmailSettingService.canConnect(7L, TEST_USER));
+  }
+
+  @Test
+  @SneakyThrows
+  void aRepeatConnectOfTheSameAccountStoredWithAnotherFormOfTheIdKeepsTheUsersMailAndShares() {
+    assertConnectBroadcastsCleanup("{\"emailConnectorId\":\"+1\",\"emailAddress\":\"Eric@bm.example.org\"}", false);
+  }
+
+  @Test
+  @SneakyThrows
+  void aSwitchOvertakenByAConnectionStoredWithAnotherFormOfTheIdRecordsNothing() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"001\",\"emailAddress\":\"eric@own.example.org\"}"));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+
+      assertFalse(userEmailSettingService.switchThroughProvider(1L, TEST_USER));
+
+      verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any());
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void aBlankPasswordAndTheAddressBookChoiceAreKeptWhateverFormTheIdIsPostedIn() {
+    SettingValue storedValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(storedValue);
+    when(storedValue.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\","
+        + "\"emailPassword\":\"cipher\",\"carddavEnabled\":true}");
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codecInitializer.getCodec()).thenReturn(codec);
+    when(codec.decode("cipher")).thenReturn("clear");
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailConnectorId("+1");
+    posted.setEmailPassword("");
+    posted.setCarddavEnabled(null);
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+
+      userEmailSettingService.connectUserEmailSetting(posted, TEST_USER, false);
+
+      ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+      UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+      assertEquals("1", persisted.getEmailConnectorId());
+      assertEquals(Boolean.TRUE, persisted.getCarddavEnabled());
+      verify(codec).encode("clear");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void aWriteWithoutAPasswordKeepsTheCiphertextStoredWithAnotherFormOfTheId() {
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"001\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"storedCipher\"}");
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailPassword(null);
+    model.setPasswordUnreadable(true);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertEquals("storedCipher", persisted.getEmailPassword());
   }
 }
