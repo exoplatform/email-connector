@@ -31,6 +31,8 @@ import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.service.EmailBoxService;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,7 +62,12 @@ class AiToolDefinitionsTest {
                                                             "mark_read",
                                                             "mark_unread",
                                                             "remove_email_category",
-                                                            "create_contact");
+                                                            "create_contact",
+                                                            "send_email_draft",
+                                                            "delete_email_draft",
+                                                            "schedule_email_draft",
+                                                            "reschedule_email",
+                                                            "cancel_scheduled_email");
 
   /**
    * Every public tool method must be declared in the JSON, and every JSON entry
@@ -97,7 +104,17 @@ class AiToolDefinitionsTest {
       assertTrue(tool != null && tool.path("require_approval").asBoolean(false),
                  "Tool " + name + " must carry require_approval: true");
     }
-    for (String name : Set.of("search_contacts", "get_contact", "suggest_recipients", "list_shared_mailboxes")) {
+    // EXO-91674: preparing, changing and listing drafts never leaves the user's mailbox,
+    // so a batch of prepared drafts does not ask once per draft. EXO-91996: listing the
+    // scheduled mails is a read.
+    for (String name : Set.of("search_contacts",
+                              "get_contact",
+                              "suggest_recipients",
+                              "list_shared_mailboxes",
+                              "create_email_draft",
+                              "update_email_draft",
+                              "list_email_drafts",
+                              "list_scheduled_emails")) {
       JsonNode tool = definitions.get(name);
       assertFalse(tool == null || tool.path("require_approval").asBoolean(false),
                   "Read tool " + name + " must not be approval-gated");
@@ -285,6 +302,34 @@ class AiToolDefinitionsTest {
     }
     assertTrue(definitions.get("get_email_thread").path("description").asText().contains("(to) and copied to (cc)"));
     assertTrue(definitions.get("get_email_by_id").path("description").asText().contains("its to and cc recipients"));
+  }
+
+  /**
+   * The draft tools' schemas bound {@code document_ids} by the very number the mailbox
+   * service refuses a call over (EXO-91676), so a change of the service limit cannot
+   * leave a schema promising another.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void theDraftToolsBoundTheirDocumentsByTheServiceLimit() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    for (String tool : List.of("create_email_draft", "update_email_draft")) {
+      JsonNode documentIds = definitions.get(tool).path("input_schema").path("properties").path("document_ids");
+      assertEquals(EmailBoxService.MAX_DOCUMENTS_PER_CALL, documentIds.path("maxItems").asInt(-1), tool);
+    }
+  }
+
+  /**
+   * create_email_draft states the size a mail may carry as the mailbox service caps it,
+   * so a change of the cap cannot leave the description promising another.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void theDraftDescriptionStatesTheServiceAttachmentCap() throws Exception {
+    String description = readDefinitions().get("create_email_draft").path("description").asText();
+    assertTrue(description.contains(EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB + " MB"), description);
   }
 
   /**

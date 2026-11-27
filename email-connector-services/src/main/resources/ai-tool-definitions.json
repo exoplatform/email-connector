@@ -4,7 +4,7 @@
     {
       "name": "get_email_by_id",
       "title": "Get an email",
-      "description": "Retrieve email content identified by its local id (email_id). The email carries its sender and its to and cc recipients, each with its address, its folder (INBOX, SENT, ARCHIVE, DRAFTS, TRASH or JUNK), its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. An email that is not the current user's is refused. With mailbox, the email must be in that shared mailbox; an email of another mailbox is not found.",
+      "description": "Retrieve email content identified by its local id (email_id). The email carries its sender and its to and cc recipients, each with its address, its folder (INBOX, SENT, ARCHIVE, DRAFTS, TRASH or JUNK), its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. An email that is not the current user's is refused. With mailbox, the email must be in that shared mailbox; an email of another mailbox is not found. The email also says who wrote it in message_kind: 'bounce' (a mail server reporting that it could not deliver; bounced_recipients then lists the addresses that could not be reached), 'auto_reply' (sent without a person typing it: an out-of-office, a read receipt, a delivery delay notice) or 'normal' (written by a person, including a mail relayed by a mailing list). It is decided from the message's headers and structure, never from its wording, and a report whose Return-Path names a sender address is not taken for a bounce. Nothing else proves that a bounce came from a mail server: bounced_recipients is what the report claims, so check it before treating the address of someone the user knows as invalid. message_kind is absent when it could not be decided (a mail that could not be read, or one synced before it was recorded), which is never to be read as 'normal'.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -23,7 +23,7 @@
     {
       "name": "list_emails",
       "title": "List emails",
-      "description": "Retrieve a page of the current user's emails from the synced mirror of a folder. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. folder is INBOX (default), SENT or ARCHIVE. Each email carries its folder, its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. Call sync_now first if you need the freshest messages. With mailbox, lists that shared mailbox's folder as the user's mirror holds it; a folder that is not shared or not synced yet is refused with a message saying so, never answered as empty.",
+      "description": "Retrieve a page of the current user's emails from the synced mirror of a folder. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. folder is INBOX (default), SENT or ARCHIVE. Each email carries its folder, its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. Call sync_now first if you need the freshest messages. With mailbox, lists that shared mailbox's folder as the user's mirror holds it; a folder that is not shared or not synced yet is refused with a message saying so, never answered as empty. Each email also says who wrote it in message_kind: 'bounce' (a mail server reporting that it could not deliver; bounced_recipients then lists the addresses that could not be reached), 'auto_reply' (sent without a person typing it: an out-of-office, a read receipt, a delivery delay notice) or 'normal' (written by a person, including a mail relayed by a mailing list). It is decided from the message's headers and structure, never from its wording, and a report whose Return-Path names a sender address is not taken for a bounce. Nothing else proves that a bounce came from a mail server: bounced_recipients is what the report claims, so check it before treating the address of someone the user knows as invalid. message_kind is absent when it could not be decided (a mail that could not be read, or one synced before it was recorded), which is never to be read as 'normal'.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -93,14 +93,18 @@
     {
       "name": "search_emails",
       "title": "Search emails",
-      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender, NOT the body — a body search is a linear scan of the whole folder on servers without a full-text index, so ask about a subject or a sender rather than words inside a message. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). Every hit already synced to the local copy carries its email_id, in the user's own mailbox and in a shared one: pass that email_id to the other tools, never a mail_remote_id in its place. A hit without an email_id is not in the synced copy, which the other tools read: they cannot open, reply to, forward, archive or delete it, so report it from the search result itself (sync_now brings in recent mail only, never older mail). Only mark_read and mark_unread also take the mail_remote_id of such a hit of the user's own INBOX. With mailbox, searches the user's synced copy of that shared mailbox's folder (subject or sender), not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
+      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required, and all given criteria must match. 'query' matches the subject or the sender, not the body. 'words' matches the subject or the BODY: use it for words inside a message (a quoted reply, a keyword); on a large folder a body search can be slow, so narrow it with a date range. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'since_date' and 'until_date' (yyyy-MM-dd, both days included; a message received near midnight may count on the neighbouring day when the mail server's time zone differs from eXo's) keep only messages received between those days — for a daily run, search from the day of the previous run and skip the email_ids already handled. 'message_id' finds the one mail carrying that Message-ID: pass the message_id that create_email_draft or list_email_drafts returned to find the mail that draft became once the user sent it (folder SENT unless you name another). No hit only means no copy is filed in that folder: some mail servers keep no copy of what was sent, so never send the mail again on that alone: ask the user first. 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). Every hit already synced to the local copy carries its email_id, in the user's own mailbox and in a shared one: pass that email_id to the other tools, never a mail_remote_id in its place. A hit without an email_id is not in the synced copy, which the other tools read: they cannot open, reply to, forward, archive or delete it, so report it from the search result itself (sync_now brings in recent mail only, never older mail). Only mark_read and mark_unread also take the mail_remote_id of such a hit of the user's own INBOX. With mailbox, searches the user's synced copy of that shared mailbox's folder, with the same criteria, not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation. Each hit also says who wrote it in message_kind: 'bounce' (a mail server reporting that it could not deliver; bounced_recipients then lists the addresses that could not be reached), 'auto_reply' (sent without a person typing it: an out-of-office, a read receipt, a delivery delay notice) or 'normal' (written by a person, including a mail relayed by a mailing list). It is decided from the message's headers and structure, never from its wording, and a report whose Return-Path names a sender address is not taken for a bounce. Nothing else proves that a bounce came from a mail server: bounced_recipients is what the report claims, so check it before treating the address of someone the user knows as invalid. message_kind is absent when it could not be decided (a mail that could not be read, or one synced before it was recorded), which is never to be read as 'normal'.",
       "input_schema": {
         "type": "object",
         "properties": {
           "query": { "type": "string" },
           "from": { "type": "string" },
+          "words": { "type": "string", "description": "Words matched against the subject or the body." },
           "unread": { "type": "boolean" },
           "sinceDays": { "type": "integer", "minimum": 1 },
+          "since_date": { "type": "string", "description": "First day, included, yyyy-MM-dd." },
+          "until_date": { "type": "string", "description": "Last day, included, yyyy-MM-dd." },
+          "message_id": { "type": "string", "description": "The message_id a draft tool returned, to find the mail that draft became once sent." },
           "folder": { "type": "string", "enum": ["INBOX", "SENT", "ARCHIVE"] },
           "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
@@ -116,7 +120,7 @@
     {
       "name": "get_email_full",
       "title": "Get full email",
-      "description": "Fetch a single email in full, including recipients, body and attachment metadata. Binary attachment content is not returned. The email carries its folder and its thread_id, to read the whole conversation with get_email_thread. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. With mailbox, email_id names a mail of that shared mailbox.",
+      "description": "Fetch a single email in full, including recipients, body and attachment metadata. Binary attachment content is not returned. The email carries its folder and its thread_id, to read the whole conversation with get_email_thread. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. With mailbox, email_id names a mail of that shared mailbox. The email also says who wrote it in message_kind: 'bounce' (a mail server reporting that it could not deliver; bounced_recipients then lists the addresses that could not be reached), 'auto_reply' (sent without a person typing it: an out-of-office, a read receipt, a delivery delay notice) or 'normal' (written by a person, including a mail relayed by a mailing list). It is decided from the message's headers and structure, never from its wording, and a report whose Return-Path names a sender address is not taken for a bounce. Nothing else proves that a bounce came from a mail server: bounced_recipients is what the report claims, so check it before treating the address of someone the user knows as invalid. message_kind is absent when it could not be decided (a mail that could not be read, or one synced before it was recorded), which is never to be read as 'normal'.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -156,7 +160,7 @@
     {
       "name": "get_email_thread",
       "title": "Read a whole conversation",
-      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its email_id through get_email_full first to obtain the thread_id; a hit without an email_id is not in the synced copy and cannot be opened. Each message comes back with its email_id, its folder (INBOX, SENT, ARCHIVE...), its mail_remote_id only when it is a mail of the user's own INBOX, its sender name and address, the addresses it was sent to (to) and copied to (cc), its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its email_id rather than searching for it again: it goes to get_email_by_id, get_email_full, reply_email, reply_all, forward_email and list_attachments whatever its folder, and to mark_read, archive_email and delete_email for a message of the inbox. With mailbox, the conversation as that shared mailbox holds it, each message's folder given by name; without, the user's own rows only.",
+      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its email_id through get_email_full first to obtain the thread_id; a hit without an email_id is not in the synced copy and cannot be opened. Each message comes back with its email_id, its folder (INBOX, SENT, ARCHIVE...), its mail_remote_id only when it is a mail of the user's own INBOX, its sender name and address, the addresses it was sent to (to) and copied to (cc), its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its email_id rather than searching for it again: it goes to get_email_by_id, get_email_full, reply_email, reply_all, forward_email and list_attachments whatever its folder, and to mark_read, archive_email and delete_email for a message of the inbox. With mailbox, the conversation as that shared mailbox holds it, each message's folder given by name; without, the user's own rows only. Each message also says who wrote it in message_kind: 'bounce' (a mail server reporting that it could not deliver; bounced_recipients then lists the addresses that could not be reached), 'auto_reply' (sent without a person typing it: an out-of-office, a read receipt, a delivery delay notice) or 'normal' (written by a person, including a mail relayed by a mailing list). It is decided from the message's headers and structure, never from its wording, and a report whose Return-Path names a sender address is not taken for a bounce. Nothing else proves that a bounce came from a mail server: bounced_recipients is what the report claims, so check it before treating the address of someone the user knows as invalid. message_kind is absent when it could not be decided (a mail that could not be read, or one synced before it was recorded), which is never to be read as 'normal'.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -312,6 +316,209 @@
         "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": true
+      }
+    },
+    {
+      "name": "create_email_draft",
+      "title": "Prepare an email as a draft",
+      "description": "Prepare an email as a draft in the current user's own mailbox, WITHOUT sending it: it appears in the Drafts folder of the Email app like any other draft, where the user reviews it, edits it by hand and sends it, or asks you to send it with send_email_draft. Use it whenever the user wants to check an email before it leaves. The body is HTML of text, formatting and links: a body showing an image is refused and nothing is saved (the user adds pictures in the Email app), and it is cleaned as a received mail is, so the body you write fetches nothing. The user's signature is added under it, as it is, as the Email app adds it, unless add_signature is false. With email_id (the email_id of a mail you read), the draft is a reply to that mail: it is filed in the mail's conversation and stays in it once sent; subject then defaults to 'Re: ' and the mail's subject, and to to the mail's sender. Never invent or add recipients the user did not name. Returns the draft with its body_html, its draft_id (to pass to the other draft tools), its revision (to pass to update_email_draft), its message_id (the Message-ID the mail will carry once sent, by whoever sends it: keep it to find the mail in the Sent folder later), its thread_id, its attachments (the names of its files), and a link to the user's drafts in the Email app. To attach files, pass document_ids: the document_id of documents of the user's Documents or of a space's, as the document tools (search_documents, get_documents_by_folder_id) give them; each is attached as a file of the draft, read with the user's own rights. A document that is not attached (not found, not open to the user, a folder, too large for the 25 MB a mail may carry with the draft's other files, unreadable) is listed in refused_documents with its reason, and the draft is saved with the others: tell the user which files are missing. Only documents the user named or clearly asked for; never attach a document on your own initiative.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "array", "items": { "type": "string" }, "description": "Bare addresses, such as alice@acme.com. Required unless email_id is given." },
+          "subject": { "type": "string" },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } },
+          "bcc": { "type": "array", "items": { "type": "string" } },
+          "email_id": { "type": "integer", "description": "The email_id of the mail the draft replies to, as a reading tool or a search hit returned it. Leave empty for a new email." },
+          "add_signature": { "type": "boolean", "description": "Whether to add the user's signature under the body. Default true." },
+          "document_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "The document_id of documents to attach, at most 20, as the document tools give them." }
+        },
+        "required": ["body_html"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_email_draft",
+      "title": "Change an email draft",
+      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included): to change one sentence, read the draft's body_html first (list_email_drafts with with_html true, or the answer of create_email_draft), change that sentence in it and pass the whole of it back. body_html is cleaned as in create_email_draft, the user's current signature kept as it is when it is still as create_email_draft added it, and its logo however the Email app saved it; a body showing any other image (a pasted image, a quoted mail's pictures, a signature's pictures other than its logo once the signature changed or the Email app saved the draft) is refused, and the user changes that body in the Email app: you change text, formatting and links. A list given empty clears it; to cannot be emptied. Pass the revision the draft had when you read it: if the draft was saved since, in the Email app or elsewhere, nothing of your change is saved and you are told so, and you read it again. If the user has the draft open in the Email app, ask them to close it first: the app may save what it shows over your change. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. document_ids ADDS documents to the files the draft already carries, as in create_email_draft, and never removes one: a document named again is attached again, so name only the documents to add. Returns the draft as it now stands, with its body_html, its attachments, and refused_documents for the documents that were not attached.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id create_email_draft or list_email_drafts gave." },
+          "revision": { "type": "integer", "description": "The draft's revision as create_email_draft or list_email_drafts gave it when you read the draft." },
+          "to": { "type": "array", "items": { "type": "string" } },
+          "subject": { "type": "string" },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } },
+          "bcc": { "type": "array", "items": { "type": "string" } },
+          "document_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "The document_id of documents to add to the draft's files, at most 20, as the document tools give them." }
+        },
+        "required": ["draft_id", "revision"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_email_drafts",
+      "title": "List email drafts",
+      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its attachments (the names of its files), its draft_id, revision, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "subject": { "type": "string" },
+          "recipient": { "type": "string" },
+          "since_days": { "type": "integer", "minimum": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "with_html": { "type": "boolean", "description": "Whether to give each draft's whole HTML body as body_html. Default false." }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "send_email_draft",
+      "title": "Send an email draft",
+      "description": "Send a draft of the current user's own mailbox over real SMTP, as it is stored at this moment: the user's own edits in the Email app are what goes out, never an earlier version. A reply draft stays in its conversation. IMPORTANT: this action is outward-facing and irreversible. Read the draft with list_email_drafts first and pass its to, cc, bcc, subject and attachments exactly as it says them now: they are what the user approves, and the draft is sent only if it still says exactly that; otherwise nothing is sent and you read it again. Always show the user those recipients, the subject and the attached files, and never send without their explicit confirmation. A draft that is scheduled, or written in a mailbox shared with the user, is refused: the user sends it from the Email app. Returns the sent mail's message_id and thread_id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string" },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
+          "cc": { "type": "array", "items": { "type": "string" }, "description": "The draft's copied recipients as read now; empty when it has none." },
+          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." },
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "The names of the draft's files as list_email_drafts reads them now; empty when it carries none." }
+        },
+        "required": ["draft_id", "to", "subject"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "delete_email_draft",
+      "title": "Delete an email draft",
+      "description": "Delete a draft of the current user's own mailbox, in the Email app and in the mail server's Drafts folder. Irreversible: always name the draft (its subject and recipients) to the user and get their confirmation first. Pass the draft's subject and to as list_email_drafts reads them now; a draft that says otherwise is not deleted. A draft that is scheduled, or written in a mailbox shared with the user, is refused.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string" },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." }
+        },
+        "required": ["draft_id", "subject", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "schedule_email_draft",
+      "title": "Schedule an email draft",
+      "description": "Schedule a draft of the current user's own mailbox to be sent at a date and time, as the Email app's 'Schedule send' does. The draft leaves the Drafts folder for the Email app's Scheduled view, where the user can change, cancel or send it; it is sent once, at that time, by the server, even if nobody is connected. It is scheduled as it is stored at this moment, the user's own edits in the Email app included, and cannot be changed by update_email_draft while it is scheduled. send_at is a local date and time with no offset, such as 2026-10-23T08:30, read in time_zone (an IANA name, such as Europe/Paris); leave time_zone empty for the user's own time zone. A time the clocks skip or show twice in that zone, when they change, is refused: ask the user for another. If the user's time zone is not known you are told so, and you ask the user. The time must be ahead of now and within the limits this deployment sets: a refused time says whether it is too soon or too far. IMPORTANT: once the time comes, the email goes out over real SMTP. Read the draft with list_email_drafts first and pass its to, cc, bcc and subject exactly as it says them now: they are what the user approves, and the draft is scheduled only if it still says exactly that; otherwise nothing is scheduled and you read it again. Always show the user the recipients, the subject and the time, and never schedule without their explicit confirmation. A draft already scheduled, or written in a mailbox shared with the user, is refused. Returns the scheduled email with its draft_id, its send_at in its time zone and send_at_utc, its status, and a link to the Scheduled view.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id create_email_draft or list_email_drafts gave." },
+          "send_at": { "type": "string", "description": "When to send it: a local date and time in time_zone, with no offset, such as 2026-10-23T08:30." },
+          "time_zone": { "type": "string", "description": "The IANA time zone of send_at, such as Europe/Paris. Empty for the user's own." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
+          "cc": { "type": "array", "items": { "type": "string" }, "description": "The draft's copied recipients as read now; empty when it has none." },
+          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." }
+        },
+        "required": ["draft_id", "send_at", "to", "subject"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_scheduled_emails",
+      "title": "List scheduled emails",
+      "description": "List the emails of the current user's Scheduled view in the Email app, soonest first: for each, its draft_id (to pass to reschedule_email and cancel_scheduled_email), its recipients, subject and first words, when it is sent (send_at in its time_zone, and send_at_utc), its status and, when it was written in a mailbox shared with the user, that mailbox. status is SCHEDULED (waiting), SENDING, FAILED (not sent; error says why, and the user can change its time or cancel it) or UNCERTAIN (it may have been sent: the user checks their Sent folder in the Email app). An email no longer listed was sent or cancelled: once sent, it is in the Sent folder. 'limit' caps the list (default 20, max 100); 'offset' skips that many, a multiple of limit.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "offset": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "reschedule_email",
+      "title": "Change when a scheduled email is sent",
+      "description": "Change when a scheduled email of the current user is sent. Only an email waiting to be sent, or one that failed, gets a new time; one being sent, sent, or whose sending could not be confirmed is refused. send_at and time_zone as in schedule_email_draft; leave time_zone empty for the user's own time zone (or the email's, when the user's is not known). Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not changed. Always show the user the email and the new time, and get their confirmation first. Returns the scheduled email as it now stands.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id list_scheduled_emails gave." },
+          "send_at": { "type": "string", "description": "The new time: a local date and time in time_zone, with no offset, such as 2026-10-23T08:30." },
+          "time_zone": { "type": "string", "description": "The IANA time zone of send_at, such as Europe/Paris. Empty for the user's own." },
+          "subject": { "type": "string", "description": "The email's subject as list_scheduled_emails reads it now." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The email's recipients as list_scheduled_emails reads them now, bare addresses." }
+        },
+        "required": ["draft_id", "send_at", "subject", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "cancel_scheduled_email",
+      "title": "Cancel a scheduled email",
+      "description": "Cancel a scheduled email of the current user: it is not sent, and goes back to the Drafts folder as it is, where list_email_drafts finds it under the same draft_id. One being sent or already sent is refused. An UNCERTAIN email is not sent again once cancelled, but it may already have reached its recipients: tell the user to check their Sent folder. Pass the email's subject and to as list_scheduled_emails reads them now, so the user approves the right one; an email that says otherwise is not cancelled. Always name the email to the user and get their confirmation first.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id list_scheduled_emails gave." },
+          "subject": { "type": "string", "description": "The email's subject as list_scheduled_emails reads it now." },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The email's recipients as list_scheduled_emails reads them now, bare addresses." }
+        },
+        "required": ["draft_id", "subject", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
       }
     },
     {

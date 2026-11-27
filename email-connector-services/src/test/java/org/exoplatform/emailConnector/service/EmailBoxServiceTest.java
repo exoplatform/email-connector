@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import com.sun.mail.smtp.SMTPAddressFailedException;
 import com.sun.mail.smtp.SMTPSendFailedException;
 import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
@@ -101,6 +102,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -225,6 +227,12 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
+import org.exoplatform.emailConnector.model.EmailDocumentContent;
+import org.exoplatform.emailConnector.model.RefusedDocument;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
+import org.exoplatform.emailConnector.exception.DocumentRefusedException;
+import org.exoplatform.emailConnector.provider.EmailDocumentReader;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -342,6 +350,10 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private SmtpTransmitter         smtpTransmitter;
+
+  // The Documents reader (EXO-91676), present wherever the Documents add-on is.
+  @MockitoBean
+  private EmailDocumentReader     emailDocumentReader;
 
   // Read receipts, phase 2 (EXO-90435): the durable answer store the sync writes the
   // server's $MDNSent to and a newly cached request reads its answer from.
@@ -8220,6 +8232,45 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91995: a hit read from the mail server says who wrote it, decided from the live
+   * message; the headers it is decided on ride in the page's one batched fetch, never a
+   * FETCH per hit.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsSaysWhoWroteEveryHit() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Date now = new Date();
+    MimeMessage person = searchHit("offer 1", "bob@prospect.example", new Date(now.getTime() - 1000), true);
+    MimeMessage bounce = searchHit("offer 2", "mailer-daemon@mx.example", now, true);
+    when(bounce.getHeader("X-Failed-Recipients")).thenReturn(new String[] { "gone@prospect.example" });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { person, bounce });
+    when(((UIDFolder) inbox).getUID(person)).thenReturn(11L);
+    when(((UIDFolder) inbox).getUID(bounce)).thenReturn(12L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(Map.of());
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "offer", null, false, null, "INBOX", 20);
+
+    assertEquals(MessageKind.BOUNCE, page.getResults().get(0).getMessageKind());
+    assertEquals(List.of("gone@prospect.example"), page.getResults().get(0).getBouncedRecipients());
+    assertEquals(MessageKind.NORMAL, page.getResults().get(1).getMessageKind());
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), profile.capture());
+    assertTrue(profile.getValue().contains("X-Failed-Recipients"));
+    assertTrue(profile.getValue().contains("Auto-Submitted"));
+    assertTrue(profile.getValue().contains("Return-Path"));
+    assertTrue(profile.getValue().contains(FetchProfile.Item.CONTENT_INFO));
+  }
+
+  /**
    * When the SEARCH matches more than the requested limit, only the newest tail of
    * the match list is fetched — the batched FETCH must stay bounded by the limit,
    * not by the match count — while the total still reports every match.
@@ -9138,6 +9189,222 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Documents named for a draft are read AS THE USER and written onto the draft as its
+   * own files, with the name and content type Documents gives them: what the Email app
+   * then shows as chips and the send carries.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void documentsNamedForADraftAreReadAsTheUserAndWrittenOntoIt() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    byte[] brochure = "the brochure".getBytes();
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("brochure.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    brochure));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1"));
+
+    assertNotNull(attached.getDraft());
+    assertTrue(attached.getRefused().isEmpty(), "nothing was refused");
+    verify(emailDocumentReader).readDocument("doc-1", TEST_USER, 25L * 1024 * 1024);
+    verify(emailBoxStorage).copyDraftAttachment(TEST_USER, "draft-1", "brochure.pdf", "application/pdf", brochure);
+  }
+
+  /**
+   * A refused document is named with its reason, and the documents beside it are still
+   * attached: one file the user cannot open must not keep the others off the draft.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aRefusedDocumentIsNamedWithItsReasonAndTheOthersAreStillAttached() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailDocumentReader.readDocument(eq("secret"), eq(TEST_USER), anyLong()))
+                                                                              .thenThrow(new DocumentRefusedException(DocumentRefusalReason.NO_ACCESS,
+                                                                                                                      null));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                             .thenReturn(new EmailDocumentContent("case.pdf",
+                                                                                                                  "application/pdf",
+                                                                                                                  "case".getBytes()));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("secret", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("secret", null, DocumentRefusalReason.NO_ACCESS)), attached.getRefused());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("case.pdf"), eq("application/pdf"), any());
+  }
+
+  /**
+   * The room a document is read into is what the draft can still carry: counted from
+   * the files it already has, and from each document attached before it in the call.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void eachDocumentIsReadIntoTheRoomTheDraftHasLeft() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    long cap = 25L * 1024 * 1024;
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1"))
+                                                                   .thenReturn(List.of(new EmailAttachment(9L, null, null, "big.zip",
+                                                                                                           "application/zip", null,
+                                                                                                           MailFolder.DRAFTS, 99L,
+                                                                                                           cap - 100, null)));
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.txt",
+                                                                                                                    "text/plain",
+                                                                                                                    new byte[60]));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                               .thenThrow(new DocumentRefusedException(DocumentRefusalReason.TOO_LARGE,
+                                                                                                                       "b.txt"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    verify(emailDocumentReader).readDocument("doc-1", TEST_USER, 100L);
+    verify(emailDocumentReader).readDocument("doc-2", TEST_USER, 40L);
+    assertEquals(List.of(new RefusedDocument("doc-2", "b.txt", DocumentRefusalReason.TOO_LARGE)), attached.getRefused());
+  }
+
+  /**
+   * A write the store fails stops the call: that document and the ones after it are
+   * refused as failed -- the file may be on the draft anyway, and a store that failed
+   * once would answer the next no better -- while the ones before it stay attached.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aFailedWriteRefusesThatDocumentAndTheRestAsFailed() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    for (String id : List.of("doc-1", "doc-2", "doc-3")) {
+      when(emailDocumentReader.readDocument(eq(id), eq(TEST_USER), anyLong()))
+                                                                            .thenReturn(new EmailDocumentContent(id + ".pdf",
+                                                                                                                 "application/pdf",
+                                                                                                                 new byte[1]));
+    }
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-2.pdf"), any(), any()))
+                                                                                                        .thenThrow(new IllegalStateException("store down"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2", "doc-3"));
+
+    assertEquals(List.of(new RefusedDocument("doc-2", null, DocumentRefusalReason.FAILED),
+                         new RefusedDocument("doc-3", null, DocumentRefusalReason.FAILED)),
+                 attached.getRefused());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-1.pdf"), any(), any());
+    verify(emailDocumentReader, never()).readDocument(eq("doc-3"), anyString(), anyLong());
+  }
+
+  /**
+   * A file store that writes nothing stops the call as a write that throws does: that
+   * document and the ones after it are refused as failed.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aFileStoreWritingNothingRefusesThatDocumentAndTheRestAsFailed() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    for (String id : List.of("doc-1", "doc-2")) {
+      when(emailDocumentReader.readDocument(eq(id), eq(TEST_USER), anyLong()))
+                                                                            .thenReturn(new EmailDocumentContent(id + ".pdf",
+                                                                                                                 "application/pdf",
+                                                                                                                 new byte[1]));
+    }
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-1.pdf"), any(), any())).thenReturn(null);
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.FAILED),
+                         new RefusedDocument("doc-2", null, DocumentRefusalReason.FAILED)),
+                 attached.getRefused());
+  }
+
+  /**
+   * An id named twice is attached once, and a blank one is ignored.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aDocumentNamedTwiceIsAttachedOnce() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.txt",
+                                                                                                                    "text/plain",
+                                                                                                                    new byte[1]));
+
+    emailBoxService.addDocumentAttachments("draft-1", TEST_USER, java.util.Arrays.asList("doc-1", " doc-1 ", "", null));
+
+    verify(emailDocumentReader).readDocument(eq("doc-1"), eq(TEST_USER), anyLong());
+    verify(emailBoxStorage).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
+  }
+
+  /**
+   * Without the Documents add-on there is no reader: every document is refused as
+   * unavailable, and nothing is written.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void withoutDocumentsEveryDocumentIsRefusedAsUnavailable() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    ReflectionTestUtils.setField(emailBoxService, "emailDocumentReader", null);
+    try {
+      DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1"));
+
+      assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.DOCUMENTS_UNAVAILABLE)),
+                   attached.getRefused());
+      verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), any(), any());
+    } finally {
+      ReflectionTestUtils.setField(emailBoxService, "emailDocumentReader", emailDocumentReader);
+    }
+  }
+
+  /**
+   * More documents than one call attaches are refused before any is read; a call naming
+   * none is refused too.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void tooManyOrNoDocumentsAreRefusedBeforeAnyIsRead() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    List<String> ids = java.util.stream.IntStream.rangeClosed(1, 21).mapToObj(i -> "doc-" + i).toList();
+
+    IllegalArgumentException tooMany = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, ids));
+    assertEquals("emailConnector.drafts.attachDocuments.tooMany", tooMany.getMessage());
+    assertDoesNotThrow(() -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, ids.subList(0, 20)));
+    clearInvocations(emailDocumentReader);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of()));
+    verify(emailDocumentReader, never()).readDocument(anyString(), anyString(), anyLong());
+  }
+
+  /**
+   * A draft the user does not have answers null, and a scheduled one is refused: neither
+   * reads a document.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aMissingOrScheduledDraftReadsNoDocument() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(null);
+    assertNull(emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1")));
+
+    givenTheDraftBeingWrittenInto();
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertThrows(ScheduledSendConflictException.class,
+                 () -> emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1")));
+    verify(emailDocumentReader, never()).readDocument(anyString(), anyString(), anyLong());
+  }
+
+  /**
    * Forwarding a message with no files touches nothing and connects to nothing.
    * <p>
    * The common case by a wide margin, and the one an eager implementation makes
@@ -9687,6 +9954,95 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     Email draft = draft(null);
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  /**
+   * EXO-91674 -- a draft sent with no composer goes out as the row says it now: the
+   * subject and body the user last saved in the Email app, checked by the caller on
+   * that very row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredGoesOutAsTheRowSaysItNow() {
+    Email stored = mockDraftSendFixture();
+    stored.setSubject("Edited in the app");
+    stored.setContent(new EmailContent("<p>The user's own words</p>"));
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+    List<Email> checked = new ArrayList<>();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email sent = emailBoxService.sendDraftAsStored("draft-1", TEST_USER, checked::add);
+
+      ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(message.capture()));
+      assertEquals("Edited in the app", message.getValue().getSubject());
+      assertSame(stored, sent);
+      assertEquals(List.of(stored), checked);
+    }
+  }
+
+  /**
+   * EXO-91674 -- a row the caller's check refuses is not sent and not claimed: the user
+   * approved something else than what the draft says now.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredIsLeftAloneWhenTheCheckRefusesTheRow() {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraftAsStored("draft-1", TEST_USER, row -> {
+        throw new IllegalArgumentException("not what was approved");
+      }));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-91674 -- a discard whose check refuses the row, here because the draft has been
+   * scheduled, removes nothing: not the schedule, not the copy, not the row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftDiscardIsLeftAloneWhenTheCheckRefusesTheRow() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER, row -> {
+      if (row.isScheduled()) {
+        throw new IllegalArgumentException("scheduled");
+      }
+    }));
+    verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    // The draft is still there, and so is its lock: a writer waiting on it and the next
+    // caller must share one lock, never hold two.
+    @SuppressWarnings("unchecked")
+    Map<String, ReentrantLock> draftLocks = (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                    "draftLocks");
+    assertTrue(draftLocks.containsKey(TEST_USER + "/draft-1"));
+  }
+
+  /**
+   * EXO-91674 -- reading one draft is the owner's: a user who may not use their mailbox
+   * reads none, and a scheduled draft says it is.
+   */
+  @Test
+  @SneakyThrows
+  void getDraftIsTheOwnersAndMarksAScheduledDraft() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertTrue(emailBoxService.getDraft("draft-1", TEST_USER).isScheduled());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getDraft("draft-1", TEST_USER));
   }
 
   /**
@@ -10973,6 +11329,58 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91995: who wrote a message is decided at sync, from the live message, and kept
+   * with the row -- a bounce with the addresses it failed, an out-of-office as an
+   * automatic reply, anything else as normal.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheMessageKind() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("X-Failed-Recipients")).thenReturn(new String[] { "gone@prospect.example" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.BOUNCE, created.getValue().getMessageKind());
+    assertEquals(List.of("gone@prospect.example"), created.getValue().getBouncedRecipients());
+  }
+
+  /** EXO-91995: an out-of-office is cached as an automatic reply. */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsAnAutomaticReply() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Auto-Submitted")).thenReturn(new String[] { "auto-replied" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.AUTO_REPLY, created.getValue().getMessageKind());
+  }
+
+  /** EXO-91995: a message with no automation header is cached as written by a person. */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsANormalMessage() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 1);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(MessageKind.NORMAL, created.getValue().getMessageKind());
+    assertEquals(List.of(), created.getValue().getBouncedRecipients());
+  }
+
+  /**
    * EXO-90841: the receiving server's authentication verdict is read at sync, from the
    * top Authentication-Results header only, and kept with the row; a message whose
    * verdict passed carries none.
@@ -11526,7 +11934,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null, null, null, null);
+                     false, null, null, false, null, null, null, null, null, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -15907,6 +16315,94 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91675 -- a Message-ID is one more term of the server's SEARCH, which only narrows:
+   * the server's substring match also answers a longer id containing the searched one,
+   * and only the exact one is kept, counted and paged. A search where no hit carries it
+   * exactly is an empty page, with nothing fetched.
+   */
+  @Test
+  void aMessageIdSearchOfAnOwnFolderKeepsOnlyTheMailCarryingItExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage exact = searchHit("Our offer", "me@acme.com", new Date(), true);
+    when(exact.getHeader("Message-ID")).thenReturn(new String[] { "<draft.1@acme.com>" });
+    MimeMessage longer = searchHit("Another offer", "me@acme.com", new Date(), true);
+    when(longer.getHeader("Message-ID")).thenReturn(new String[] { "<xdraft.1@acme.com.org>" });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer, exact });
+    when(((UIDFolder) inbox).getUID(exact)).thenReturn(31L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(31L))).thenReturn(Map.of(31L, 310L));
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setMessageId("<draft.1@acme.com>");
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+
+    assertEquals(1, page.getTotalMatches(), "the longer id is not this mail");
+    assertEquals(List.of(310L), page.getResults().stream().map(EmailSearchResult::getEmailId).toList());
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertEquals(EmailBoxService.messageIdSearchTerm("<draft.1@acme.com>"), searched.getValue(), "the id is searched on the server");
+    // Every hit's header in one batched FETCH before the exact filter, then the page's.
+    ArgumentCaptor<Message[]> fetched = ArgumentCaptor.forClass(Message[].class);
+    ArgumentCaptor<FetchProfile> profiles = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(2)).fetch(fetched.capture(), profiles.capture());
+    assertArrayEquals(new Message[] { longer, exact }, fetched.getAllValues().get(0), "every hit, the longer id included");
+    assertArrayEquals(new String[] { "Message-ID" }, profiles.getAllValues().get(0).getHeaderNames());
+    assertArrayEquals(new Message[] { exact }, fetched.getAllValues().get(1), "the page: the exact match only");
+
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer });
+    EmailSearchResultPage none = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+    assertEquals(0, none.getTotalMatches());
+    assertTrue(none.getResults().isEmpty());
+    verify(inbox, times(3)).fetch(any(Message[].class), any(FetchProfile.class));
+  }
+
+  /**
+   * EXO-91675 -- the assistant's search of a shared mailbox takes every criterion: a
+   * Message-ID is matched exactly against the copy's rows, a longer id containing it
+   * never, and the words and days apply as they do in the advanced search.
+   */
+  @Test
+  void anAgentsSearchOfASharedMailboxMatchesAMessageIdExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    Email sent = mirrored(1L, "Our offer", "owner@acme.com", true, 1);
+    sent.setMailHeaderId("<draft.1@acme.com>");
+    sent.setContent(new EmailContent("<p>Pricing attached</p>"));
+    Email longer = mirrored(2L, "Another offer", "owner@acme.com", true, 1);
+    longer.setMailHeaderId("<xdraft.1@acme.com.org>");
+    Email noId = mirrored(3L, "Lunch", "owner@acme.com", true, 5);
+    noId.setContent(new EmailContent("<p>pricing for lunch</p>"));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(noId, longer, sent));
+    EmailSearchCriteria byId = new EmailSearchCriteria();
+    byId.setMessageId("draft.1@acme.com");
+
+    EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", byId, 10);
+
+    assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "bare or bracketed, exactly");
+    EmailSearchCriteria wordsThisWeek = new EmailSearchCriteria();
+    wordsThisWeek.setWords("pricing");
+    wordsThisWeek.setAfter(LocalDate.now().minusDays(2));
+    assertEquals(List.of(1L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", wordsThisWeek, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the body's words, from the first day of the range");
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:9")).thenReturn(null);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:9", byId, 10)).getMessage());
+  }
+
+  /**
    * EXO-90838 -- the attachment criterion never reaches the mail server: alone, it
    * examines the folder's newest messages without a SEARCH; with other criteria, the
    * newest matches of their SEARCH. Either way the hits are the messages eXo would list
@@ -17308,6 +17804,123 @@ public class EmailBoxServiceTest {
     order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
     order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
     verify(emailScheduledSendStorage, never()).deleteWaiting(anyLong());
+  }
+
+  /**
+   * EXO-91996 -- scheduling a draft as stored hands the check the row read while the
+   * draft's lock is held, and schedules that very row: the text saved is the stored one,
+   * the user's edits in the Email app included, never a copy the caller read earlier.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredChecksTheStoredRowUnderItsLockThenSchedulesIt() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setSubject("Edited in the Email app");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    when(scheduler.apply(any(Email.class))).thenReturn(created);
+    Map<String, ReentrantLock> draftLocks =
+                                          (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                  "draftLocks");
+    List<Email> checked = new ArrayList<>();
+    boolean[] lockHeld = new boolean[1];
+
+    assertSame(created, emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      checked.add(row);
+      lockHeld[0] = draftLocks.get(TEST_USER + "/draft-1").isHeldByCurrentThread();
+    }, scheduler));
+
+    assertEquals(List.of(stored), checked);
+    assertTrue(lockHeld[0], "the check runs on the row read under the draft's lock");
+    ArgumentCaptor<Email> saved = ArgumentCaptor.forClass(Email.class);
+    InOrder order = inOrder(emailBoxStorage, scheduler);
+    order.verify(emailBoxStorage).saveDraft(saved.capture());
+    order.verify(scheduler).apply(any(Email.class));
+    assertEquals("Edited in the Email app", saved.getValue().getSubject());
+  }
+
+  /**
+   * EXO-91996 -- a check that refuses the stored row schedules nothing and saves
+   * nothing; the row it is handed says whether the draft is scheduled already; a draft
+   * that is gone is not found.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void schedulingADraftAsStoredSchedulesNothingWhenTheCheckRefusesTheRow() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    boolean[] markedScheduled = new boolean[1];
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.scheduleDraftAsStored("draft-1", TEST_USER, row -> {
+      markedScheduled[0] = row.isScheduled();
+      throw new IllegalArgumentException("refused");
+    }, scheduler));
+
+    assertTrue(markedScheduled[0], "the row handed to the check says it is scheduled");
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(scheduler, never()).apply(any(Email.class));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.scheduleDraftAsStored("gone", TEST_USER, row -> {
+    }, scheduler));
+  }
+
+  /**
+   * EXO-91996 -- a checked change of a schedule writes the schedule first and only then
+   * reads the draft and checks it: the write's row lock is what orders the read after an
+   * edit of the mail in the Email app. A refused check, or a draft that is gone, is
+   * thrown from the method, whose transaction rolls back on any exception: the
+   * annotation is pinned, since a test calling the method directly cannot see the
+   * transaction it is missing (the annotation-removed mutant).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCheckedScheduleChangeWritesFirstThenChecksTheDraftInOneTransaction() throws Exception {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    List<String> steps = new ArrayList<>();
+
+    assertSame(stored, emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      verify(emailBoxStorage, never()).getDraftByLocalId(anyString(), anyString());
+      steps.add("write");
+    }, draft -> steps.add("check " + draft.getSubject())));
+    assertEquals(List.of("write", "check " + stored.getSubject()), steps);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+    }, draft -> {
+      throw new IllegalArgumentException("refused");
+    }));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("gone", TEST_USER, () -> {
+    }, draft -> {
+    }));
+    List<String> beforeWrite = new ArrayList<>();
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.changeScheduleIfDraftSays("draft-1", TEST_USER, () -> {
+      beforeWrite.add("write");
+      throw new ObjectNotFoundException("no schedule");
+    }, draft -> beforeWrite.add("check")));
+    assertEquals(List.of("write"), beforeWrite, "nothing is read or checked once the write refused");
+
+    org.springframework.transaction.annotation.Transactional transactional =
+                                                                            EmailBoxService.class.getMethod("changeScheduleIfDraftSays",
+                                                                                                            String.class,
+                                                                                                            String.class,
+                                                                                                            EmailBoxService.ScheduleTaker.class,
+                                                                                                            java.util.function.Consumer.class)
+                                                                                                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+    assertNotNull(transactional, "the write, the read and the check share one transaction");
+    assertEquals(List.of(Exception.class), List.of(transactional.rollbackFor()), "any refusal rolls the write back");
   }
 
   /**

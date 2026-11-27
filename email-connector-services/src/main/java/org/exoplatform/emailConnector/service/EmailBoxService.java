@@ -94,7 +94,6 @@ import javax.mail.StoreClosedException;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.AddressException;
-import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
@@ -153,9 +152,12 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.DocumentRefusedException;
 import org.exoplatform.emailConnector.exception.ExportInterruptedException;
 import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
@@ -169,10 +171,12 @@ import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
 import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailCategoryAdded;
+import org.exoplatform.emailConnector.model.EmailDocumentContent;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
@@ -185,12 +189,14 @@ import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.RawEmailRef;
 import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.model.RefusedDocument;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
+import org.exoplatform.emailConnector.model.MessageClassification;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -224,6 +230,7 @@ import org.exoplatform.emailConnector.notification.plugin.DelegatedNewEmailsNoti
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.provider.EmailDocumentReader;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
@@ -233,6 +240,7 @@ import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.CappedOutputStream;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailMessageKindUtils;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -518,7 +526,11 @@ public class EmailBoxService {
                                                                                                       HEADER_RETURN_PATH,
                                                                                                       HEADER_EXO_DRAFT_MAILBOX,
                                                                                                       HEADER_EXO_DRAFT_SEND_MODE,
-                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
+                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS,
+                                                                                                      // The rest of what EmailMessageKindUtils.classify reads (EXO-91995).
+                                                                                                      EmailMessageKindUtils.HEADER_X_FAILED_RECIPIENTS,
+                                                                                                      EmailMessageKindUtils.HEADER_X_AUTOREPLY,
+                                                                                                      EmailMessageKindUtils.HEADER_X_AUTORESPOND);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -600,6 +612,13 @@ public class EmailBoxService {
   // file name, never a document. Twin of the webapp's ATTACHMENT_NAME_MAX_LENGTH
   // (EmailConnectorMailBoxSearchCriteria.js).
   static final int                SEARCH_MAX_ATTACHMENT_NAME_LENGTH                           = 100;
+
+  // The years a search's day may fall in (EXO-91675): an IMAP SEARCH date carries a
+  // four-digit year, which JavaMail writes from a GregorianCalendar -- Julian before
+  // 1582, so the floor stays well past it.
+  public static final int         SEARCH_MIN_YEAR                                             = 1900;
+
+  static final int                SEARCH_MAX_YEAR                                             = 9999;
 
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
@@ -999,8 +1018,16 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
 
-  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
-  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
+  /**
+   * The most megabytes the attachments of one outgoing email may weigh together
+   * (SMTP-friendly). The draft tools state it in their refusals and in the
+   * {@code create_email_draft} description, which {@code AiToolDefinitionsTest} holds to
+   * it.
+   */
+  public static final int         MAX_OUTGOING_ATTACHMENTS_MB                                 = 25;
+
+  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email.
+  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = MAX_OUTGOING_ATTACHMENTS_MB * 1024L * 1024;
 
   // The message code a scheduling carrying files not yet stored on the draft is refused with.
   private static final String     ATTACHMENTS_NOT_STORED_CODE                                 =
@@ -1042,6 +1069,15 @@ public class EmailBoxService {
   // with a blank content type reaches the data handler, which is a difference the
   // recipient sees.
   private static final String     DEFAULT_ATTACHMENT_NAME                                     = "attachment";
+
+  /**
+   * The most documents one call may attach to a draft, counted once trimmed and
+   * deduplicated. The draft tools refuse a call over it before saving anything
+   * ({@code EmailMcpTool#requireDraftDocuments}), and their schemas carry it as the
+   * {@code maxItems} of {@code document_ids} in {@code ai-tool-definitions.json}, which
+   * {@code AiToolDefinitionsTest} holds equal to it.
+   */
+  public static final int         MAX_DOCUMENTS_PER_CALL                                      = 20;
 
   private static final String     DEFAULT_ATTACHMENT_MIME_TYPE                                = "application/octet-stream";
 
@@ -1211,6 +1247,11 @@ public class EmailBoxService {
   // context fails to refresh and every test sharing it fails with it.
   @Autowired(required = false)
   private EmailCredentialsResolver emailCredentialsResolver;
+
+  // required = false: the reader exists only where the Documents add-on is on the
+  // classpath; without it every document named for a draft is refused as unavailable.
+  @Autowired(required = false)
+  private EmailDocumentReader     emailDocumentReader;
 
   // Publishes EmailSentEvent after a successful send, so contact collection (and any
   // later consumer) learns who the user writes to without this class knowing about it.
@@ -7638,7 +7679,9 @@ public class EmailBoxService {
 
   /**
    * Searches one folder of a mailbox shared with the user in the user's mirror of it
-   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * (EXO-90555), by free text, sender, unread state and age only: the legacy form of
+   * {@link #searchSharedMailboxMirror(String, String, EmailSearchCriteria, int)}, which
+   * the assistant's search calls with every criterion (EXO-91675). The mirror, not the
    * mail server: the rows are the ones the shared mailbox's sync brought in, so an
    * answer covers what that folder's mirror holds and says so through its caller.
    * <p>
@@ -7668,6 +7711,34 @@ public class EmailBoxService {
                                                          boolean unreadOnly,
                                                          Integer sinceDays,
                                                          int limit) throws IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchSharedMailboxMirror(username, folderKey, criteria, limit);
+  }
+
+  /**
+   * The same search of the user's mirror of a shared mailbox's folder, with every
+   * criterion of {@link EmailSearchCriteria} (EXO-91675): the words of the subject or the
+   * body, a range of days and a Message-ID, as the assistant's mailbox search asks them.
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, as
+   *          {@link EmailDelegationService#getMirroredFolderKey} resolved it
+   * @param criteria what to match, at least one criterion
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a key
+   *           that is not a folder of a mailbox shared with the user, and the codes of
+   *           {@link #validateSearchCriteria}
+   */
+  public EmailSearchResultPage searchSharedMailboxMirror(String username,
+                                                         String folderKey,
+                                                         EmailSearchCriteria criteria,
+                                                         int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -7676,11 +7747,6 @@ public class EmailBoxService {
     if (emailDelegationService.delegationOf(username, folderKey) == null) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    EmailSearchCriteria criteria = new EmailSearchCriteria();
-    criteria.setQuery(query);
-    criteria.setFrom(from);
-    criteria.setUnreadOnly(unreadOnly);
-    criteria.setSinceDays(sinceDays);
     return searchMirror(username, folderKey, criteria, limit);
   }
 
@@ -7774,16 +7840,18 @@ public class EmailBoxService {
     }
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
-                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
-                                                                                 folderKey,
-                                                                                 email.getSubject(),
-                                                                                 email.getSender(),
-                                                                                 email.getReceivedDate(),
-                                                                                 email.isRead(),
-                                                                                 email.isStarred(),
-                                                                                 true,
-                                                                                 null,
-                                                                                 email.getId()))
+                                             .map(email -> withMessageKind(new EmailSearchResult(email.getMailRemoteId(),
+                                                                                                 folderKey,
+                                                                                                 email.getSubject(),
+                                                                                                 email.getSender(),
+                                                                                                 email.getReceivedDate(),
+                                                                                                 email.isRead(),
+                                                                                                 email.isStarred(),
+                                                                                                 true,
+                                                                                                 null,
+                                                                                                 email.getId()),
+                                                                           email.getMessageKind(),
+                                                                           email.getBouncedRecipients()))
                                              .toList();
     return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
   }
@@ -7797,7 +7865,8 @@ public class EmailBoxService {
    * internal dates -- and a message has an attachment when eXo holds an attachment row
    * for it: the paperclip of the list. A kind of attachment or a file name (EXO-90910)
    * asks for an attachment too, the ids given being then those of the rows with such an
-   * attachment. Package-visible for tests.
+   * attachment. A Message-ID (EXO-91675) is matched exactly, by {@link #sameMessageId}.
+   * Package-visible for tests.
    *
    * @param rows the copy's messages, as the search read gives them -- with their To and
    *          Cc recipients when the criteria name one
@@ -7812,6 +7881,7 @@ public class EmailBoxService {
     String sender = StringUtils.trimToNull(criteria.getFrom());
     String recipient = StringUtils.trimToNull(criteria.getTo());
     String words = StringUtils.trimToNull(criteria.getWords());
+    String messageId = StringUtils.trimToNull(criteria.getMessageId());
     Date since = criteria.getSinceDays() == null ? null
                                                  : new Date(System.currentTimeMillis()
                                                      - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
@@ -7829,6 +7899,7 @@ public class EmailBoxService {
                    || senderMatches(email, term))
                .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
                    || bodyTextContains(email, words))
+               .filter(email -> messageId == null || sameMessageId(email.getMailHeaderId(), messageId))
                .sorted(Comparator.comparing(Email::getReceivedDate, Comparator.nullsLast(Comparator.reverseOrder())))
                .toList();
   }
@@ -7840,7 +7911,8 @@ public class EmailBoxService {
    *
    * @param criteria the criteria
    * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for a day
-   *           the caller sent that is not yyyy-MM-dd,
+   *           the caller sent that is not yyyy-MM-dd, or whose year is outside
+   *           {@value #SEARCH_MIN_YEAR}..{@value #SEARCH_MAX_YEAR},
    *           {@code emailConnector.search.invalidSinceDays} for a
    *           negative window -- a future-dated lower bound that would match nothing,
    *           silently -- {@code emailConnector.search.invalidDateRange} when the day
@@ -7849,7 +7921,7 @@ public class EmailBoxService {
    *           search
    */
   static void validateSearchCriteria(EmailSearchCriteria criteria) {
-    if (criteria.isInvalidDay()) {
+    if (criteria.isInvalidDay() || !isSearchableDay(criteria.getAfter()) || !isSearchableDay(criteria.getBefore())) {
       throw new IllegalArgumentException("emailConnector.search.invalidDate");
     }
     if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
@@ -7861,6 +7933,17 @@ public class EmailBoxService {
     if (!criteria.hasCriterion()) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
+  }
+
+  /**
+   * Whether a day can bound an IMAP SEARCH: none, or one of a year from
+   * {@value #SEARCH_MIN_YEAR} to {@value #SEARCH_MAX_YEAR}.
+   *
+   * @param day the day, may be null
+   * @return false for a day of any other year
+   */
+  private static boolean isSearchableDay(LocalDate day) {
+    return day == null || day.getYear() >= SEARCH_MIN_YEAR && day.getYear() <= SEARCH_MAX_YEAR;
   }
 
   /**
@@ -12507,6 +12590,81 @@ public class EmailBoxService {
   }
 
   /**
+   * One of the user's drafts as it is stored now, with its body, recipients and
+   * attachments: what the composer would open, the user's own edits included. A
+   * scheduled draft is returned too, marked {@code scheduled}; the writes refuse it.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @return the draft, or null when the user has no draft under that id
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public Email getDraft(String draftLocalId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft != null) {
+      draft.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+    }
+    return draft;
+  }
+
+  /**
+   * Sends a draft exactly as it is stored, for a caller that holds no composer: the
+   * subject, body and recipients the row carries at the moment of sending, so the
+   * user's last edits in the Email app are what goes out, never an older copy the
+   * caller read earlier.
+   * <p>
+   * The row is read under the draft's lock and handed to {@link #sendDraft} as the
+   * composer's text, still under that lock (it is reentrant), so no save can land
+   * between the read and the send. The draft's own mailbox and send mode are the
+   * stored ones.
+   * <p>
+   * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
+   * is, before anything is claimed: a caller
+   * that had the user approve what the draft said refuses there a row that says
+   * something else by now, and nothing is sent.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row; nothing is sent then
+   * @return the draft as it was sent
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException when the user has no draft under that id
+   * @throws IllegalArgumentException when the draft has no recipient, or is being sent
+   * @throws ScheduledSendConflictException when the draft is scheduled
+   */
+  public Email sendDraftAsStored(String draftLocalId,
+                                 String username,
+                                 Consumer<Email> check) throws IllegalAccessException, ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (CollectionUtils.isEmpty(stored.getTo())) {
+        throw new IllegalArgumentException("emailConnector.drafts.send.recipientMandatory");
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
+      }
+      sendDraft(stored, username, stored.getSendDelegationId(), null);
+      return stored;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
    * Discards a draft: the copy on the mail server first, then the local row.
    * <p>
    * That order is the opposite of the upload's, and for the same underlying reason.
@@ -12523,6 +12681,23 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not use their mailbox
    */
   public boolean deleteDraft(String draftLocalId, String username) throws IllegalAccessException {
+    return deleteDraft(draftLocalId, username, null);
+  }
+
+  /**
+   * Discards a draft as {@link #deleteDraft(String, String)} does, once {@code check}
+   * accepts the row: it runs under the draft's lock on the row as it is stored, marked
+   * {@code scheduled} when it is, before anything is removed. A caller that had the user
+   * approve what the draft said refuses there a draft that says something else by now,
+   * or that has been scheduled meanwhile, and nothing is removed.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row, or null to accept any
+   * @return true when a draft was found and removed
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public boolean deleteDraft(String draftLocalId, String username, Consumer<Email> check) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -12531,10 +12706,16 @@ public class EmailBoxService {
     String lockKey = draftLockKey(username, draftLocalId);
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
     lock.lock();
+    boolean gone = false;
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
+        gone = true;
         return false;
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
       }
       // A scheduled draft may be discarded -- but not while it is on its way, or already
       // gone out. Decided by the schedule's own conditional DELETE, never by a read: a
@@ -12559,13 +12740,18 @@ public class EmailBoxService {
         throw new IllegalStateException("emailConnector.drafts.discard.serverCopyRemains");
       }
       deleteEmails(List.of(stored));
+      gone = true;
       return true;
     } finally {
       lock.unlock();
-      // The draft is gone, so nobody can be about to take this lock for it. Removing
-      // it here is what keeps the map bounded by the drafts that actually exist
-      // rather than by every draft ever written in this JVM's lifetime.
-      draftLocks.remove(lockKey);
+      // Once the draft is gone nobody can be about to take this lock for it. Removing
+      // it then is what keeps the map bounded by the drafts that actually exist rather
+      // than by every draft ever written in this JVM's lifetime. A refused discard
+      // leaves the draft, and a writer may be waiting on this very lock: removing it
+      // would hand the next caller a second lock for the same draft.
+      if (gone) {
+        draftLocks.remove(lockKey);
+      }
     }
   }
 
@@ -12683,6 +12869,92 @@ public class EmailBoxService {
     } finally {
       lock.unlock();
     }
+  }
+
+  /**
+   * Schedules a draft as it is stored at this moment (EXO-91996): the user's last edits
+   * in the Email app are what will go out, never an older copy the caller read earlier.
+   * <p>
+   * The row is read under the draft's lock and handed to {@link #scheduleDraft} as the
+   * composer's text, still under that lock (it is reentrant), so no save made on this
+   * node can land between the read and the schedule, as {@link #sendDraftAsStored} does
+   * for a send. The lock is this node's: a save handled by another node of a cluster in
+   * between is not held off by it.
+   * <p>
+   * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
+   * is, before anything is written: a caller that had the user approve what the draft
+   * said refuses there a row that says something else by now, and nothing is scheduled.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row; nothing is scheduled then
+   * @param scheduler creates the schedule row for the draft row, and answers it
+   * @return the schedule row
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException when the user has no draft under that id
+   * @throws IllegalArgumentException what {@link #scheduleDraft} or {@code check} refuses
+   *           with
+   * @throws ScheduledSendConflictException when the draft is already scheduled or being
+   *           sent
+   */
+  public EmailScheduledSend scheduleDraftAsStored(String draftLocalId,
+                                                  String username,
+                                                  Consumer<Email> check,
+                                                  Function<Email, EmailScheduledSend> scheduler) throws IllegalAccessException,
+                                                                                                 ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
+      }
+      return scheduleDraft(stored, username, scheduler);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Changes a scheduled draft's schedule, then checks the draft, in one transaction
+   * (EXO-91996): a reschedule or a cancel that holds only if the mail still says what
+   * its caller had the user approve.
+   * <p>
+   * {@code takeSchedule} runs first, as the transaction's first statement: its
+   * conditional write on the schedule row waits for the row's lock, which an edit of the
+   * scheduled mail in the Email app holds until it commits (see
+   * {@link #updateScheduledDraft}, whose draft lock is released before that commit). So
+   * the draft read next is the one such an edit committed, on every node. {@code check}
+   * runs on it; a refusal rolls the schedule's change back.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param takeSchedule changes the schedule row, or throws
+   * @param check throws to refuse the draft; the schedule's change is undone then
+   * @return the draft as it stands
+   * @throws ObjectNotFoundException when the schedule or the draft is not there
+   * @throws IllegalArgumentException what {@code check} refuses with
+   * @throws ScheduledSendConflictException what {@code takeSchedule} refuses with
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public Email changeScheduleIfDraftSays(String draftLocalId,
+                                         String username,
+                                         ScheduleTaker takeSchedule,
+                                         Consumer<Email> check) throws ObjectNotFoundException {
+    takeSchedule.take();
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft == null) {
+      throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+    }
+    check.accept(draft);
+    return draft;
   }
 
   /**
@@ -13471,6 +13743,124 @@ public class EmailBoxService {
     } finally {
       lock.unlock();
     }
+  }
+
+  /**
+   * Attaches documents of the platform's Documents to a draft, read with the user's own
+   * rights, as if the user had attached them in the composer: each one becomes a file
+   * of the draft, which the Email app shows and the send carries.
+   * <p>
+   * A document is refused, and named with the reason, when it is not found, the user
+   * may not open it, it is a folder, it would take the draft over the size a mail may
+   * carry -- counted from what the draft already carries -- or it cannot be read; the
+   * documents beside it are still attached. Without the Documents add-on, every one is
+   * refused as unavailable. An id named twice is attached once.
+   * <p>
+   * A write onto the draft that fails stops the call: that document and the ones after
+   * it are refused as {@link DocumentRefusalReason#FAILED}, since the failed file may be
+   * on the draft anyway and the store that failed would answer the next no better; the
+   * documents before it stay attached.
+   * <p>
+   * Under the draft's lock, as every other write to a draft, and each file steps the
+   * draft's revision, as an attachment made in the composer does.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner, as whom the documents are read
+   * @param documentIds the ids of the documents, as Documents gives them
+   * @return the draft as it now stands and the documents that were not attached, or
+   *         null when the user has no such draft
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws IllegalArgumentException if no draft or no document was named, or more than
+   *           {@value #MAX_DOCUMENTS_PER_CALL} documents were
+   * @throws ScheduledSendConflictException if the draft is scheduled
+   */
+  public DocumentAttachments addDocumentAttachments(String draftLocalId,
+                                                    String username,
+                                                    List<String> documentIds) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    List<String> ids = documentIds == null ? List.of()
+                                           : documentIds.stream()
+                                                        .filter(StringUtils::isNotBlank)
+                                                        .map(String::trim)
+                                                        .distinct()
+                                                        .toList();
+    if (StringUtils.isBlank(draftLocalId) || ids.isEmpty()) {
+      throw new IllegalArgumentException("emailConnector.drafts.attachDocuments.mandatory");
+    }
+    if (ids.size() > MAX_DOCUMENTS_PER_CALL) {
+      throw new IllegalArgumentException("emailConnector.drafts.attachDocuments.tooMany");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      if (emailBoxStorage.getDraftByLocalId(username, draftLocalId) == null) {
+        return null;
+      }
+      requireNotScheduled(username, draftLocalId);
+      List<RefusedDocument> refused = new ArrayList<>();
+      long total = storedAttachmentsSize(username, draftLocalId);
+      for (int index = 0; index < ids.size(); index++) {
+        String documentId = ids.get(index);
+        try {
+          total += attachDocument(draftLocalId, username, documentId, MAX_OUTGOING_ATTACHMENTS_SIZE - total);
+        } catch (DocumentRefusedException e) {
+          refused.add(new RefusedDocument(documentId, e.getDocumentName(), e.getReason()));
+        } catch (RuntimeException e) {
+          // A write that failed part way may have left the file on the draft, and the
+          // store that failed would answer the documents after it no better: this one
+          // and the rest are refused as failed, which tells the caller to read the
+          // draft's attachments before naming any of them again.
+          LOG.warn("The document {} of user {} could not be attached to draft {}", documentId, username, draftLocalId, e);
+          ids.subList(index, ids.size())
+             .forEach(failed -> refused.add(new RefusedDocument(failed, null, DocumentRefusalReason.FAILED)));
+          break;
+        }
+      }
+      LOG.info("Documents for user {}: {} of {} attached to draft {}, {} refused",
+               username,
+               ids.size() - refused.size(),
+               ids.size(),
+               draftLocalId,
+               refused.size());
+      return new DocumentAttachments(emailBoxStorage.getDraftByLocalId(username, draftLocalId), refused);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Reads one document as the user and writes it onto the draft as one of its files.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param documentId the document's id
+   * @param remaining the bytes the draft may still carry
+   * @return the bytes the draft now carries more
+   * @throws DocumentRefusedException when the document cannot be attached
+   * @throws IllegalStateException when the file store wrote nothing
+   */
+  private long attachDocument(String draftLocalId,
+                              String username,
+                              String documentId,
+                              long remaining) throws DocumentRefusedException {
+    if (emailDocumentReader == null) {
+      throw new DocumentRefusedException(DocumentRefusalReason.DOCUMENTS_UNAVAILABLE, null);
+    }
+    EmailDocumentContent document = emailDocumentReader.readDocument(documentId, username, Math.max(remaining, 0));
+    if (document == null || document.getContent() == null) {
+      throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, null);
+    }
+    String name = StringUtils.defaultIfBlank(document.getName(), DEFAULT_ATTACHMENT_NAME);
+    if (emailBoxStorage.copyDraftAttachment(username, draftLocalId, name, document.getMimeType(), document.getContent()) == null) {
+      // The file store wrote nothing: a failed write, which stops the call as one that
+      // throws does.
+      throw new IllegalStateException(String.format("The document %s could not be written onto draft %s", documentId, draftLocalId));
+    }
+    return document.getContent().length;
   }
 
   /**
@@ -14561,7 +14951,22 @@ public class EmailBoxService {
     if (term == null) {
       return List.of();
     }
-    Message[] hits = folder.search(term);
+    return exactMessageIdMatches(folder.search(term), messageId);
+  }
+
+  /**
+   * The messages of a server search that carry the given Message-ID exactly, each hit's
+   * raw header compared with {@link #sameMessageId}: what decides after a {@code HEADER
+   * Message-ID} search, which is a substring match on most servers. A hit whose header
+   * was not fetched with the search's batch costs one round-trip to read it: a caller
+   * whose id may over-match fetches it for every hit first.
+   *
+   * @param hits the messages the server's search returned, may be null
+   * @param messageId the Message-ID to keep
+   * @return the hits carrying exactly that id, in the server's order; empty when none
+   * @throws MessagingException if a hit's header cannot be read
+   */
+  static List<Message> exactMessageIdMatches(Message[] hits, String messageId) throws MessagingException {
     List<Message> exact = new ArrayList<>();
     for (Message hit : hits == null ? new Message[0] : hits) {
       String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
@@ -15759,7 +16164,10 @@ public class EmailBoxService {
                                                 false, null, null, false, null, null, null,
                                                 // A synced message is no draft of a shared mailbox (EXO-90595),
                                                 // and names no identity to send it in (EXO-90584).
-                                                null, null, null);
+                                                null, null, null,
+                                                // The message kind (EXO-91995), set by name just below.
+                                                null, null);
+          captureMessageKind(message, cached);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -16307,7 +16715,7 @@ public class EmailBoxService {
    * @return the hit
    */
   private EmailSearchResult cachedSearchResult(Email email, String term, SharedMailboxSearchScope sharedScope) {
-    return new EmailSearchResult(email.getMailRemoteId(),
+    EmailSearchResult result = new EmailSearchResult(email.getMailRemoteId(),
                                  email.getFolder(),
                                  email.getSubject(),
                                  email.getSender(),
@@ -16319,6 +16727,21 @@ public class EmailBoxService {
                                  null,
                                  sharedScope == null ? null : sharedScope.delegationId(),
                                  sharedScope == null ? null : sharedScope.ownerFullName());
+    return withMessageKind(result, email.getMessageKind(), email.getBouncedRecipients());
+  }
+
+  /**
+   * Sets on a search hit who wrote it (EXO-91995).
+   *
+   * @param result the hit
+   * @param kind its kind, null when unknown
+   * @param bouncedRecipients on a bounce, the addresses it failed
+   * @return the same hit
+   */
+  private static EmailSearchResult withMessageKind(EmailSearchResult result, MessageKind kind, List<String> bouncedRecipients) {
+    result.setMessageKind(kind);
+    result.setBouncedRecipients(bouncedRecipients);
+    return result;
   }
 
   /**
@@ -16379,8 +16802,10 @@ public class EmailBoxService {
   }
 
   /**
-   * Server-side mailbox search: an IMAP {@code SEARCH} over one remote folder, so a
-   * user finds mail anywhere in that folder — a 161k-message inbox, not just the
+   * Server-side mailbox search by free text, sender, unread state and age only: the
+   * legacy form of {@link #searchEmails(String, EmailSearchCriteria, String, int)}, which
+   * every production caller uses (EXO-91675). An IMAP {@code SEARCH} over one remote
+   * folder, so a user finds mail anywhere in that folder — a 161k-message inbox, not just the
    * ~1000-message local cache window (0.6% of it on the reference mailbox, which is
    * why filtering the cache was never a search).
    * <p>
@@ -16427,7 +16852,9 @@ public class EmailBoxService {
   }
 
   /**
-   * The same server-side search, narrowed to the messages the user favorited.
+   * The same server-side search, narrowed to the messages the user favorited: a legacy
+   * form too, building the criteria of
+   * {@link #searchEmails(String, EmailSearchCriteria, String, int)}.
    * <p>
    * The narrowing is done by the mail server, as one more term of the IMAP SEARCH:
    * asking for everything and dropping the rest here would return the newest hits and
@@ -16575,6 +17002,15 @@ public class EmailBoxService {
         // are examined instead (see below), never the whole folder.
         found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
       }
+      if (found != null && found.length > 0 && StringUtils.isNotBlank(criteria.getMessageId())) {
+        // The server's HEADER search is a substring match: only the exact id is this mail.
+        // The id comes from the caller and may match many messages, so every hit's header
+        // is read in one batched FETCH, never one round-trip per hit.
+        FetchProfile messageIdProfile = new FetchProfile();
+        messageIdProfile.add(HEADER_MESSAGE_ID);
+        remoteFolder.fetch(found, messageIdProfile);
+        found = exactMessageIdMatches(found, criteria.getMessageId()).toArray(new Message[0]);
+      }
       if (found == null || found.length == 0) {
         return new EmailSearchResultPage(List.of(), 0);
       }
@@ -16630,7 +17066,8 @@ public class EmailBoxService {
       for (int i = page.length - 1; i >= 0; i--) {
         try {
           long messageUid = pageUids.get(i);
-          results.add(new EmailSearchResult(messageUid,
+          MessageClassification classification = EmailMessageKindUtils.classify(page[i]);
+          results.add(withMessageKind(new EmailSearchResult(messageUid,
                                             folder,
                                             page[i].getSubject(),
                                             page[i].getFrom() != null && page[i].getFrom().length != 0
@@ -16643,7 +17080,9 @@ public class EmailBoxService {
                                             // Envelope-only: quoting the body would cost
                                             // one round-trip per hit.
                                             null,
-                                            cachedIds.get(messageUid)));
+                                            cachedIds.get(messageUid)),
+                                      classification == null ? null : classification.kind(),
+                                      classification == null ? null : classification.bouncedRecipients()));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
@@ -16947,6 +17386,9 @@ public class EmailBoxService {
    * excluded); JavaMail writes the day of the date it is given in eXo's JVM zone, so
    * each bound is that day's first instant there ({@link #startOfServerDay}), which is
    * also correct when JavaMail falls back to matching on the client.</li>
+   * <li>The Message-ID (EXO-91675) is the {@code HEADER Message-ID} search of
+   * {@link #messageIdSearchTerm}, which only narrows: the caller keeps the exact matches
+   * ({@link #exactMessageIdMatches}).</li>
    * <li>The attachment criterion is never a term: IMAP has no key for it, and a
    * {@code HEADER Content-Type} search is a scan of the folder some servers time out on.
    * {@link #searchEmails(String, EmailSearchCriteria, String, int)} examines the newest
@@ -16990,6 +17432,10 @@ public class EmailBoxService {
     }
     if (criteria.getBefore() != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.LT, startOfServerDay(criteria.getBefore())));
+    }
+    SearchTerm messageIdTerm = messageIdSearchTerm(criteria.getMessageId());
+    if (messageIdTerm != null) {
+      terms.add(messageIdTerm);
     }
     if (terms.isEmpty()) {
       return null;
@@ -17084,11 +17530,12 @@ public class EmailBoxService {
   }
 
   /**
-   * The fetch profile of a search result page: flags + envelope + UID, everything a
-   * result row renders from, in one batched round-trip. Deliberately LIGHTER than
-   * {@link #buildSyncFetchProfile}: no MIME structure and none of the delivery
-   * headers, because a result list never reads a body or classifies a message —
-   * fetching them would tax every search with data nobody displays.
+   * The fetch profile of a search result page, in one batched round-trip: flags +
+   * envelope + UID, everything a result row renders from, plus the headers and the MIME
+   * structure each hit's message kind is decided on (EXO-91995), so classifying a hit
+   * costs no FETCH of its own -- only a delivery status report costs one more, of its
+   * status part. Still LIGHTER than {@link #buildSyncFetchProfile}: none of the other
+   * delivery headers, because a result list shows no body and caches no row.
    *
    * @return the profile to pass to {@link Folder#fetch(Message[], FetchProfile)}
    */
@@ -17097,6 +17544,13 @@ public class EmailBoxService {
     fetchProfile.add(FetchProfile.Item.FLAGS);
     fetchProfile.add(FetchProfile.Item.ENVELOPE);
     fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+    // What each hit's kind is decided on (EXO-91995), in the same batched command: the
+    // headers and the MIME structure. Only a delivery status report then costs one more
+    // fetch, of its status part.
+    for (String header : EmailMessageKindUtils.HEADERS) {
+      fetchProfile.add(header);
+    }
+    fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
     return fetchProfile;
   }
 
@@ -17470,16 +17924,7 @@ public class EmailBoxService {
    * @return true for a read receipt; false too when the type cannot be read
    */
   private static boolean isDispositionNotification(Message message) {
-    try {
-      String contentType = message.getContentType();
-      if (contentType == null) {
-        return false;
-      }
-      ContentType type = new ContentType(contentType);
-      return type.match("multipart/report") && "disposition-notification".equalsIgnoreCase(type.getParameter("report-type"));
-    } catch (MessagingException | RuntimeException e) {
-      return false;
-    }
+    return EmailMessageKindUtils.isReadReceipt(message);
   }
 
   /**
@@ -17494,6 +17939,25 @@ public class EmailBoxService {
   private static boolean hasKeyword(Message message, String keyword) throws MessagingException {
     Flags flags = message.getFlags();
     return flags != null && flags.contains(keyword);
+  }
+
+  /**
+   * Records on a message about to be cached who wrote it (EXO-91995): a bounce and the
+   * addresses it failed, an automatic reply, or a person. Decided now, from the live
+   * message, because the cache keeps neither its headers nor its report part. A message
+   * that cannot be classified is left without a kind, which the readers show as unknown.
+   *
+   * @param message the live message, its headers prefetched
+   * @param email the row about to be stored
+   */
+  private static void captureMessageKind(Message message, Email email) {
+    MessageClassification classification = EmailMessageKindUtils.classify(message);
+    if (classification == null) {
+      LOG.debug("Could not classify message {} of user {}", email.getMailRemoteId(), email.getUserId());
+      return;
+    }
+    email.setMessageKind(classification.kind());
+    email.setBouncedRecipients(classification.bouncedRecipients());
   }
 
   /**

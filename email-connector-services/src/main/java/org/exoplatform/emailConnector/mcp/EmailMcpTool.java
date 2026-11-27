@@ -20,7 +20,19 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,51 +40,77 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.nodes.TextNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.constant.MessageKind;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
+import org.exoplatform.emailConnector.mcp.model.EmailDraftModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
+import org.exoplatform.emailConnector.mcp.model.RefusedDocumentModel;
+import org.exoplatform.emailConnector.mcp.model.ScheduledEmailModel;
 import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
+import org.exoplatform.emailConnector.model.DocumentAttachments;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.SanitizedEmailBody;
+import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.OwnerCopy;
+import org.exoplatform.emailConnector.model.RefusedDocument;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailHtmlSanitizer;
 
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 import io.meeds.mcp.server.plugin.McpToolPlugin;
+import io.meeds.social.timezone.service.UserTimeZoneService;
 
 /**
  * MCP tools exposing the Email Connector add-on to the AI agent (EVA). Every
@@ -107,6 +145,111 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static final int              THREAD_BODY_MAX_CHARS = 1500;
 
+  /** What a draft tool says it was about to do with a draft it refuses to delete. */
+  private static final String           DELETED              = "deleted";
+
+  /** What the scheduled-send tools say they were about to do with a draft they refuse to schedule. */
+  private static final String           SCHEDULED            = "scheduled";
+
+  /** What the scheduled-send tools say they were about to do with a mail they refuse to reschedule. */
+  private static final String           RESCHEDULED          = "rescheduled";
+
+  /** What the scheduled-send tools say they were about to do with a mail they refuse to cancel. */
+  private static final String           CANCELLED            = "cancelled";
+
+  /**
+   * The service's refusals of a date or of a draft to schedule, in words a model can act
+   * on. No limit is named: an administrator can change them.
+   */
+  private static final Map<String, String> SCHEDULE_MESSAGES =
+                                                            Map.of(EmailScheduledSendService.DATE_TOO_SOON,
+                                                                   "send_at is too soon: pick a later time.",
+                                                                   EmailScheduledSendService.DATE_TOO_FAR,
+                                                                   "send_at is too far ahead: pick an earlier time.",
+                                                                   EmailScheduledSendService.INVALID_TIME_ZONE,
+                                                                   "time_zone is not a time zone: pass an IANA name, such as Europe/Paris.",
+                                                                   EmailScheduledSendService.LIMIT_REACHED,
+                                                                   "The user has as many scheduled mails as allowed: one must be sent or cancelled first.",
+                                                                   EmailScheduledSendService.RECIPIENTS_MANDATORY,
+                                                                   "The draft has no recipient: add one with update_email_draft first.",
+                                                                   "emailConnector.scheduled.attachmentsNotStored",
+                                                                   "A file of the draft is not stored on it yet: the user saves the draft in the Email app first.",
+                                                                   "emailConnector.drafts.send.attachmentGone",
+                                                                   "A file of the draft can no longer be read: the user removes it in the Email app first.");
+
+  /** The HTML attribute holding an image's height. */
+  private static final String           HEIGHT               = "height";
+
+  /** The HTML style attribute. */
+  private static final String           STYLE                = "style";
+
+  /** Drafts returned when the caller names no limit. */
+  private static final int              DEFAULT_DRAFTS_LIMIT = 20;
+
+  /** The most drafts one call returns. */
+  private static final int              MAX_DRAFTS_LIMIT     = 100;
+
+  /**
+   * Why a document may not be on the draft when attaching failed: the file may be there
+   * anyway, which the draft's attachments in the same answer tell.
+   */
+  private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed, and the file may be on the draft anyway: "
+      + "check the draft's attachments in this answer, and name this document again only if its file is not among them.";
+
+  /**
+   * Why a document may not be on the draft when attaching failed and the draft could not
+   * be read again to say which files it carries.
+   */
+  private static final String           UNKNOWN_DOCUMENT_REFUSAL = "Attaching failed, and the draft could not be read again "
+      + "to say whether the file is on it: ask the user to check the draft in the Email app before naming this document again.";
+
+  /** Why no document is on a draft that was gone when its files were added. */
+  private static final String           GONE_DOCUMENT_REFUSAL = "The draft was no longer found when its files were added: "
+      + "it was sent or deleted meanwhile.";
+
+  /** Why a document named for a draft is not on it, in words the caller can relay. */
+  private static final Map<DocumentRefusalReason, String> DOCUMENT_REFUSALS =
+                                                            Map.of(DocumentRefusalReason.NOT_FOUND,
+                                                                   "No document the user can open has this id.",
+                                                                   DocumentRefusalReason.NO_ACCESS,
+                                                                   "The user cannot open this document.",
+                                                                   DocumentRefusalReason.NOT_A_FILE,
+                                                                   "This is a folder, not a file.",
+                                                                   DocumentRefusalReason.TOO_LARGE,
+                                                                   String.format("The file would take the draft over the %d MB a mail may carry.",
+                                                                                 EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB),
+                                                                   DocumentRefusalReason.UNREADABLE,
+                                                                   "The file could not be read.",
+                                                                   DocumentRefusalReason.DOCUMENTS_UNAVAILABLE,
+                                                                   "Documents are not available on this platform.",
+                                                                   DocumentRefusalReason.FAILED,
+                                                                   FAILED_DOCUMENT_REFUSAL);
+
+  /**
+   * Why no document named for a scheduled draft is on it: the draft was scheduled between
+   * the change and the attachment.
+   */
+  private static final String           SCHEDULED_DOCUMENT_REFUSAL = "The draft is scheduled to be sent, so no file can be "
+      + "added to it here: the user cancels the schedule in the Email app first.";
+
+  /**
+   * The address of the user's signature logo, as the signature service writes it, with
+   * any version: the one portal image a draft carries by the platform's own doing.
+   */
+  private static final Pattern          SIGNATURE_LOGO_SOURCE =
+                                                             Pattern.compile(Pattern.quote(EmailSignatureService.SIGNATURE_IMAGE_PATH)
+                                                                 + "(?:\\?v=[0-9A-Za-z_-]{1,64})?");
+
+  /**
+   * A day of the search's range as the tool takes it: a four-digit year, so the day after
+   * the last one of the range is a day {@code LocalDate} holds.
+   */
+  private static final Pattern          SEARCH_DAY           = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+
+  /** A CSS call of any function that takes an image or an address. */
+  private static final Pattern          CSS_IMAGE_CALL       = Pattern.compile("(?:url|src|image|image-set|cross-fade|element)\\s*\\(",
+                                                                              Pattern.CASE_INSENSITIVE);
+
   /** What a cut body ends with, so nobody mistakes half a message for all of it. */
   private static final String           TRUNCATION_MARKER    = "… [truncated]";
 
@@ -117,9 +260,12 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static final Map<String, String> SEARCH_MESSAGES   =
                                                             Map.of("emailConnector.search.criteriaRequired",
-                                                                   "Give at least one of query, from, unread or sinceDays: an empty search would return the whole folder.",
+                                                                   "Give at least one of query, from, words, unread, sinceDays, since_date, until_date or message_id: "
+                                                                       + "an empty search would return the whole folder.",
                                                                    "emailConnector.folder.notBrowsable",
-                                                                   "folder must be one of INBOX, SENT or ARCHIVE.");
+                                                                   "folder must be one of INBOX, SENT or ARCHIVE.",
+                                                                   "emailConnector.search.invalidDateRange",
+                                                                   "until_date must be the same day as since_date or a later one.");
 
   /**
    * The {@code identity} word for the user's own name (EXO-90585): the default, and what
@@ -141,6 +287,12 @@ public class EmailMcpTool implements McpToolPlugin {
 
   private final ReadReceiptService      readReceiptService;
 
+  private final EmailSignatureService   emailSignatureService;
+
+  private final EmailScheduledSendService emailScheduledSendService;
+
+  private final UserTimeZoneService     userTimeZoneService;
+
   /**
    * The tools' services.
    *
@@ -150,16 +302,28 @@ public class EmailMcpTool implements McpToolPlugin {
    *          {@code mailbox} argument (EXO-90555)
    * @param readReceiptService the read receipts' service, whose user setting says
    *          whether a new mail asks for one when the agent does not say (EXO-93774)
+   * @param emailSignatureService the signature service, which signs the drafts the tools
+   *          prepare as the composer signs them (EXO-91674)
+   * @param emailScheduledSendService the scheduled-send service, whose rules the
+   *          scheduling tools apply as the Email app does (EXO-91996)
+   * @param userTimeZoneService the platform's record of the user's time zone, which a
+   *          time to send at is read in when the call names none (EXO-91996)
    */
   @Autowired
   public EmailMcpTool(EmailBoxService emailBoxService,
                       UserEmailSettingService userEmailSettingService,
                       EmailDelegationService emailDelegationService,
-                      ReadReceiptService readReceiptService) {
+                      ReadReceiptService readReceiptService,
+                      EmailSignatureService emailSignatureService,
+                      EmailScheduledSendService emailScheduledSendService,
+                      UserTimeZoneService userTimeZoneService) {
     this.emailBoxService = emailBoxService;
     this.userEmailSettingService = userEmailSettingService;
     this.emailDelegationService = emailDelegationService;
     this.readReceiptService = readReceiptService;
+    this.emailSignatureService = emailSignatureService;
+    this.emailScheduledSendService = emailScheduledSendService;
+    this.userTimeZoneService = userTimeZoneService;
   }
 
   // ---------------------------------------------------------------------------
@@ -398,8 +562,12 @@ public class EmailMcpTool implements McpToolPlugin {
    * add-on only caches a recent window.
    * <p>
    * Free text matches the subject or the sender, and the other filters narrow by
-   * sender, unread state and age. The newest matches come back with the total the
-   * server found, so the caller can tell how much of the answer it is holding.
+   * sender, unread state and age. The words are matched against the subject or the body
+   * (EXO-91675), the days from {@code since_date} to {@code until_date} both included,
+   * and a Message-ID -- the {@code message_id} a draft tool returned -- finds the mail
+   * that draft became once sent, in SENT unless a folder is named. The newest matches
+   * come back with the total the server found, so the caller can tell how much of the
+   * answer it is holding.
    * <p>
    * A hit chains into the other tools by its email_id, which it carries whenever the
    * message is in the local copy, whatever its folder. An IMAP UID is unique only within
@@ -414,15 +582,20 @@ public class EmailMcpTool implements McpToolPlugin {
    *          whole history
    * <p>
    * With a {@code mailbox} (EXO-90555), the search reads the user's mirror of that
-   * shared mailbox's folder -- the messages its sync brought in, subject or sender --
+   * shared mailbox's folder -- the messages its sync brought in, with the same criteria --
    * and a folder that is not in the mirror is said rather than answered as empty.
    *
    * @param folder INBOX (default), SENT or ARCHIVE
    * @param limit how many hits to return, newest first
    * @param mailbox the shared mailbox to search, blank for the user's own
+   * @param words text matched against the subject or the body, may be blank
+   * @param sinceDate the first day whose messages match, yyyy-MM-dd, may be blank
+   * @param untilDate the last day whose messages match, yyyy-MM-dd, may be blank
+   * @param messageId the Message-ID of the one mail to find, may be blank
    * @return the newest matching messages and the total number that matched
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when a day is not yyyy-MM-dd
    */
   public EmailSearchResultsModel searchEmails(String query,
                                               String from,
@@ -430,7 +603,53 @@ public class EmailMcpTool implements McpToolPlugin {
                                               Integer sinceDays,
                                               String folder,
                                               Integer limit,
-                                              String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+                                              String mailbox,
+                                              String words,
+                                              String sinceDate,
+                                              String untilDate,
+                                              String messageId) throws ObjectNotFoundException, IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setWords(words);
+    criteria.setUnreadOnly(Boolean.TRUE.equals(unread));
+    criteria.setSinceDays(sinceDays);
+    criteria.setAfter(searchDay(sinceDate, "since_date"));
+    LocalDate lastDay = searchDay(untilDate, "until_date");
+    // The criteria's bound excludes its day; the tool's includes it. The last day of 9999
+    // has no four-digit next day to search before, and excludes nothing: no bound.
+    criteria.setBefore(lastDay == null || lastDay.getYear() == 9999 && lastDay.getDayOfYear() == lastDay.lengthOfYear() ? null
+                                                                                                                : lastDay.plusDays(1));
+    criteria.setMessageId(StringUtils.trimToNull(messageId));
+    if (criteria.getMessageId() != null && !criteria.getMessageId().contains("@")) {
+      // Every Message-ID has an @: anything else is another id, which the server's
+      // substring search would match against a whole folder.
+      throw new IllegalArgumentException("message_id must be the message_id a draft tool returned, such as <abc@example.com>; "
+          + "it is never an email_id or a draft_id.");
+    }
+    // A draft's message_id names a mail the user sent: SENT unless the caller says otherwise.
+    String searchedFolder = StringUtils.isBlank(folder) && criteria.getMessageId() != null ? MailFolder.SENT : folder;
+    return searchEmails(criteria, searchedFolder, limit, mailbox);
+  }
+
+  /**
+   * The search of {@link #searchEmails(String, String, Boolean, Integer, String, Integer,
+   * String, String, String, String, String)} once its criteria are built: on the mail
+   * server for the user's own mailbox, in the user's mirror for a shared one, the service's
+   * refusals said in words a model can act on.
+   *
+   * @param criteria what to match
+   * @param folder INBOX (default), SENT or ARCHIVE
+   * @param limit how many hits to return, newest first
+   * @param mailbox the shared mailbox to search, blank for the user's own
+   * @return the newest matching messages and the total number that matched
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private EmailSearchResultsModel searchEmails(EmailSearchCriteria criteria,
+                                               String folder,
+                                               Integer limit,
+                                               String mailbox) throws ObjectNotFoundException, IllegalAccessException {
     // Resolved before the translation block below: its refusals are already in words.
     SharedMailboxEntry share = sharedMailbox(mailbox);
     String sharedFolderKey = null;
@@ -447,18 +666,12 @@ public class EmailMcpTool implements McpToolPlugin {
       String folderName = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder.trim().toUpperCase(Locale.ROOT);
       int hitLimit = limit == null ? DEFAULT_SEARCH_LIMIT : limit;
       EmailSearchResultPage page = share == null ? emailBoxService.searchEmails(getCurrentUserName(),
-                                                                                query,
-                                                                                from,
-                                                                                Boolean.TRUE.equals(unread),
-                                                                                sinceDays,
+                                                                                criteria,
                                                                                 folderName,
                                                                                 hitLimit)
                                                  : emailBoxService.searchSharedMailboxMirror(getCurrentUserName(),
                                                                                              sharedFolderKey,
-                                                                                             query,
-                                                                                             from,
-                                                                                             Boolean.TRUE.equals(unread),
-                                                                                             sinceDays,
+                                                                                             criteria,
                                                                                              hitLimit);
       List<EmailSearchHitModel> hits = page.getResults()
                                            .stream()
@@ -474,7 +687,9 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                                   result.isRead(),
                                                                                   result.isStarred(),
                                                                                   result.isCached(),
-                                                                                  result.getEmailId()))
+                                                                                  result.getEmailId(),
+                                                                                  toolValueOf(result.getMessageKind()),
+                                                                                  result.getBouncedRecipients()))
                                            .toList();
       return new EmailSearchResultsModel(page.getTotalMatches(), hits);
     } catch (IllegalArgumentException e) {
@@ -490,7 +705,7 @@ public class EmailMcpTool implements McpToolPlugin {
       // internal noise this block exists to keep away from the model.
       String message = SEARCH_MESSAGES.get(e.getMessage());
       if (message == null) {
-        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, unread, sinceDays, folder and limit.",
+        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, words, unread, sinceDays, since_date, until_date, message_id, folder and limit.",
                                            e);
       }
       throw new IllegalArgumentException(message, e);
@@ -502,6 +717,36 @@ public class EmailMcpTool implements McpToolPlugin {
       // on a call that keeps failing, and report that wrong diagnosis to the user.
       throw new IllegalStateException("The mail server could not be reached or searched. The mailbox connection may be broken; check the mail account settings.",
                                       e);
+    }
+  }
+
+  /**
+   * A day of the search's range, as the model writes it.
+   *
+   * @param day the day, yyyy-MM-dd, may be blank
+   * @param argument the argument's name, for the refusal
+   * @return the day, or null when none was given
+   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day, or is one of a
+   *           year a search does not take
+   */
+  private static LocalDate searchDay(String day, String argument) {
+    if (StringUtils.isBlank(day)) {
+      return null;
+    }
+    String text = day.trim();
+    try {
+      if (!SEARCH_DAY.matcher(text).matches()) {
+        throw new DateTimeParseException("not yyyy-MM-dd", text, 0);
+      }
+      LocalDate parsed = LocalDate.parse(text);
+      // The service bounds the days it searches by; this says it of the day the model
+      // wrote, never of the bound it is turned into (until_date's next day).
+      if (parsed.getYear() < EmailBoxService.SEARCH_MIN_YEAR) {
+        throw new IllegalArgumentException(argument + " must be a day of a year from 1900 to 9999.");
+      }
+      return parsed;
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException(argument + " must be a day written yyyy-MM-dd, such as 2026-10-21.", e);
     }
   }
 
@@ -937,6 +1182,505 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   // ---------------------------------------------------------------------------
+  // Drafts (EXO-91674) - prepared here, reviewed and sent by the user
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Prepare an email as a draft of the user's own mailbox, where the Email app shows it
+   * like any other draft: the user reviews it, edits it by hand and sends it, or lets
+   * {@link #sendEmailDraft} send it. It runs without approval because nothing leaves the
+   * mailbox: not the mail, and not a request from the user's browser either -- the body
+   * carries text, formatting and links, is refused when it shows an image, and is cleaned
+   * as a received mail is, so it fetches nothing -- but what the user's own signature
+   * shows, which is added as it is, as the composer adds it (a draft is shown to its owner
+   * uncleaned, as their own text). The same rule holds when update_email_draft changes it,
+   * the user's current signature kept as it is, so a draft written here can be changed
+   * here -- unless the user has since changed their signature, or saved the draft in the
+   * Email app, and the signature in it shows an image other than its logo: that body is
+   * then the user's to change.
+   * <p>
+   * With {@code email_id}, the draft is a reply to that mail: it is filed in the mail's
+   * conversation and, once sent, carries the In-Reply-To and References headers that
+   * keep it there (the service settles them at the first save from the parent's
+   * Message-ID). Its subject defaults to the mail's, prefixed "Re:", and its recipient
+   * to the mail's sender.
+   * <p>
+   * The user's signature is added under the body, as the composer adds it, unless
+   * {@code add_signature} is false or the user turned their signature off.
+   * <p>
+   * With {@code document_ids}, documents of the user's Documents, or of a space's, are
+   * attached to the draft as files, read with the user's own rights (see
+   * {@link EmailBoxService#addDocumentAttachments}): a document that is not attached is
+   * named in {@code refused_documents} with the reason, and the draft is saved with the
+   * others -- with the ones attached before a write that failed, when one does.
+   *
+   * @param to the recipients; for a reply draft, defaults to the original's sender
+   * @param subject the subject; for a reply draft, defaults to "Re: " and the original's
+   * @param bodyHtml the HTML body
+   * @param cc the copied recipients
+   * @param bcc the blind-copied recipients
+   * @param emailId the local id of the mail the draft answers, or null for a new mail
+   * @param addSignature whether to add the user's signature; null means yes
+   * @param documentIds the ids of documents to attach, as Documents gives them
+   * @return the draft as stored, with its draft_id, the Message-ID it will be sent with,
+   *         its files and the documents that were not attached
+   * @throws ObjectNotFoundException when {@code email_id} names no mail of the mailbox
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the draft would have no recipient, an entry is
+   *           not a bare address, the body shows an image or loads remote content, or
+   *           more than 20 documents are named
+   */
+  public EmailDraftModel createEmailDraft(List<String> to,
+                                          String subject,
+                                          String bodyHtml,
+                                          List<String> cc,
+                                          List<String> bcc,
+                                          Long emailId,
+                                          Boolean addSignature,
+                                          List<String> documentIds) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    requireDraftAddresses(to, cc, bcc);
+    requireDraftDocuments(documentIds);
+    Email draft = new Email();
+    if (emailId != null) {
+      Email original = fetch(mailOf(emailId, null, null), false, true, false);
+      Email shell = buildReplyShell(original, bodyHtml);
+      draft.setMailHeaderId(shell.getMailHeaderId());
+      draft.setSubject(StringUtils.isBlank(subject) ? shell.getSubject() : subject);
+      draft.setTo(isEmpty(to) ? senderAsRecipients(original) : toRecipients(to));
+    } else {
+      if (isEmpty(to)) {
+        throw new IllegalArgumentException("At least one recipient is required in 'to': nothing was saved.");
+      }
+      draft.setSubject(StringUtils.defaultString(subject));
+      draft.setTo(toRecipients(to));
+    }
+    draft.setCc(toRecipients(cc));
+    draft.setBcc(toRecipients(bcc));
+    if (showsImages(bodyHtml)) {
+      throw new IllegalArgumentException("body_html shows images: a draft written here carries text, formatting and links, "
+          + "and the user adds pictures in the Email app. Nothing was saved.");
+    }
+    String body = cleanDraftHtml(bodyHtml);
+    draft.setContent(buildHtmlContent(Boolean.FALSE.equals(addSignature) ? body : withSignature(body, username)));
+    Email saved = emailBoxService.saveDraft(draft, username, true);
+    if (saved == null) {
+      throw new IllegalStateException("The draft could not be saved: nothing was created.");
+    }
+    return withDocuments(saved, username, documentIds);
+  }
+
+  /**
+   * Change a draft of the user's own mailbox, read as it is stored now: the fields given
+   * replace the stored ones, the others keep what the draft says -- the user's own edits
+   * in the Email app included. A list given empty clears it; {@code to} cannot be
+   * cleared. The draft's conversation and Message-ID never change.
+   * <p>
+   * {@code document_ids} adds documents to the files the draft already carries, as
+   * create_email_draft attaches them; a document that is not attached is named in
+   * {@code refused_documents}.
+   *
+   * @param draftId the draft's id, as create_email_draft or list_email_drafts gave it
+   * @param to the new recipients, or null to keep them
+   * @param subject the new subject, or null to keep it
+   * @param bodyHtml the new HTML body, replacing the whole body, or null to keep it
+   * @param cc the new copied recipients, or null to keep them
+   * @param bcc the new blind-copied recipients, or null to keep them
+   * @param revision the draft's revision as it was read: a draft saved since -- in the
+   *          Email app, say -- is refused rather than written over
+   * @param documentIds the ids of documents to add to the draft's files
+   * @return the draft as stored after the change
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when {@code revision} is missing or the draft changed
+   *           since, the draft is scheduled, was written in a shared mailbox, or would have
+   *           no recipient, the body loads remote content, or more than 20 documents are
+   *           named
+   */
+  public EmailDraftModel updateEmailDraft(String draftId,
+                                          List<String> to,
+                                          String subject,
+                                          String bodyHtml,
+                                          List<String> cc,
+                                          List<String> bcc,
+                                          Long revision,
+                                          List<String> documentIds) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    requireDraftAddresses(to, cc, bcc);
+    requireDraftDocuments(documentIds);
+    if (revision == null) {
+      throw new IllegalArgumentException("revision is required: read the draft with list_email_drafts and pass its revision. "
+          + "Nothing was changed.");
+    }
+    String body = bodyHtml == null ? null : cleanDraftBody(bodyHtml, username);
+    Email stored = ownDraft(draftId, username, "changed");
+    if (!revision.equals(stored.getDraftRevision())) {
+      throw changedMeanwhile(draftId);
+    }
+    if (to != null && isEmpty(to)) {
+      throw new IllegalArgumentException("'to' cannot be emptied: a draft keeps at least one recipient. Nothing was changed.");
+    }
+    Email draft = new Email();
+    draft.setDraftLocalId(stored.getDraftLocalId());
+    draft.setSubject(subject == null ? stored.getSubject() : subject);
+    draft.setContent(body == null ? stored.getContent() : buildHtmlContent(body));
+    draft.setTo(to == null ? stored.getTo() : toRecipients(to));
+    draft.setCc(cc == null ? stored.getCc() : toRecipients(cc));
+    draft.setBcc(bcc == null ? stored.getBcc() : toRecipients(bcc));
+    draft.setReadReceiptRequested(stored.isReadReceiptRequested());
+    // The revision after the one read: if the Email app saves the draft meanwhile, the
+    // row has reached it and this write is dropped rather than putting back the fields
+    // read before the user's edit.
+    draft.setDraftRevision((stored.getDraftRevision() == null ? 0L : stored.getDraftRevision()) + 1);
+    Email saved;
+    try {
+      saved = emailBoxService.saveDraft(draft, username, true);
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledDraftRefusal(draftId, "changed");
+    }
+    if (saved == null) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    }
+    if (!holds(saved, draft)) {
+      throw changedMeanwhile(draftId);
+    }
+    return withDocuments(saved, username, documentIds);
+  }
+
+  /**
+   * The drafts of the user's own mailbox, most recently changed first, as the Email
+   * app's Drafts folder lists them -- scheduled drafts, which the app shows apart, and
+   * drafts written in a mailbox shared with the user excepted.
+   *
+   * @param subject keeps the drafts whose subject contains it, ignoring case
+   * @param recipient keeps the drafts with an address containing it in to, cc or bcc
+   * @param sinceDays keeps the drafts changed in the last N days
+   * @param limit how many to return (default 20, at most 100)
+   * @param withHtml whether each draft carries its whole HTML body, to change it with
+   *          update_email_draft; null means no
+   * @return the drafts
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  public List<EmailDraftModel> listEmailDrafts(String subject,
+                                               String recipient,
+                                               Integer sinceDays,
+                                               Integer limit,
+                                               Boolean withHtml) throws IllegalAccessException {
+    if (sinceDays != null && sinceDays < 1) {
+      throw new IllegalArgumentException("since_days must be 1 or more.");
+    }
+    String username = getCurrentUserName();
+    EmailBox box = emailBoxService.getEmailBox(username, MailFolder.DRAFTS);
+    List<Email> drafts = box == null || box.getEmails() == null ? List.of() : box.getEmails();
+    long since = sinceDays == null ? 0L : System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays);
+    String recipientNeedle = StringUtils.lowerCase(StringUtils.trimToNull(recipient));
+    int max = Math.min(Math.max(getInteger(limit, DEFAULT_DRAFTS_LIMIT), 1), MAX_DRAFTS_LIMIT);
+    return drafts.stream()
+                 .filter(draft -> StringUtils.isNotBlank(draft.getDraftLocalId()) && draft.getSendDelegationId() == null)
+                 .filter(draft -> StringUtils.isBlank(subject) || StringUtils.containsIgnoreCase(draft.getSubject(), subject.trim()))
+                 .filter(draft -> recipientNeedle == null || draftAddresses(draft).stream().anyMatch(address -> address.contains(recipientNeedle)))
+                 .filter(draft -> since == 0L || lastModified(draft) != null && lastModified(draft).getTime() >= since)
+                 .sorted(Comparator.comparing(EmailMcpTool::lastModified, Comparator.nullsLast(Comparator.reverseOrder())))
+                 .limit(max)
+                 .map(draft -> toDraftModel(draft, Boolean.TRUE.equals(withHtml)))
+                 .toList();
+  }
+
+  /**
+   * Send a draft of the user's own mailbox as it is stored at this moment -- the user's
+   * edits in the Email app included, never the version this toolset first wrote. The
+   * sent mail keeps the draft's Message-ID and, for a reply draft, its conversation.
+   * <p>
+   * The approval card is drawn from the arguments, so they must say what goes out:
+   * {@code to}, {@code cc}, {@code bcc}, {@code subject} and {@code attachments} must be
+   * the draft's own, as list_email_drafts reads them now -- the files included, since a
+   * draft may carry documents an assistant attached (EXO-91676). If the user changed any
+   * of them since, nothing is sent and the call must be made again with the draft read
+   * anew.
+   *
+   * @param draftId the draft's id
+   * @param to the draft's recipients, as read
+   * @param subject the draft's subject, as read
+   * @param cc the draft's copied recipients, as read
+   * @param bcc the draft's blind-copied recipients, as read
+   * @param attachments the names of the draft's files, as read; null or empty for a draft
+   *          carrying none
+   * @return the outcome, in words, with the sent mail's message_id and thread_id
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalArgumentException when the arguments are not what the draft says, or
+   *           the draft is scheduled, is being sent, or was written in a shared mailbox;
+   *           nothing was sent
+   */
+  public String sendEmailDraft(String draftId,
+                               List<String> to,
+                               String subject,
+                               List<String> cc,
+                               List<String> bcc,
+                               List<String> attachments) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    Email stored = ownDraft(draftId, username, "sent");
+    requireDraftSays(stored, to, cc, bcc, subject, "sent");
+    requireDraftFiles(stored, attachments);
+    Email sent;
+    try {
+      // Checked again under the draft's lock on the row that goes out: the user may
+      // edit it in the Email app between the check above and the send.
+      sent = emailBoxService.sendDraftAsStored(stored.getDraftLocalId(),
+                                               username,
+                                               row -> {
+                                                 requireActionable(row, draftId, "sent");
+                                                 requireDraftSays(row, to, cc, bcc, subject, "sent");
+                                                 requireDraftFiles(row, attachments);
+                                               });
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledDraftRefusal(draftId, "sent");
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    } catch (IllegalArgumentException e) {
+      if ("emailConnector.drafts.send.alreadyInFlight".equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s is already being sent: nothing more was sent.", draftId));
+      }
+      if ("emailConnector.drafts.send.recipientMandatory".equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s has no recipient: add one with update_email_draft, then send it. "
+            + "Nothing was sent.", draftId));
+      }
+      throw e;
+    }
+    return String.format("Draft sent to %s with subject \"%s\". message_id: %s, thread_id: %s.",
+                         String.join(", ", addressesOf(sent.getTo())),
+                         StringUtils.defaultString(sent.getSubject()),
+                         StringUtils.defaultString(sent.getMailHeaderId()),
+                         StringUtils.defaultString(sent.getThreadId()));
+  }
+
+  /**
+   * Delete a draft of the user's own mailbox, here and in the mail server's Drafts
+   * folder. {@code subject} and {@code to} must be the draft's, so the approval card names
+   * the draft it deletes -- two reply drafts often share a subject.
+   *
+   * @param draftId the draft's id
+   * @param subject the draft's subject, as read
+   * @param to the draft's recipients, as read
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the subject or the recipients are not the
+   *           draft's, or the draft is scheduled or was written in a shared mailbox;
+   *           nothing was deleted
+   */
+  public String deleteEmailDraft(String draftId,
+                                 String subject,
+                                 List<String> to) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    if (to != null && to.stream().anyMatch(entry -> !isBareAddress(entry))) {
+      throw new IllegalArgumentException("Nothing was deleted: to must list bare addresses, such as alice@acme.com, as "
+          + "list_email_drafts reads them. Ask the user to approve again with those addresses shown.");
+    }
+    Email stored = ownDraft(draftId, username, DELETED);
+    requireSameDraft(stored, subject, to);
+    boolean deleted;
+    try {
+      // Checked again under the draft's lock on the row about to go: the user may edit
+      // or schedule it in the Email app in between, and deleting a scheduled draft would
+      // cancel their schedule.
+      deleted = emailBoxService.deleteDraft(stored.getDraftLocalId(), username, row -> {
+        requireActionable(row, draftId, DELETED);
+        requireSameDraft(row, subject, to);
+      });
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledDraftRefusal(draftId, DELETED);
+    }
+    if (!deleted) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    }
+    return String.format("Draft \"%s\" deleted.", StringUtils.defaultString(stored.getSubject()));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduled send (EXO-91996)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Schedule a draft of the user's own mailbox to be sent at a date and time, as the
+   * Email app's "Schedule send" does: it leaves the Drafts folder for the Scheduled view,
+   * where the user can change or cancel it, and it is sent once, at that time, as it
+   * says then. It is scheduled as it is stored at this moment, the user's edits in the
+   * Email app included.
+   * <p>
+   * The approval card is drawn from the arguments, so they must say what will go out:
+   * {@code to}, {@code cc}, {@code bcc} and {@code subject} must be the draft's own, as
+   * list_email_drafts reads them now. If the user changed any of them since, nothing is
+   * scheduled and the call must be made again with the draft read anew.
+   *
+   * @param draftId the draft's id
+   * @param sendAt when to send it, a local date and time in {@code timeZone}, such as
+   *          2026-10-23T08:30
+   * @param timeZone the IANA time zone {@code sendAt} is in; blank for the user's own
+   * @param to the draft's recipients, as read
+   * @param subject the draft's subject, as read
+   * @param cc the draft's copied recipients, as read
+   * @param bcc the draft's blind-copied recipients, as read
+   * @return the scheduled mail, with the time it is sent at in its time zone and in UTC
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the arguments are not what the draft says, the
+   *           time cannot be read, is too soon or too far, the draft is already scheduled
+   *           or was written in a shared mailbox, or the user has as many scheduled mails
+   *           as allowed; nothing was scheduled
+   */
+  public ScheduledEmailModel scheduleEmailDraft(String draftId,
+                                                String sendAt,
+                                                String timeZone,
+                                                List<String> to,
+                                                String subject,
+                                                List<String> cc,
+                                                List<String> bcc) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    Email stored = ownDraft(draftId, username, SCHEDULED);
+    requireDraftSays(stored, to, cc, bcc, subject, SCHEDULED);
+    ZoneId zone = zoneOf(timeZone, username, null, SCHEDULED);
+    long instant = instantOf(sendAt, zone, SCHEDULED);
+    ScheduledEmail scheduled;
+    try {
+      // Checked again under the draft's lock on the row that is scheduled: the user may
+      // edit it in the Email app between the check above and the schedule.
+      scheduled = emailScheduledSendService.scheduleAsStored(stored.getDraftLocalId(), instant, zone.getId(), username, row -> {
+        requireActionable(row, draftId, SCHEDULED);
+        requireDraftSays(row, to, cc, bcc, subject, SCHEDULED);
+      });
+    } catch (ScheduledSendConflictException e) {
+      if (ScheduledSendConflictException.SENDING.equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s is being sent right now, so it cannot be scheduled. Nothing was "
+            + "done.", draftId), e);
+      }
+      throw scheduledDraftRefusal(draftId, SCHEDULED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    } catch (IllegalArgumentException e) {
+      throw scheduleRefusal(e, draftId, SCHEDULED);
+    } catch (IllegalStateException e) {
+      if ("emailConnector.scheduled.serverCopyRemains".equals(e.getMessage())) {
+        throw new IllegalStateException(String.format("Draft %s was not scheduled: its copy in the mail server's Drafts folder could "
+            + "not be removed, and another mail client could have sent it. Try again later.", draftId), e);
+      }
+      throw e;
+    }
+    return toScheduledModel(scheduled);
+  }
+
+  /**
+   * The mails of the user's Scheduled view, soonest first, as the Email app lists them:
+   * those waiting to be sent, and those that failed or whose sending could not be
+   * confirmed, which stay there until the user acts on them.
+   *
+   * @param limit how many to return (default 20, at most 100)
+   * @param offset how many to skip, a multiple of {@code limit}; default 0
+   * @return the scheduled mails
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  public List<ScheduledEmailModel> listScheduledEmails(Integer limit, Integer offset) throws IllegalAccessException {
+    int max = Math.min(Math.max(getInteger(limit, DEFAULT_DRAFTS_LIMIT), 1), MAX_DRAFTS_LIMIT);
+    int skip = Math.max(getInteger(offset, 0), 0);
+    return emailScheduledSendService.getScheduledEmails(getCurrentUserName(), skip, max)
+                                    .stream()
+                                    .map(this::toScheduledModel)
+                                    .toList();
+  }
+
+  /**
+   * Change when a scheduled mail of the user is sent. Only a mail waiting to be sent, or
+   * one that failed, can be given a new time. {@code subject} and {@code to} must be the
+   * mail's, as list_scheduled_emails reads them now, so the approval card names the mail.
+   *
+   * @param draftId the scheduled mail's draft_id
+   * @param sendAt the new time, a local date and time in {@code timeZone}
+   * @param timeZone the IANA time zone {@code sendAt} is in; blank for the user's own, or
+   *          the mail's when the user's is not known
+   * @param subject the mail's subject, as read
+   * @param to the mail's recipients, as read
+   * @return the scheduled mail as it now stands
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the subject or recipients are not the mail's,
+   *           the time cannot be read or is too soon or too far, or the mail is being
+   *           sent, was sent or may have been sent; nothing was changed
+   */
+  public ScheduledEmailModel rescheduleEmail(String draftId,
+                                             String sendAt,
+                                             String timeZone,
+                                             String subject,
+                                             List<String> to) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    ScheduledEmail current = scheduledEmail(draftId, username);
+    requireSameScheduledEmail(current, subject, to, RESCHEDULED);
+    ZoneId zone = zoneOf(timeZone, username, current.getTimeZone(), RESCHEDULED);
+    long instant = instantOf(sendAt, zone, RESCHEDULED);
+    try {
+      // Checked again on the mail as it stands once the change is written: the user may
+      // edit it in the Email app between the check above and the change, and a refusal
+      // there undoes the change.
+      return toScheduledModel(emailScheduledSendService.reschedule(current.getDraftLocalId(),
+                                                                   instant,
+                                                                   zone.getId(),
+                                                                   username,
+                                                                   mail -> requireSameScheduledEmail(mail, subject, to, RESCHEDULED)));
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledStateRefusal(e, draftId, RESCHEDULED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, RESCHEDULED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    } catch (IllegalArgumentException e) {
+      throw scheduleRefusal(e, draftId, RESCHEDULED);
+    }
+  }
+
+  /**
+   * Cancel a scheduled mail of the user: it is not sent, and goes back to the Drafts
+   * folder as it is. {@code subject} and {@code to} must be the mail's, as
+   * list_scheduled_emails reads them now, so the approval card names the mail.
+   *
+   * @param draftId the scheduled mail's draft_id
+   * @param subject the mail's subject, as read
+   * @param to the mail's recipients, as read
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the subject or recipients are not the mail's,
+   *           or the mail is being sent or was sent; nothing was cancelled
+   */
+  public String cancelScheduledEmail(String draftId, String subject, List<String> to) throws ObjectNotFoundException,
+                                                                                     IllegalAccessException {
+    String username = getCurrentUserName();
+    ScheduledEmail current = scheduledEmail(draftId, username);
+    requireSameScheduledEmail(current, subject, to, CANCELLED);
+    try {
+      // Checked again on the mail as it stands once the change is written, as reschedule
+      // does.
+      current = emailScheduledSendService.cancel(current.getDraftLocalId(),
+                                                 username,
+                                                 mail -> requireSameScheduledEmail(mail, subject, to, CANCELLED));
+    } catch (ScheduledSendConflictException e) {
+      throw scheduledStateRefusal(e, draftId, CANCELLED);
+    } catch (PessimisticLockingFailureException e) {
+      throw beingEditedRefusal(e, draftId, CANCELLED);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    if (current.getStatus() == ScheduledSendStatus.UNCERTAIN) {
+      // The Email app's "move it to Drafts" of a mail whose sending could not be confirmed:
+      // it is not sent again, but an earlier attempt may have reached its recipients.
+      return String.format("The schedule of \"%s\" is cancelled and it is back in your drafts: it will not be sent again. Its earlier "
+          + "sending could not be confirmed, so it may already have reached its recipients: check your Sent folder in the Email "
+          + "app. draft_id: %s.", StringUtils.defaultString(current.getSubject()), current.getDraftLocalId());
+    }
+    return String.format("The schedule of \"%s\" is cancelled: it will not be sent, and is back in your drafts. draft_id: %s.",
+                         StringUtils.defaultString(current.getSubject()),
+                         current.getDraftLocalId());
+  }
+
+  // ---------------------------------------------------------------------------
   // Slice 3 - organize (approval-gated)
   // ---------------------------------------------------------------------------
 
@@ -1097,6 +1841,8 @@ public class EmailMcpTool implements McpToolPlugin {
     model.setTo(email.getTo());
     model.setCc(email.getCc());
     model.setBcc(email.getBcc());
+    model.setMessageKind(toolValueOf(email.getMessageKind()));
+    model.setBouncedRecipients(email.getBouncedRecipients());
     return model;
   }
 
@@ -1144,7 +1890,19 @@ public class EmailMcpTool implements McpToolPlugin {
                                        email.getReceivedDate(),
                                        email.getSubject(),
                                        plainTextBody(email),
-                                       attachmentNames(email));
+                                       attachmentNames(email),
+                                       toolValueOf(email.getMessageKind()),
+                                       email.getBouncedRecipients());
+  }
+
+  /**
+   * The value a message kind is shown with to the agent (EXO-91995).
+   *
+   * @param kind the kind, possibly null
+   * @return {@code bounce}, {@code auto_reply} or {@code normal}; null when unknown
+   */
+  private static String toolValueOf(MessageKind kind) {
+    return kind == null ? null : kind.toolValue();
   }
 
   /**
@@ -1389,14 +2147,29 @@ public class EmailMcpTool implements McpToolPlugin {
    *           address; nothing has been sent
    */
   private static void requireBareAddresses(String field, List<String> given) {
+    requireBareAddresses(field, given, "sent");
+  }
+
+  /**
+   * {@link #requireBareAddresses(String, List)}, naming in the refusal what was not done
+   * (EXO-91996): a refused reschedule or cancel sent nothing either way, and says what
+   * it did not do.
+   *
+   * @param field the argument's name, for the refusal
+   * @param given the addresses the agent passed, possibly null
+   * @param what what was not done: sent, scheduled, rescheduled or cancelled
+   * @throws IllegalArgumentException naming the first entry that is not a bare
+   *           address; nothing has been done
+   */
+  private static void requireBareAddresses(String field, List<String> given, String what) {
     if (given == null) {
       return;
     }
     for (String entry : given) {
       if (!isBareAddress(entry)) {
-        throw new IllegalArgumentException(String.format("Nothing was sent: %s must list bare addresses, such as alice@acme.com -- "
+        throw new IllegalArgumentException(String.format("Nothing was %s: %s must list bare addresses, such as alice@acme.com -- "
             + "no name, no brackets, no blank entry; \"%s\" is not one. Call again with the bare addresses read off the email, "
-            + "and ask the user to approve again.", field, StringUtils.defaultString(entry)));
+            + "and ask the user to approve again.", what, field, StringUtils.defaultString(entry)));
       }
     }
   }
@@ -1501,6 +2274,868 @@ public class EmailMcpTool implements McpToolPlugin {
           .filter(recipient -> StringUtils.isNotBlank(recipient.getAddress()))
           .filter(recipient -> !sameAddress(recipient.getAddress(), excludedAddress))
           .forEach(target::add);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Draft helpers (EXO-91674)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A draft of the user's own mailbox that the draft tools may act on: found under the
+   * id, not scheduled, and not written in a mailbox shared with the user.
+   *
+   * @param draftId the draft's id
+   * @param username the user
+   * @param what what the caller is about to do with it, for a refusal: changed, sent or
+   *          deleted
+   * @return the stored draft
+   * @throws ObjectNotFoundException when the user has no such draft
+   * @throws IllegalAccessException if the user has no usable mailbox
+   * @throws IllegalArgumentException when the draft is scheduled or belongs to a shared
+   *           mailbox
+   */
+  private Email ownDraft(String draftId, String username, String what) throws ObjectNotFoundException, IllegalAccessException {
+    if (StringUtils.isBlank(draftId)) {
+      throw new IllegalArgumentException("draft_id is required: pass the draft_id create_email_draft or list_email_drafts gave.");
+    }
+    Email stored = emailBoxService.getDraft(draftId.trim(), username);
+    if (stored == null) {
+      throw new ObjectNotFoundException(draftNotFound(draftId));
+    }
+    requireActionable(stored, draftId, what);
+    return stored;
+  }
+
+  /**
+   * Refuse a draft the draft tools do not act on: one scheduled to be sent, or one
+   * written in a mailbox shared with the user. Applied on the read, and again on the row
+   * under the draft's lock by the writes that cannot be undone.
+   *
+   * @param draft the stored draft, marked scheduled when it is
+   * @param draftId the draft's id, for the message
+   * @param what what the caller is about to do with it: changed, sent or deleted
+   * @throws IllegalArgumentException when the draft is one of those; nothing was done
+   */
+  private static void requireActionable(Email draft, String draftId, String what) {
+    if (draft.getSendDelegationId() != null) {
+      throw new IllegalArgumentException(String.format("Draft %s was written in a mailbox shared with you, so it cannot be %s here: "
+          + "the user opens it in the Email app. Nothing was done.", draftId, what));
+    }
+    if (draft.isScheduled()) {
+      throw scheduledDraftRefusal(draftId, what);
+    }
+  }
+
+  /**
+   * Refuse to delete a draft whose subject or recipients are not the ones the user
+   * approved.
+   *
+   * @param draft the stored draft
+   * @param subject the subject the user approved
+   * @param to the recipients the user approved
+   * @throws IllegalArgumentException when they differ; nothing was deleted
+   */
+  private static void requireSameDraft(Email draft, String subject, List<String> to) {
+    if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(draft.getSubject()))
+        || !sameAddresses(to, draft.getTo())) {
+      throw new IllegalArgumentException(String.format("Nothing was deleted: subject and to must be the draft's own, \"%s\" to [%s]. "
+          + "Read it with list_email_drafts and ask the user to approve again.",
+                                                       StringUtils.defaultString(draft.getSubject()),
+                                                       String.join(", ", addressesOf(draft.getTo()))));
+    }
+  }
+
+  /**
+   * The refusal of a draft id that names no draft of the user.
+   *
+   * @param draftId the id given
+   * @return the message
+   */
+  private static String draftNotFound(String draftId) {
+    return String.format("No draft with draft_id %s in your mailbox: it was sent, deleted, or never existed. "
+        + "list_email_drafts lists the drafts there are.", draftId);
+  }
+
+  /**
+   * The refusal of a write on a scheduled draft, which the Email app keeps frozen until
+   * its schedule is cancelled.
+   *
+   * @param draftId the draft's id
+   * @param what what was refused: changed, sent, deleted or scheduled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException scheduledDraftRefusal(String draftId, String what) {
+    return new IllegalArgumentException(String.format("Draft %s is scheduled to be sent, so it cannot be %s here: list_scheduled_emails "
+        + "shows it, reschedule_email changes its time and cancel_scheduled_email puts it back in the drafts. Nothing was done.",
+                                                      draftId,
+                                                      what));
+  }
+
+  /**
+   * A refusal of the scheduled-send service, in words: a message code it answers with
+   * is replaced by what the model can do about it, and anything else -- the draft
+   * checks' own refusals, already in words -- is kept.
+   *
+   * @param e the refusal
+   * @param draftId the draft's id
+   * @param what what was refused: scheduled or rescheduled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException scheduleRefusal(IllegalArgumentException e, String draftId, String what) {
+    String code = e.getMessage();
+    String message = code == null ? null : SCHEDULE_MESSAGES.get(code);
+    if (message != null) {
+      return new IllegalArgumentException(String.format("%s Nothing was %s.", message, what), e);
+    }
+    if (code != null && code.startsWith("emailConnector.")) {
+      return new IllegalArgumentException(String.format("Draft %s cannot be %s here (%s): the user schedules it from the Email app. "
+          + "Nothing was %s.", draftId, what, code, what), e);
+    }
+    return e;
+  }
+
+  /**
+   * The refusal of a scheduled mail whose state forbids the change: being sent, sent, or
+   * sent without confirmation.
+   *
+   * @param e the service's refusal
+   * @param draftId the mail's draft_id
+   * @param what what was refused: rescheduled or cancelled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException scheduledStateRefusal(ScheduledSendConflictException e, String draftId, String what) {
+    if (EmailScheduledSendService.UNCERTAIN_CONFLICT.equals(e.getMessage())) {
+      return new IllegalArgumentException(String.format("The scheduled mail %s may already have been sent: its sending could not be "
+          + "confirmed, so it cannot be %s here. The user checks their Sent folder and decides in the Email app. Nothing was done.",
+                                                        draftId,
+                                                        what),
+                                          e);
+    }
+    return new IllegalArgumentException(String.format("The scheduled mail %s is being sent or was sent, so it cannot be %s. "
+        + "Nothing was done.", draftId, what), e);
+  }
+
+  /**
+   * The refusal of a change that waited too long on the scheduled mail: an edit of it in
+   * the Email app held it past the database's lock-wait limit, where the engine has one
+   * (MySQL's innodb_lock_wait_timeout, 50 s by default; PostgreSQL's lock_timeout is
+   * none by default, and the change then waits for the edit to commit).
+   *
+   * @param e the database's refusal
+   * @param draftId the mail's draft_id
+   * @param what what was refused: rescheduled or cancelled
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException beingEditedRefusal(PessimisticLockingFailureException e, String draftId, String what) {
+    LOG.debug("The scheduled mail {} was held by another change", draftId, e);
+    return new IllegalArgumentException(String.format("The scheduled mail %s is being changed in the Email app, so it was not %s. "
+        + "Try again in a moment. Nothing was done.", draftId, what));
+  }
+
+  /**
+   * One of the user's scheduled mails, by its draft_id.
+   *
+   * @param draftId the draft_id given
+   * @param username the user
+   * @return the scheduled mail
+   * @throws ObjectNotFoundException when the user has no such scheduled mail
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private ScheduledEmail scheduledEmail(String draftId, String username) throws ObjectNotFoundException, IllegalAccessException {
+    if (StringUtils.isBlank(draftId)) {
+      throw new IllegalArgumentException("draft_id is required: pass the draft_id list_scheduled_emails gave.");
+    }
+    ScheduledEmail scheduled;
+    try {
+      scheduled = emailScheduledSendService.getScheduledEmail(draftId.trim(), username);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    // What the Scheduled view does not list is not the scheduled-send tools' to act on: a
+    // mail sent, or one held for its Undo wait, which the Email app offers no action on.
+    if (scheduled.getStatus() == ScheduledSendStatus.HELD) {
+      throw new IllegalArgumentException(String.format("The mail %s is about to be sent, waiting out the user's Undo delay: only the "
+          + "user takes it back, with Undo in the Email app. Nothing was done.", draftId));
+    }
+    if (scheduled.getStatus() == ScheduledSendStatus.SENT) {
+      throw new ObjectNotFoundException(scheduledNotFound(draftId));
+    }
+    return scheduled;
+  }
+
+  /**
+   * The refusal of a draft_id that names no scheduled mail of the user.
+   *
+   * @param draftId the id given
+   * @return the message
+   */
+  private static String scheduledNotFound(String draftId) {
+    return String.format("No scheduled mail with draft_id %s: it was sent, cancelled, or never scheduled. "
+        + "list_scheduled_emails lists the scheduled mails there are.", draftId);
+  }
+
+  /**
+   * Refuse to change a scheduled mail whose subject or recipients are not the ones the
+   * user approved.
+   *
+   * @param scheduled the scheduled mail as stored
+   * @param subject the subject the user approved
+   * @param to the recipients the user approved
+   * @param what what was refused: rescheduled or cancelled
+   * @throws IllegalArgumentException when they differ; nothing was done
+   */
+  private static void requireSameScheduledEmail(ScheduledEmail scheduled, String subject, List<String> to, String what) {
+    requireBareAddresses("to", to, what);
+    if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(scheduled.getSubject()))
+        || !sameAddresses(to, scheduled.getTo())) {
+      throw new IllegalArgumentException(String.format("Nothing was %s: subject and to must be the scheduled mail's own, \"%s\" to [%s]. "
+          + "Read it with list_scheduled_emails and ask the user to approve again.",
+                                                       what,
+                                                       StringUtils.defaultString(scheduled.getSubject()),
+                                                       String.join(", ", addressesOf(scheduled.getTo()))));
+    }
+  }
+
+  /**
+   * The time zone a time to send at is read in: the one the call names, else the user's
+   * own as the platform records it, else the fallback.
+   *
+   * @param timeZone the zone the call names, possibly blank
+   * @param username the user
+   * @param fallback the zone to use when neither is known, possibly null
+   * @param what what is refused when no zone is known: scheduled or rescheduled
+   * @return the zone
+   * @throws IllegalArgumentException when no zone is known or the one named is not a zone
+   */
+  private ZoneId zoneOf(String timeZone, String username, String fallback, String what) {
+    String candidate = StringUtils.trimToNull(timeZone);
+    if (candidate == null) {
+      candidate = StringUtils.trimToNull(userTimeZoneService.getUserTimeZone(username));
+    }
+    if (candidate == null) {
+      candidate = StringUtils.trimToNull(fallback);
+    }
+    if (candidate == null) {
+      throw new IllegalArgumentException(String.format("The user's time zone is not known: ask the user which time zone send_at is in, "
+          + "and pass it as time_zone, such as Europe/Paris. Nothing was %s.", what));
+    }
+    try {
+      return ZoneId.of(candidate);
+    } catch (DateTimeException e) {
+      throw new IllegalArgumentException(String.format("\"%s\" is not a time zone: pass an IANA name, such as Europe/Paris. "
+          + "Nothing was %s.", candidate, what), e);
+    }
+  }
+
+  /**
+   * The instant a local date and time names in a zone. A time the zone skips (clocks
+   * moved forward) or shows twice (clocks moved back) is refused rather than moved, since
+   * the user approved the time as written.
+   *
+   * @param sendAt the local time, such as 2026-10-23T08:30
+   * @param zone the zone it is read in
+   * @param what what is refused when it cannot be read: scheduled or rescheduled
+   * @return the instant, epoch milliseconds
+   * @throws IllegalArgumentException when it is blank, cannot be read, is not one
+   *           instant in the zone, or is out of any reach
+   */
+  private static long instantOf(String sendAt, ZoneId zone, String what) {
+    LocalDateTime local;
+    try {
+      local = LocalDateTime.parse(StringUtils.trimToEmpty(sendAt));
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException(String.format("send_at must be a local date and time, such as 2026-10-23T08:30, with no "
+          + "offset: it is read in time_zone. Nothing was %s.", what), e);
+    }
+    List<ZoneOffset> offsets = zone.getRules().getValidOffsets(local);
+    if (offsets.size() != 1) {
+      throw new IllegalArgumentException(String.format("%s does not name one moment in %s: the clocks change then (%s). Ask the user "
+          + "for another time. Nothing was %s.",
+                                                       sendAt.trim(),
+                                                       zone.getId(),
+                                                       offsets.isEmpty() ? "that hour is skipped" : "that hour comes twice",
+                                                       what));
+    }
+    try {
+      return local.toInstant(offsets.get(0)).toEpochMilli();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(String.format("%s Nothing was %s.",
+                                                       SCHEDULE_MESSAGES.get(EmailScheduledSendService.DATE_TOO_FAR),
+                                                       what),
+                                         e);
+    }
+  }
+
+  /**
+   * A scheduled mail as the scheduled-send tools return it.
+   *
+   * @param scheduled the scheduled mail
+   * @return the model
+   */
+  private ScheduledEmailModel toScheduledModel(ScheduledEmail scheduled) {
+    ZoneId zone;
+    try {
+      zone = ZoneId.of(scheduled.getTimeZone());
+    } catch (RuntimeException e) {
+      zone = ZoneOffset.UTC;
+    }
+    Instant instant = Instant.ofEpochMilli(scheduled.getScheduledDate()).truncatedTo(ChronoUnit.SECONDS);
+    return new ScheduledEmailModel(scheduled.getDraftLocalId(),
+                                   addressesOf(scheduled.getTo()),
+                                   scheduled.getSubject(),
+                                   scheduled.getSnippet(),
+                                   instant.atZone(zone).toLocalDateTime().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                                   zone.getId(),
+                                   instant.toString(),
+                                   scheduled.getStatus() == null ? null : scheduled.getStatus().name(),
+                                   scheduled.getLastError(),
+                                   scheduled.getMailbox() == null ? null : scheduled.getMailbox().ownerMailbox(),
+                                   scheduledLink());
+  }
+
+  /**
+   * Refuse recipients a draft cannot carry: an entry that is not a bare address.
+   *
+   * @param to the recipients, possibly null
+   * @param cc the copied recipients, possibly null
+   * @param bcc the blind-copied recipients, possibly null
+   * @throws IllegalArgumentException naming the first entry that is not a bare address
+   */
+  private static void requireDraftAddresses(List<String> to, List<String> cc, List<String> bcc) {
+    for (List<String> addresses : Arrays.asList(to, cc, bcc)) {
+      if (addresses == null) {
+        continue;
+      }
+      for (String entry : addresses) {
+        if (StringUtils.isNotBlank(entry) && !isBareAddress(entry)) {
+          throw new IllegalArgumentException(String.format("\"%s\" is not a bare address, such as alice@acme.com -- no name, "
+              + "no brackets. Nothing was saved.", entry));
+        }
+      }
+    }
+  }
+
+  /**
+   * Refuse to act on a draft that no longer says what the user approved: the approval
+   * card shows the arguments, so the recipients and the subject must be the draft's own.
+   *
+   * @param stored the draft as stored
+   * @param to the recipients the user approved
+   * @param cc the copied recipients the user approved
+   * @param bcc the blind-copied recipients the user approved
+   * @param subject the subject the user approved
+   * @param what what was refused, for the message
+   * @throws IllegalArgumentException when they differ; nothing was done
+   */
+  private static void requireDraftSays(Email stored,
+                                       List<String> to,
+                                       List<String> cc,
+                                       List<String> bcc,
+                                       String subject,
+                                       String what) {
+    requireBareAddresses("to", to, what);
+    requireBareAddresses("cc", cc, what);
+    requireBareAddresses("bcc", bcc, what);
+    if (!sameAddresses(to, stored.getTo()) || !sameAddresses(cc, stored.getCc()) || !sameAddresses(bcc, stored.getBcc())
+        || !StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(stored.getSubject()))) {
+      throw new IllegalArgumentException(String.format("Nothing was %s: the draft now says to [%s], cc [%s], bcc [%s], subject \"%s\". "
+          + "Pass exactly those, and ask the user to approve again with them shown.",
+                                                       what,
+                                                       String.join(", ", addressesOf(stored.getTo())),
+                                                       String.join(", ", addressesOf(stored.getCc())),
+                                                       String.join(", ", addressesOf(stored.getBcc())),
+                                                       StringUtils.defaultString(stored.getSubject())));
+    }
+  }
+
+  /**
+   * Refuse a send whose arguments do not name the files the draft carries, so the
+   * approval card shows every file that leaves: the names, each as many times as the
+   * draft carries it, in any order.
+   *
+   * @param stored the draft as stored
+   * @param attachments the file names given, possibly null for none
+   * @throws IllegalArgumentException naming the draft's files when they differ
+   */
+  private void requireDraftFiles(Email stored, List<String> attachments) {
+    List<String> carried = attachmentNames(stored).stream().map(String::trim).sorted().toList();
+    List<String> given = attachments == null ? List.of()
+                                             : attachments.stream()
+                                                          .filter(StringUtils::isNotBlank)
+                                                          .map(String::trim)
+                                                          .sorted()
+                                                          .toList();
+    if (!carried.equals(given)) {
+      throw new IllegalArgumentException(String.format("Nothing was sent: the draft now carries the files [%s]. Pass exactly those "
+          + "in attachments, and ask the user to approve again with them shown.", String.join(", ", attachmentNames(stored))));
+    }
+  }
+
+  /**
+   * Whether the addresses given are the recipients' addresses, as sets of normalised
+   * addresses: order, repetition and case do not count.
+   *
+   * @param given the addresses given, possibly null
+   * @param recipients the recipients, possibly null
+   * @return true when they name the same addresses
+   */
+  private static boolean sameAddresses(List<String> given, List<EmailRecipient> recipients) {
+    Set<String> expected = addressesOf(recipients).stream()
+                                                  .map(EmailMcpTool::normalisedAddress)
+                                                  .filter(StringUtils::isNotEmpty)
+                                                  .collect(Collectors.toSet());
+    Set<String> actual = given == null ? Set.of()
+                                       : given.stream()
+                                              .map(EmailMcpTool::normalisedAddress)
+                                              .filter(StringUtils::isNotEmpty)
+                                              .collect(Collectors.toSet());
+    return expected.equals(actual);
+  }
+
+  /**
+   * Whether a list of addresses names none.
+   *
+   * @param addresses the addresses, possibly null
+   * @return true when no entry is a non-blank address
+   */
+  private static boolean isEmpty(List<String> addresses) {
+    return addresses == null || addresses.stream().noneMatch(StringUtils::isNotBlank);
+  }
+
+  /**
+   * Every address of a draft, in to, cc and bcc, lower-cased: what a recipient filter
+   * matches.
+   *
+   * @param draft the draft
+   * @return the addresses
+   */
+  private static List<String> draftAddresses(Email draft) {
+    List<String> addresses = new ArrayList<>();
+    addresses.addAll(addressesOf(draft.getTo()));
+    addresses.addAll(addressesOf(draft.getCc()));
+    addresses.addAll(addressesOf(draft.getBcc()));
+    return addresses.stream().map(StringUtils::lowerCase).toList();
+  }
+
+  /**
+   * When a draft was last changed.
+   *
+   * @param draft the draft
+   * @return its last change, or its date when it carries none
+   */
+  private static Date lastModified(Email draft) {
+    return draft.getDraftUpdatedDate() != null ? draft.getDraftUpdatedDate() : draft.getReceivedDate();
+  }
+
+  /**
+   * A body with the user's signature under it, built as the composer builds it: the
+   * user's own signature or, failing that, the default one, in its signature block. The
+   * body alone when the user turned their signature off or has none.
+   *
+   * @param body the HTML body
+   * @param username the user
+   * @return the body to store
+   */
+  private String withSignature(String body, String username) {
+    String block = signatureBlock(username);
+    if (block == null) {
+      return body;
+    }
+    return StringUtils.isBlank(body) ? "<br><br>" + block : body + "<br><br>" + block;
+  }
+
+  /**
+   * The user's signature block as the composer writes it, or null when they turned their
+   * signature off or have none. The platform's own markup, trusted as it is.
+   *
+   * @param username the user
+   * @return the block, or null
+   */
+  private String signatureBlock(String username) {
+    EmailSignature signature = emailSignatureService.getEmailSignature(username);
+    if (signature == null || Boolean.FALSE.equals(signature.getEnabled())) {
+      return null;
+    }
+    String html = StringUtils.firstNonBlank(signature.getCustomHtml(), signature.getDefaultHtml());
+    return StringUtils.isBlank(html) ? null : "<div class=\"ec-signature\">" + html + "</div>";
+  }
+
+  /**
+   * A whole draft body given back to update_email_draft, cleaned. What the platform itself
+   * put in the draft is set aside and kept: the user's current signature block, when the
+   * body holds it as create_email_draft wrote it -- whatever images the user's own
+   * signature shows -- and, anywhere else, the signature logo, recognised by its address
+   * however the composer wrote the markup and whichever version it shows, put back as a
+   * minimal image of that address. The rest is cleaned like a new body. Any other image
+   * makes the body refused rather than stored poorer than the user left it: the user
+   * changes it in the Email app.
+   *
+   * @param html the body given
+   * @param username the user, whose signature block is kept
+   * @return the body to store
+   * @throws IllegalArgumentException when the body shows another image, or loads remote
+   *           content; nothing is saved
+   */
+  private String cleanDraftBody(String html, String username) {
+    String block = signatureBlock(username);
+    if (block == null) {
+      return cleanDraftBody(html);
+    }
+    // Found in the parsed document, never in the raw text: a copy of the block inside an
+    // attribute value is text of that attribute, not an element, and is cleaned with it.
+    // The block is replaced by a text node, which the cleaning keeps as text, so it is put
+    // back where an element can stand and nowhere else.
+    Document document = Jsoup.parse(html);
+    document.outputSettings().prettyPrint(false);
+    String expected = signatureElementHtml(block);
+    Element found = null;
+    for (Element candidate : document.select("div.ec-signature")) {
+      if (expected.equals(candidate.outerHtml())) {
+        found = candidate;
+      }
+    }
+    if (found == null) {
+      return cleanDraftBody(html);
+    }
+    String marker = "ecsignatureblock" + UUID.randomUUID().toString().replace("-", "");
+    found.replaceWith(new TextNode(marker));
+    return cleanDraftBody(document.outerHtml()).replace(marker, block);
+  }
+
+  /**
+   * The signature block as an element of a parsed body serialises, to recognise it in a
+   * body given back whatever the quoting of its attributes.
+   *
+   * @param block the block's markup
+   * @return the block's element, serialised
+   */
+  private static String signatureElementHtml(String block) {
+    Document parsed = Jsoup.parseBodyFragment(block);
+    parsed.outputSettings().prettyPrint(false);
+    Element element = parsed.body().children().first();
+    return element == null ? block : element.outerHtml();
+  }
+
+  /**
+   * A whole draft body given back to update_email_draft, cleaned, the signature logo set
+   * aside by its address as {@link #cleanDraftBody(String, String)} says.
+   *
+   * @param html the body given
+   * @return the body to store
+   * @throws IllegalArgumentException when the body shows another image, or loads remote
+   *           content; nothing is saved
+   */
+  private static String cleanDraftBody(String html) {
+    // The whole document, as showsImages and the cleaning parse it, so that what they
+    // read once the logos are set aside still holds a body tag's style and background.
+    Document document = Jsoup.parse(html);
+    document.outputSettings().prettyPrint(false);
+    String marker = "ecsignaturelogo" + UUID.randomUUID().toString().replace("-", "");
+    List<String> logos = new ArrayList<>();
+    for (Element image : document.select("img")) {
+      if (SIGNATURE_LOGO_SOURCE.matcher(StringUtils.defaultString(image.attr("src"))).matches()) {
+        image.replaceWith(new TextNode(marker + logos.size() + marker));
+        logos.add(signatureLogo(image));
+      }
+    }
+    String cleaned = cleanUpdatedHtml(logos.isEmpty() ? html : document.outerHtml());
+    for (int i = 0; i < logos.size(); i++) {
+      cleaned = cleaned.replace(marker + i + marker, logos.get(i));
+    }
+    return cleaned;
+  }
+
+  /**
+   * The user's signature logo rebuilt from the image found in a body: its address, which
+   * matched {@link #SIGNATURE_LOGO_SOURCE}, its alternative text, and the height the
+   * signature gives it -- nothing else of what the body carried.
+   *
+   * @param image the image found
+   * @return the markup to put back
+   */
+  private static String signatureLogo(Element image) {
+    Element logo = new Element("img").attr("src", image.attr("src")).attr("alt", image.attr("alt"));
+    if (image.attr(HEIGHT).matches("\\d{1,4}")) {
+      logo.attr(HEIGHT, image.attr(HEIGHT));
+    }
+    logo.attr(STYLE, "max-height:48px;");
+    return logo.outerHtml();
+  }
+
+  /**
+   * Part of a body given back to update_email_draft, cleaned, refused when it shows an
+   * image: the cleaning could take one of the user's away -- a pasted image, an older
+   * signature's logo, a quoted mail's picture -- and telling which it keeps means reading
+   * CSS as it does. A body with images is the user's to change, in the Email app; a body
+   * of text, formatting and links loses nothing to the cleaning.
+   *
+   * @param html the HTML
+   * @return the cleaned HTML
+   * @throws IllegalArgumentException when the HTML shows an image, or loads remote
+   *           content; nothing is saved
+   */
+  private static String cleanUpdatedHtml(String html) {
+    if (showsImages(html)) {
+      throw new IllegalArgumentException("body_html shows images (pasted images, a quoted mail's pictures, a signature's "
+          + "pictures once the signature changed or the Email app saved the draft), which "
+          + "changing it here could drop. Change the subject or the recipients only, and ask the user to change the body in "
+          + "the Email app. Nothing was saved.");
+    }
+    return cleanDraftHtml(html);
+  }
+
+  /**
+   * Whether HTML shows an image, or may: an image element, a {@code background}
+   * attribute, or CSS -- a style attribute or a style sheet -- calling any function that
+   * takes an image, or holding an escape or a comment that could hide one.
+   *
+   * @param html the HTML, possibly blank
+   * @return true when it does or may
+   */
+  private static boolean showsImages(String html) {
+    if (StringUtils.isBlank(html)) {
+      return false;
+    }
+    // A whole document, as the cleaning parses it: a body tag's own style and background
+    // are read too, which a fragment parse drops.
+    Document document = Jsoup.parse(html);
+    if (!document.select("img, [background]").isEmpty()) {
+      return true;
+    }
+    List<String> styles = new ArrayList<>();
+    document.select("[style]").forEach(element -> styles.add(element.attr(STYLE)));
+    document.select(STYLE).forEach(element -> styles.add(element.data()));
+    return styles.stream().anyMatch(style -> CSS_IMAGE_CALL.matcher(style).find() || style.contains("\\") || style.contains("/*"));
+  }
+
+  /**
+   * HTML the model wrote, cleaned as a received mail is cleaned for the reader with remote
+   * content blocked: a draft is shown to its owner, and pushed to their mail server's
+   * Drafts folder, without that cleaning, so whatever it would fetch -- an image or a
+   * stylesheet address carrying mailbox content -- would leave the user's browser when
+   * they open it to review it.
+   * <p>
+   * The refusal of remote content is a backstop: every caller refuses a body that shows
+   * an image first ({@link #showsImages}), which covers each case the cleaning reports as
+   * remote today. It stays so that a body reaching the cleaning by another path, or a
+   * cleaning that reports more, still saves nothing that would fetch.
+   *
+   * @param html the HTML, possibly null
+   * @return the cleaned HTML, empty for a blank one
+   * @throws IllegalArgumentException when the HTML loads remote content; nothing is saved
+   */
+  static String cleanDraftHtml(String html) {
+    SanitizedEmailBody clean = EmailHtmlSanitizer.sanitize(html, false);
+    if (clean.remoteContentBlocked()) {
+      throw new IllegalArgumentException("body_html loads images or styles from the internet, which a draft written here cannot "
+          + "carry. Write text, formatting and links only; when they come from the user's own content, such as a quoted mail, "
+          + "leave the body to the user in the Email app. Nothing was saved.");
+    }
+    return clean.html();
+  }
+
+  /**
+   * The refusal of a change to a draft saved since it was read.
+   *
+   * @param draftId the draft's id
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException changedMeanwhile(String draftId) {
+    return new IllegalArgumentException(String.format("Draft %s was changed, in the Email app or elsewhere, since you read it: nothing "
+        + "of your change was saved. Read it again with list_email_drafts and start from what it says now.", draftId));
+  }
+
+  /**
+   * Whether a saved draft holds what was written: the storage drops a save whose
+   * revision the row has already reached, and answers the row as it stands.
+   *
+   * @param saved the row the save answered
+   * @param written the draft written
+   * @return true when the row says what was written
+   */
+  private static boolean holds(Email saved, Email written) {
+    return StringUtils.equals(saved.getSubject(), written.getSubject())
+        && StringUtils.equals(bodyOf(saved), bodyOf(written))
+        && addressesOf(saved.getTo()).equals(addressesOf(written.getTo()))
+        && addressesOf(saved.getCc()).equals(addressesOf(written.getCc()))
+        && addressesOf(saved.getBcc()).equals(addressesOf(written.getBcc()));
+  }
+
+  /**
+   * A mail's HTML body, null when it has none.
+   *
+   * @param email the mail
+   * @return its body
+   */
+  private static String bodyOf(Email email) {
+    return email.getContent() == null ? null : email.getContent().getBody();
+  }
+
+  /**
+   * A draft as the draft tools return it.
+   *
+   * @param draft the stored draft
+   * @param withHtml whether to give its whole HTML body too
+   * @return the model
+   */
+  private EmailDraftModel toDraftModel(Email draft, boolean withHtml) {
+    return toDraftModel(draft, withHtml, null);
+  }
+
+  /**
+   * The draft as the tools answer with it, with the documents a call did not attach.
+   *
+   * @param draft the stored draft
+   * @param withHtml whether to carry the whole HTML body
+   * @param refused the documents not attached, or null
+   * @return the model
+   */
+  private EmailDraftModel toDraftModel(Email draft, boolean withHtml, List<RefusedDocumentModel> refused) {
+    return new EmailDraftModel(draft.getDraftLocalId(),
+                               addressesOf(draft.getTo()),
+                               addressesOf(draft.getCc()),
+                               addressesOf(draft.getBcc()),
+                               draft.getSubject(),
+                               plainTextBody(draft),
+                               withHtml ? bodyOf(draft) : null,
+                               draft.getMailHeaderId(),
+                               draft.getDraftRevision(),
+                               draft.getThreadId(),
+                               StringUtils.isNotBlank(draft.getInReplyTo()),
+                               lastModified(draft),
+                               draftsLink(),
+                               attachmentNames(draft),
+                               refused);
+  }
+
+  /**
+   * Refuses a call naming more documents than one call attaches, before anything is
+   * saved.
+   *
+   * @param documentIds the ids given, possibly null
+   * @throws IllegalArgumentException when there are more than
+   *           {@link EmailBoxService#MAX_DOCUMENTS_PER_CALL} of them, counted as the
+   *           service counts them
+   */
+  private static void requireDraftDocuments(List<String> documentIds) {
+    if (documentIds != null && documentIds.stream()
+                                          .filter(StringUtils::isNotBlank)
+                                          .map(String::trim)
+                                          .distinct()
+                                          .count() > EmailBoxService.MAX_DOCUMENTS_PER_CALL) {
+      throw new IllegalArgumentException(String.format("document_ids names more than %d documents: attach the others with "
+          + "update_email_draft. Nothing was saved.", EmailBoxService.MAX_DOCUMENTS_PER_CALL));
+    }
+  }
+
+  /**
+   * Attaches the documents a call names to the draft it saved, and answers with the
+   * draft as it then stands. Without documents, the saved draft as it is.
+   * <p>
+   * The draft, or its change, is saved by then, so nothing past this point answers with
+   * an error: one would tell the caller the call did nothing, and a caller retrying a
+   * create would make a second draft. A failure to attach is answered as the documents
+   * it may have kept off the draft, with the draft read again, so its attachments say
+   * which files it carries.
+   *
+   * @param saved the draft as the call saved it
+   * @param username the user
+   * @param documentIds the ids of the documents to attach, possibly null or empty
+   * @return the draft, its files and the documents that were not attached
+   */
+  private EmailDraftModel withDocuments(Email saved, String username, List<String> documentIds) {
+    if (documentIds == null || documentIds.stream().noneMatch(StringUtils::isNotBlank)) {
+      return toDraftModel(saved, true);
+    }
+    DocumentAttachments attached;
+    try {
+      attached = emailBoxService.addDocumentAttachments(saved.getDraftLocalId(), username, documentIds);
+    } catch (ScheduledSendConflictException e) {
+      return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
+    } catch (IllegalAccessException | RuntimeException e) {
+      LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
+      Email stored;
+      try {
+        stored = emailBoxService.getDraft(saved.getDraftLocalId(), username);
+      } catch (Exception readFailure) {
+        LOG.debug("Draft {} of user {} could not be read again after its documents failed",
+                  saved.getDraftLocalId(),
+                  username,
+                  readFailure);
+        return toDraftModel(saved, true, refusedAll(documentIds, UNKNOWN_DOCUMENT_REFUSAL));
+      }
+      return stored == null ? toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL))
+                            : toDraftModel(stored, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
+    }
+    if (attached == null || attached.getDraft() == null) {
+      return toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL));
+    }
+    List<RefusedDocumentModel> refused = attached.getRefused()
+                                                 .stream()
+                                                 .map(this::toRefusedDocumentModel)
+                                                 .toList();
+    return toDraftModel(attached.getDraft(), true, refused);
+  }
+
+  /**
+   * Every document a call named, refused for one reason.
+   *
+   * @param documentIds the ids as given
+   * @param reason the reason, in words
+   * @return one refusal per distinct id
+   */
+  private static List<RefusedDocumentModel> refusedAll(List<String> documentIds, String reason) {
+    return documentIds.stream()
+                      .filter(StringUtils::isNotBlank)
+                      .map(String::trim)
+                      .distinct()
+                      .map(documentId -> new RefusedDocumentModel(documentId, null, reason))
+                      .toList();
+  }
+
+  /**
+   * A refused document as the tools report it.
+   *
+   * @param refused the refusal
+   * @return the model
+   */
+  private RefusedDocumentModel toRefusedDocumentModel(RefusedDocument refused) {
+    return new RefusedDocumentModel(refused.getDocumentId(),
+                                    refused.getName(),
+                                    DOCUMENT_REFUSALS.getOrDefault(refused.getReason(), "The document was not attached."));
+  }
+
+  /**
+   * Where the user opens their drafts in the Email app: the mailbox on its Drafts
+   * folder, on this deployment's domain. Null when the user's site cannot be resolved.
+   *
+   * @return the link, or null
+   */
+  String draftsLink() {
+    try {
+      return StringUtils.removeEnd(CommonsUtils.getCurrentDomain(), "/")
+          + EmailConnectorUtils.getEmailsLink(getCurrentUserName()) + "&folder=" + MailFolder.DRAFTS;
+    } catch (RuntimeException e) {
+      LOG.debug("No link to the drafts of user {}", getCurrentUserName(), e);
+      return null;
+    }
+  }
+
+  /**
+   * Where the user opens their scheduled mails in the Email app: the mailbox on its
+   * Scheduled view, on this deployment's domain (EXO-91996). Null when the user's site
+   * cannot be resolved.
+   *
+   * @return the link, or null
+   */
+  String scheduledLink() {
+    try {
+      return StringUtils.removeEnd(CommonsUtils.getCurrentDomain(), "/")
+          + EmailConnectorUtils.getEmailsLink(getCurrentUserName()) + "&folder=" + MailFolder.SCHEDULED;
+    } catch (RuntimeException e) {
+      LOG.debug("No link to the scheduled mails of user {}", getCurrentUserName(), e);
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------

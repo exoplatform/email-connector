@@ -34,6 +34,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -302,32 +303,52 @@ public class EmailScheduledSendService {
       throw new IllegalArgumentException(RECIPIENTS_MANDATORY);
     }
     Email[] savedDraft = new Email[1];
-    EmailScheduledSend created = emailBoxService.scheduleDraft(draft, username, saved -> {
-      if (emailScheduledSendStorage.countListed(username) >= intProperty(MAX_PER_USER_PROPERTY, DEFAULT_MAX_PER_USER)) {
-        throw new IllegalArgumentException(LIMIT_REACHED);
+    EmailScheduledSend created = emailBoxService.scheduleDraft(draft,
+                                                               username,
+                                                               saved -> createSchedule(saved, date, timeZone, now, username, savedDraft));
+    LOG.info("A draft of user {} is scheduled to be sent at {}", username, date);
+    return toScheduledEmail(created, savedDraft[0]);
+  }
+
+  /**
+   * Schedules a draft as it is stored at this moment (EXO-91996), with the rules of
+   * {@link #schedule}: the user's last edits in the Email app are what will go out. The
+   * draft is read under its lock, and {@code check} runs on that row before anything is
+   * written, so a caller that had the user approve what the draft said refuses a draft
+   * that says something else by now.
+   *
+   * @param draftLocalId the draft's handle
+   * @param scheduledDate the chosen instant, epoch milliseconds
+   * @param timeZone the zone it was chosen in, for display
+   * @param username the owner
+   * @param check throws to refuse the stored row; nothing is scheduled then
+   * @return the scheduled mail
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such draft
+   * @throws IllegalArgumentException a message code: invalid zone, date too soon or too
+   *           far, limit reached, no recipient, a file that cannot be carried; or what
+   *           {@code check} refuses with
+   * @throws ScheduledSendConflictException when the draft is already scheduled or being
+   *           sent
+   */
+  public ScheduledEmail scheduleAsStored(String draftLocalId,
+                                         long scheduledDate,
+                                         String timeZone,
+                                         String username,
+                                         Consumer<Email> check) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    requireValidTimeZone(timeZone);
+    Date now = now();
+    Date date = requireValidDate(scheduledDate, now);
+    Email[] savedDraft = new Email[1];
+    EmailScheduledSend created = emailBoxService.scheduleDraftAsStored(draftLocalId, username, stored -> {
+      if (check != null) {
+        check.accept(stored);
       }
-      savedDraft[0] = saved;
-      EmailScheduledSend row = new EmailScheduledSend(null,
-                                                      saved.getId(),
-                                                      username,
-                                                      saved.getDraftLocalId(),
-                                                      date,
-                                                      timeZone,
-                                                      ScheduledSendStatus.SCHEDULED,
-                                                      date,
-                                                      0,
-                                                      null,
-                                                      null,
-                                                      null,
-                                                      now,
-                                                      now);
-      try {
-        return emailScheduledSendStorage.create(row);
-      } catch (DataIntegrityViolationException e) {
-        // The unique EMAIL_ID: another node scheduled the same draft a moment ago.
-        throw new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED);
+      if (!hasRecipient(stored)) {
+        throw new IllegalArgumentException(RECIPIENTS_MANDATORY);
       }
-    });
+    }, saved -> createSchedule(saved, date, timeZone, now, username, savedDraft));
     LOG.info("A draft of user {} is scheduled to be sent at {}", username, date);
     return toScheduledEmail(created, savedDraft[0]);
   }
@@ -356,6 +377,42 @@ public class EmailScheduledSendService {
     if (!emailScheduledSendStorage.reschedule(username, draftLocalId, date, timeZone, now)) {
       rejectAsConflictOrNotFound(username, draftLocalId);
     }
+    return toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId));
+  }
+
+  /**
+   * {@link #reschedule(String, long, String, String)}, held only if {@code check} accepts
+   * the scheduled mail as it then stands (EXO-91996): the new date is written, the mail
+   * read and checked, in one transaction ordered after any edit of the mail in the Email
+   * app (see {@code EmailBoxService.changeScheduleIfDraftSays}), so a caller that had the
+   * user approve what the mail said refuses a mail edited since, and nothing is changed.
+   *
+   * @param draftLocalId the draft's handle
+   * @param scheduledDate the new instant, epoch milliseconds
+   * @param timeZone the zone it was chosen in
+   * @param username the owner
+   * @param check throws to refuse the scheduled mail; nothing is changed then
+   * @return the scheduled mail
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   * @throws IllegalArgumentException a message code: invalid zone, date too soon or too
+   *           far; or what {@code check} refuses with
+   * @throws ScheduledSendConflictException when the mail is being sent, sent, or uncertain
+   */
+  public ScheduledEmail reschedule(String draftLocalId,
+                                   long scheduledDate,
+                                   String timeZone,
+                                   String username,
+                                   Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    requireValidTimeZone(timeZone);
+    Date now = now();
+    Date date = requireValidDate(scheduledDate, now);
+    emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
+      if (!emailScheduledSendStorage.reschedule(username, draftLocalId, date, timeZone, now)) {
+        rejectAsConflictOrNotFound(username, draftLocalId);
+      }
+    }, draft -> check.accept(toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId), draft)));
     return toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId));
   }
 
@@ -433,6 +490,60 @@ public class EmailScheduledSendService {
     if (!emailScheduledSendStorage.cancel(username, draftLocalId)) {
       rejectAsConflictOrNotFound(username, draftLocalId);
     }
+  }
+
+  /**
+   * {@link #cancel(String, String)}, held only if {@code check} accepts the scheduled
+   * mail as it then stands (EXO-91996): the schedule is removed, the mail read and
+   * checked, in one transaction ordered after any edit of the mail in the Email app, as
+   * {@link #reschedule(String, long, String, String, Consumer)} does.
+   *
+   * @param draftLocalId the draft's handle
+   * @param username the owner
+   * @param check throws to refuse the scheduled mail; nothing is cancelled then
+   * @return the scheduled mail, its text as the check read it: its status is UNCERTAIN
+   *         exactly when the removal took a mail whose sending could not be confirmed;
+   *         otherwise it is the status read before the change, which a run ending in
+   *         between may have moved, or none when that status was UNCERTAIN
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   * @throws IllegalArgumentException what {@code check} refuses with
+   * @throws ScheduledSendConflictException when the mail is being sent or sent
+   */
+  public ScheduledEmail cancel(String draftLocalId,
+                               String username,
+                               Consumer<ScheduledEmail> check) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    // Read before the transaction for its date and state, which the removal takes away:
+    // the check reads the mail's text in the transaction, after the removal.
+    EmailScheduledSend row = StringUtils.isBlank(draftLocalId) ? null : emailScheduledSendStorage.get(username, draftLocalId);
+    if (row == null) {
+      throw new ObjectNotFoundException(draftLocalId);
+    }
+    // Whether the mail's sending could not be confirmed comes from the removal itself:
+    // the removal of a confirmed state first, then the UNCERTAIN-only one, so a run that
+    // ends UNCERTAIN in between is still told apart (see cancelUncertain); then the
+    // confirmed one again, for a run that ended SCHEDULED or FAILED in between, which the
+    // dispatcher claims again only after a retry delay.
+    boolean[] uncertain = new boolean[1];
+    Email draft = emailBoxService.changeScheduleIfDraftSays(draftLocalId, username, () -> {
+      if (!emailScheduledSendStorage.cancelConfirmed(username, draftLocalId)) {
+        uncertain[0] = emailScheduledSendStorage.cancelUncertain(username, draftLocalId);
+        if (!uncertain[0] && !emailScheduledSendStorage.cancelConfirmed(username, draftLocalId)) {
+          rejectAsConflictOrNotFound(username, draftLocalId);
+        }
+      }
+    }, stored -> check.accept(toScheduledEmail(row, stored)));
+    ScheduledEmail cancelled = toScheduledEmail(row, draft);
+    if (uncertain[0]) {
+      cancelled.setStatus(ScheduledSendStatus.UNCERTAIN);
+    } else if (cancelled.getStatus() == ScheduledSendStatus.UNCERTAIN) {
+      // Read UNCERTAIN before the transaction, then retried by its owner and ended in a
+      // confirmed state: the state it was removed in is not known here, and it was not
+      // uncertain.
+      cancelled.setStatus(null);
+    }
+    return cancelled;
   }
 
   /**
@@ -693,6 +804,25 @@ public class EmailScheduledSendService {
    */
   public long countScheduledEmails(String username) {
     return emailScheduledSendStorage.countListed(username);
+  }
+
+  /**
+   * One of the owner's scheduled mails, as the Scheduled view lists it (EXO-91996).
+   *
+   * @param draftLocalId the draft's handle
+   * @param username the owner
+   * @return the scheduled mail
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   */
+  public ScheduledEmail getScheduledEmail(String draftLocalId, String username) throws IllegalAccessException,
+                                                                                ObjectNotFoundException {
+    requireMailbox(username);
+    EmailScheduledSend row = StringUtils.isBlank(draftLocalId) ? null : emailScheduledSendStorage.get(username, draftLocalId);
+    if (row == null) {
+      throw new ObjectNotFoundException(draftLocalId);
+    }
+    return toScheduledEmail(row);
   }
 
   /**
@@ -1166,6 +1296,53 @@ public class EmailScheduledSendService {
     if (setting == null || setting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(setting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException("User " + username + " may not use their mailbox");
+    }
+  }
+
+  /**
+   * Creates the schedule row of a draft just saved under its lock, once the owner is
+   * known to be under the limit.
+   *
+   * @param saved the draft row as saved
+   * @param date the chosen instant
+   * @param timeZone the zone it was chosen in
+   * @param now the database clock read for the validation
+   * @param username the owner
+   * @param savedDraft receives the saved row, for the answer
+   * @return the schedule row
+   * @throws IllegalArgumentException {@link #LIMIT_REACHED}
+   * @throws ScheduledSendConflictException when another node scheduled the draft a
+   *           moment ago
+   */
+  private EmailScheduledSend createSchedule(Email saved,
+                                            Date date,
+                                            String timeZone,
+                                            Date now,
+                                            String username,
+                                            Email[] savedDraft) {
+    if (emailScheduledSendStorage.countListed(username) >= intProperty(MAX_PER_USER_PROPERTY, DEFAULT_MAX_PER_USER)) {
+      throw new IllegalArgumentException(LIMIT_REACHED);
+    }
+    savedDraft[0] = saved;
+    EmailScheduledSend row = new EmailScheduledSend(null,
+                                                    saved.getId(),
+                                                    username,
+                                                    saved.getDraftLocalId(),
+                                                    date,
+                                                    timeZone,
+                                                    ScheduledSendStatus.SCHEDULED,
+                                                    date,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    now,
+                                                    now);
+    try {
+      return emailScheduledSendStorage.create(row);
+    } catch (DataIntegrityViolationException e) {
+      // The unique EMAIL_ID: another node scheduled the same draft a moment ago.
+      throw new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED);
     }
   }
 
