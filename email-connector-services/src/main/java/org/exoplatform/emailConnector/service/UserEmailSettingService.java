@@ -983,10 +983,11 @@ public class UserEmailSettingService {
 
   /**
    * The users whose stored connector id is a number written in another form than
-   * its canonical one ({@code " 12"}, {@code "012"}, {@code "+12"}). While stored ids
+   * its canonical one ({@code "012"}, {@code "+12"}). While stored ids
    * were compared as text, such a user was left out of the disconnection of a
-   * connector whose provider changed and of the cleanup of a deleted connector; a
-   * one-shot upgrade disconnects them.
+   * connector whose provider changed and of the cleanup of a deleted connector;
+   * {@link EmailManagedDisconnectionService#disconnectUsersWithNonCanonicalConnectorId()}
+   * disconnects them.
    *
    * @return the users to disconnect; a user whose document cannot be read is logged
    *         and left out

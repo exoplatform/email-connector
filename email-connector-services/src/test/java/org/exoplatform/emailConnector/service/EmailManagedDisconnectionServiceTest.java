@@ -38,6 +38,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -611,5 +613,60 @@ class EmailManagedDisconnectionServiceTest {
     when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("007");
 
     assertFalse(service.isNoLongerManaged("alice", 7L, List.of()));
+  }
+
+  /**
+   * The non-canonical run, on the executor: alice ("007") is disconnected, bob's ("+8")
+   * delete fails and is counted, carol reconnected in canonical form after the selection
+   * and is left alone. Killed by the mutants that skip the re-check, or count a skipped
+   * user as failed.
+   */
+  @Test
+  void theNonCanonicalRunDisconnectsTheUsersStillInAnotherFormAndCountsTheFailures() throws Exception {
+    AtomicInteger runs = new AtomicInteger();
+    service.setExecutor(task -> {
+      runs.incrementAndGet();
+      task.run();
+    });
+    when(userEmailSettingService.getUsersWithNonCanonicalConnectorId()).thenReturn(List.of("alice", "bob", "carol"));
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("007");
+    when(userEmailSettingService.getStoredEmailConnectorId("bob")).thenReturn("+8");
+    when(userEmailSettingService.getStoredEmailConnectorId("carol")).thenReturn("12");
+    // lenient: the strict stubs would refuse alice's delete as a mismatched argument
+    lenient().doThrow(new IllegalStateException("db down")).when(userEmailSettingService).deleteUserEmailSetting("bob");
+
+    assertEquals(1, service.disconnectUsersWithNonCanonicalConnectorId());
+
+    assertEquals(1, runs.get());
+    verify(userEmailSettingService).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService).deleteUserEmailSetting("bob");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("carol");
+  }
+
+  /**
+   * The non-canonical run opens one request lifecycle for its selection and one for
+   * each user's turn: two users, three lifecycles. Killed by the mutant that runs the
+   * walk in the selection's lifecycle.
+   */
+  @Test
+  void eachStepOfTheNonCanonicalRunOpensARequestLifecycleOfItsOwn() throws Exception {
+    PersistenceContext context = new PersistenceContext(new HashMap<>());
+    when(container.getComponentInstancesOfType(ComponentRequestLifecycle.class)).thenReturn(List.of(context));
+    when(userEmailSettingService.getUsersWithNonCanonicalConnectorId()).thenReturn(List.of("alice", "bob"));
+    when(userEmailSettingService.getStoredEmailConnectorId(anyString())).thenReturn("007");
+
+    assertEquals(0, service.disconnectUsersWithNonCanonicalConnectorId());
+
+    assertEquals(3, context.lifecycles);
+  }
+
+  /** A failed selection fails the call, so its caller can try again, and disconnects nobody. */
+  @Test
+  void aFailedSelectionOfTheNonCanonicalRunDisconnectsNobody() {
+    when(userEmailSettingService.getUsersWithNonCanonicalConnectorId()).thenThrow(new IllegalStateException("db down"));
+
+    assertThrows(ExecutionException.class, () -> service.disconnectUsersWithNonCanonicalConnectorId());
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
   }
 }
