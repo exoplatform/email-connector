@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -609,6 +610,6 @@ class EmailManagedDisconnectionServiceTest {
   void aUserOnTheGoverningConnectorStoredInAnotherFormIsStillGoverned() {
     when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("007");
 
-    assertEquals(false, service.isNoLongerManaged("alice", 7L, List.of()));
+    assertFalse(service.isNoLongerManaged("alice", 7L, List.of()));
   }
 }

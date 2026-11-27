@@ -16,8 +16,9 @@
  */
 package org.exoplatform.emailConnector.utils;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -246,9 +247,9 @@ public class EmailConnectorUtilsTest {
     assertEquals("7", EmailConnectorUtils.canonicalConnectorId("+7"));
     assertEquals("7", EmailConnectorUtils.canonicalConnectorId("007"));
     assertEquals("7", EmailConnectorUtils.canonicalConnectorId("7"));
-    assertEquals(null, EmailConnectorUtils.canonicalConnectorId(" "));
-    assertEquals(null, EmailConnectorUtils.canonicalConnectorId("7a"));
-    assertEquals(null, EmailConnectorUtils.canonicalConnectorId("99999999999999999999"));
+    assertNull(EmailConnectorUtils.canonicalConnectorId(" "));
+    assertNull(EmailConnectorUtils.canonicalConnectorId("7a"));
+    assertNull(EmailConnectorUtils.canonicalConnectorId("99999999999999999999"));
   }
 
   @Test

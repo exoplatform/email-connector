@@ -17,8 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.mockito.Mockito.times;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -645,8 +645,8 @@ public class UserEmailSettingServiceTest {
     assertNotNull(read);
     assertEquals("testEmail", read.getEmailAddress());
     assertNull(read.getEmailPassword());
-    assertTrue("the read marks the model, so a write handed it back keeps the stored ciphertext", read.isPasswordUnreadable());
-    assertFalse("a password that cannot be decoded is not one the screen may offer to keep", read.isPasswordStored());
+    assertTrue(read.isPasswordUnreadable(), "the read marks the model, so a write handed it back keeps the stored ciphertext");
+    assertFalse(read.isPasswordStored(), "a password that cannot be decoded is not one the screen may offer to keep");
   }
 
   /**
@@ -1124,7 +1124,7 @@ public class UserEmailSettingServiceTest {
     try {
       IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                    () -> userEmailSettingService.authenticatorFor(emailConnector(), TEST_USER));
-      assertTrue("the refusal says what is missing", refusal.getMessage().contains("credentials contract is not available"));
+      assertTrue(refusal.getMessage().contains("credentials contract is not available"), "the refusal says what is missing");
     } finally {
       ReflectionTestUtils.setField(userEmailSettingService, "emailCredentialsResolver", wired);
     }
@@ -1496,7 +1496,7 @@ public class UserEmailSettingServiceTest {
       ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
       String document = String.valueOf(stored.getValue().getValue());
-      assertTrue(document, document.contains("eric@bm.example.org"));
+      assertTrue(document.contains("eric@bm.example.org"), document);
     }
   }
 
@@ -1566,7 +1566,7 @@ public class UserEmailSettingServiceTest {
       ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
       String document = String.valueOf(stored.getValue().getValue());
-      assertTrue(document, document.contains("eric@bm.example.org"));
+      assertTrue(document.contains("eric@bm.example.org"), document);
     }
   }
 
@@ -1658,7 +1658,7 @@ public class UserEmailSettingServiceTest {
 
     // The message matters: without it, this assertion passes on a version that lost
     // the guard and simply fails further on, for another reason.
-    assertTrue(refusal.getMessage(), refusal.getMessage().contains("expects the user to supply"));
+    assertTrue(refusal.getMessage().contains("expects the user to supply"), refusal.getMessage());
 
     // Nothing WRITTEN: canConnect reads the existing setting, which is legitimate.
     verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
@@ -2008,7 +2008,7 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                stored.capture());
     String document = String.valueOf(stored.getValue().getValue());
-    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    assertTrue(document.contains("\"emailConnectorId\":\"1\""), document);
     verify(settingService).set(any(Context.class),
                                any(Scope.class),
                                eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
@@ -2038,8 +2038,8 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                stored.capture());
     String document = String.valueOf(stored.getValue().getValue());
-    assertTrue(document, document.contains("eric@bm.example.org"));
-    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    assertTrue(document.contains("eric@bm.example.org"), document);
+    assertTrue(document.contains("\"emailConnectorId\":\"1\""), document);
     verify(settingService).set(any(Context.class),
                                any(Scope.class),
                                eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
@@ -2259,7 +2259,7 @@ public class UserEmailSettingServiceTest {
     assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
     for (String stored : List.of("", "eric@bm.example.org", ":eric@bm.example.org", "seven:eric@bm.example.org")) {
       givenRefusalStored(stored);
-      assertFalse(stored, userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+      assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused(), stored);
     }
     verifyNoInteractions(emailCredentialsResolver);
   }

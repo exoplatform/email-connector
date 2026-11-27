@@ -177,8 +177,8 @@ export default {
   },
   methods: {
     /**
-     * Whether two connector ids name the same connector, compared by number as the
-     * server does; ids that are not numbers match only when equal as text.
+     * Whether two connector ids name the same connector, compared by number when
+     * both are written in ASCII digits; other ids match only when equal as text.
      *
      * @param {*} connectorId a connector id
      * @param {*} otherConnectorId another connector id
